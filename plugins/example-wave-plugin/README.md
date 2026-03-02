@@ -1,6 +1,6 @@
 # Example Wave Plugin
 
-Reference plugin package for the kinetic simulation app.
+Reference plugin package for the Simularca app.
 
 ## Purpose
 - Demonstrates the handshake contract expected by the host loader.
@@ -22,4 +22,3 @@ Required shape:
 Use the host loader with a module path, for example:
 - Local dev file path to built module
 - Package path resolved from `node_modules`
-

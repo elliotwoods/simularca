@@ -1,5 +1,5 @@
 {
-  "name": "kinetic-sim",
+  "name": "simularca",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -30,7 +30,6 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.173.0",
-    "tweakpane": "^4.0.5",
     "zod": "^3.24.2",
     "zustand": "^5.0.3"
   },

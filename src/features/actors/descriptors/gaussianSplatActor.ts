@@ -14,7 +14,9 @@ export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRun
   schema: GAUSSIAN_SPLAT_SCHEMA,
   spawn: {
     actorType: "gaussian-splat",
-    label: "Gaussian Splat"
+    label: "Gaussian Splat",
+    description: "Renders imported splat point-cloud assets.",
+    iconGlyph: "GS"
   },
   createRuntime: ({ params }) => ({
     assetId: typeof params.assetId === "string" ? params.assetId : undefined,

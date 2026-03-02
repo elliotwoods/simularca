@@ -23,8 +23,6 @@ function toManifest(state: AppStore["state"], mode: SessionManifest["appMode"]):
 }
 
 export class SessionService {
-  private autosaveTimer: number | undefined;
-
   public constructor(
     private readonly storage: StorageAdapter,
     private readonly store: AppStoreApi
@@ -79,16 +77,36 @@ export class SessionService {
     await this.saveSession();
   }
 
-  public queueAutosave(delayMs = 1000): void {
+  public async createNewSession(sessionName: string): Promise<void> {
     if (this.storage.isReadOnly) {
       return;
     }
-    if (this.autosaveTimer !== undefined) {
-      window.clearTimeout(this.autosaveTimer);
+
+    const fresh = createInitialState(this.storage.mode, sessionName);
+    this.store.getState().actions.hydrate(fresh);
+    await this.storage.saveDefaults({ defaultSessionName: sessionName });
+    await this.saveSession();
+  }
+
+  public async renameSession(previousName: string, nextName: string): Promise<void> {
+    if (this.storage.isReadOnly) {
+      return;
     }
-    this.autosaveTimer = window.setTimeout(() => {
-      void this.saveSession();
-    }, delayMs);
+    if (previousName === nextName) {
+      return;
+    }
+    await this.storage.renameSession(previousName, nextName);
+    const state = this.store.getState().state;
+    if (state.activeSessionName === previousName) {
+      this.store.getState().actions.setSessionName(nextName);
+      this.store.getState().actions.setDirty(false);
+    }
+    await this.storage.saveDefaults({ defaultSessionName: nextName });
+  }
+
+  public queueAutosave(delayMs = 1000): void {
+    // Intentionally disabled: session persistence is manual-only (Save / Ctrl+S).
+    void delayMs;
   }
 
   public async listSessions(): Promise<string[]> {

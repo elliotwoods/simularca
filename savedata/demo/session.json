@@ -2,20 +2,24 @@
   "schemaVersion": 1,
   "appMode": "electron-rw",
   "sessionName": "demo",
-  "createdAtIso": "2026-03-02T00:00:00.000Z",
-  "updatedAtIso": "2026-03-02T00:00:00.000Z",
+  "createdAtIso": "2026-03-02T14:39:35.929Z",
+  "updatedAtIso": "2026-03-02T14:39:35.929Z",
   "scene": {
-    "id": "scene-demo",
+    "id": "scene-c7ed932f-ae5b-4c99-9a12-727fba265cc2",
     "name": "Scene",
     "enabled": true,
     "kind": "scene",
-    "actorIds": ["actor-root"],
+    "actorIds": [
+      "actor-04d0d033-d206-48ee-98aa-fd0baef03269",
+      "actor-ada2132a-2007-4379-ba54-a04b69b8a8be",
+      "actor-5e330778-8635-41e1-9007-c1df4ab73b14"
+    ],
     "sceneComponentIds": []
   },
   "actors": {
-    "actor-root": {
-      "id": "actor-root",
-      "name": "Root",
+    "actor-04d0d033-d206-48ee-98aa-fd0baef03269": {
+      "id": "actor-04d0d033-d206-48ee-98aa-fd0baef03269",
+      "name": "Empty",
       "enabled": true,
       "kind": "actor",
       "actorType": "empty",
@@ -23,9 +27,81 @@
       "childActorIds": [],
       "componentIds": [],
       "transform": {
-        "position": [0, 0, 0],
-        "rotation": [0, 0, 0],
-        "scale": [1, 1, 1]
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "params": {}
+    },
+    "actor-ada2132a-2007-4379-ba54-a04b69b8a8be": {
+      "id": "actor-ada2132a-2007-4379-ba54-a04b69b8a8be",
+      "name": "Gaussian Splat",
+      "enabled": true,
+      "kind": "actor",
+      "actorType": "gaussian-splat",
+      "parentActorId": null,
+      "childActorIds": [],
+      "componentIds": [],
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "params": {
+        "opacity": 0.42,
+        "pointSize": 0.036000000000000004,
+        "assetId": "36318092-e580-4457-925b-b7dae0f42df9"
+      }
+    },
+    "actor-5e330778-8635-41e1-9007-c1df4ab73b14": {
+      "id": "actor-5e330778-8635-41e1-9007-c1df4ab73b14",
+      "name": "Empty",
+      "enabled": true,
+      "kind": "actor",
+      "actorType": "empty",
+      "parentActorId": null,
+      "childActorIds": [],
+      "componentIds": [],
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
       },
       "params": {}
     }
@@ -33,8 +109,16 @@
   "components": {},
   "camera": {
     "mode": "perspective",
-    "position": [6, 4, 6],
-    "target": [0, 0, 0],
+    "position": [
+      3.361941817195679,
+      2.457966414072641,
+      8.405697372918095
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
     "fov": 50,
     "zoom": 1,
     "near": 0.01,
@@ -47,6 +131,20 @@
     "fixedStepSeconds": 0.016666666666666666,
     "elapsedSimSeconds": 0
   },
-  "assets": []
+  "assets": [
+    {
+      "id": "71ae626c-a4e4-4f59-925d-58e12323ec5b",
+      "kind": "gaussian-splat",
+      "relativePath": "assets/gaussian-splat/1772462027795-d5d55a46-8da9-4195-b13c-9f2315890c2f.ply",
+      "sourceFileName": "lumaAI - minus tree.ply",
+      "byteSize": 241867996
+    },
+    {
+      "id": "36318092-e580-4457-925b-b7dae0f42df9",
+      "kind": "gaussian-splat",
+      "relativePath": "assets/gaussian-splat/1772462278596-7366a20d-c068-4968-a7e5-4a7de72a8c28.ply",
+      "sourceFileName": "lumaAI - minus tree.ply",
+      "byteSize": 241867996
+    }
+  ]
 }
-

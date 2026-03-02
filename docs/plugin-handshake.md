@@ -53,6 +53,11 @@ interface PluginDefinition {
 
 Descriptors are registered into the host registry and participate in hot-reload behavior.
 
+### Parameter Schema Notes
+- Descriptor schemas support parameter types: `number`, `boolean`, `string`, `select`, and `file`.
+- `file` parameters can provide `accept`, `dialogTitle`, and `import` metadata to use host file-import widgets.
+- Optional UI hints are supported on parameters: `description`; and for numbers: `precision`, `unit`, `dragSpeed`.
+
 ## Loader Behavior
 1. Host imports module path dynamically.
 2. Host resolves handshake from `default` or `handshake` export.
@@ -62,4 +67,3 @@ Descriptors are registered into the host registry and participate in hot-reload 
 
 ## Reference Template
 - `plugins/example-wave-plugin`
-

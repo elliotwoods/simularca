@@ -6,7 +6,9 @@ import type {
   ActorNode,
   AppState,
   CameraPreset,
+  ConsoleLogEntry,
   ComponentNode,
+  LogLevel,
   ParameterValues,
   SceneStats,
   SelectionEntry,
@@ -23,6 +25,8 @@ export interface AppActions {
   hydrate(nextState: AppState): void;
   setMode(mode: AppMode): void;
   setStatus(message: string): void;
+  addLog(entry: { level: LogLevel; message: string; details?: string }): void;
+  clearLogs(): void;
   setDirty(dirty: boolean): void;
   pushHistory(label: string): void;
   undo(): void;
@@ -65,6 +69,19 @@ export type AppStoreApi = UseBoundStore<StoreApi<AppStore>>;
 
 function cloneState(state: AppState): AppState {
   return structuredClone(state);
+}
+
+const MAX_CONSOLE_LOGS = 500;
+
+function appendConsoleLog(state: AppState, entry: { level: LogLevel; message: string; details?: string }): void {
+  const log: ConsoleLogEntry = {
+    id: createId("log"),
+    level: entry.level,
+    message: entry.message,
+    details: entry.details,
+    timestampIso: new Date().toISOString()
+  };
+  state.consoleLogs = [...state.consoleLogs, log].slice(-MAX_CONSOLE_LOGS);
 }
 
 function withHistory(get: () => AppStore, set: (partial: Partial<AppStore>) => void, label: string): void {
@@ -160,6 +177,24 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         set({
           state: produce(get().state, (draft) => {
             draft.statusMessage = message;
+            appendConsoleLog(draft, {
+              level: "info",
+              message
+            });
+          })
+        });
+      },
+      addLog(entry) {
+        set({
+          state: produce(get().state, (draft) => {
+            appendConsoleLog(draft, entry);
+          })
+        });
+      },
+      clearLogs() {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.consoleLogs = [];
           })
         });
       },

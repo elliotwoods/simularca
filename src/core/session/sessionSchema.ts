@@ -9,7 +9,7 @@ const actorSchema = z.object({
   name: z.string(),
   enabled: z.boolean(),
   kind: z.literal("actor"),
-  actorType: z.enum(["empty", "environment", "gaussian-splat", "plugin"]),
+  actorType: z.enum(["empty", "environment", "gaussian-splat", "primitive", "plugin"]),
   pluginType: z.string().optional(),
   parentActorId: z.string().nullable(),
   childActorIds: z.array(z.string()),

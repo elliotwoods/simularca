@@ -4,6 +4,8 @@ import type { ActorType } from "@/core/types";
 export interface ActorCreationOption {
   descriptorId: string;
   label: string;
+  description: string;
+  iconGlyph: string;
   actorType: ActorType;
   pluginType?: string;
   pluginBacked: boolean;
@@ -24,6 +26,12 @@ export function listActorCreationOptions(kernel: AppKernel): ActorCreationOption
       return {
         descriptorId: descriptor.id,
         label: descriptor.spawn?.label ?? descriptor.schema.title,
+        description:
+          descriptor.spawn?.description ??
+          (pluginDescriptorIds.has(descriptor.id)
+            ? "Actor supplied by a loaded plugin."
+            : "Core actor type."),
+        iconGlyph: descriptor.spawn?.iconGlyph ?? (descriptor.spawn?.label ?? descriptor.schema.title).slice(0, 2).toUpperCase(),
         actorType,
         pluginType,
         pluginBacked: pluginDescriptorIds.has(descriptor.id)
@@ -37,9 +45,31 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
   if (!option) {
     return null;
   }
-  return kernel.store.getState().actions.createActor({
+  const actorId = kernel.store.getState().actions.createActor({
     actorType: option.actorType,
     pluginType: option.pluginType,
     name: option.label
   });
+  // Seed known core actor defaults so inspector bindings start with stable values.
+  if (descriptorId === "actor.gaussianSplat") {
+    kernel.store.getState().actions.updateActorParams(actorId, {
+      opacity: 1,
+      pointSize: 0.02
+    });
+  }
+  if (descriptorId === "actor.environment") {
+    kernel.store.getState().actions.updateActorParams(actorId, {
+      intensity: 1
+    });
+  }
+  if (descriptorId === "actor.primitive") {
+    kernel.store.getState().actions.updateActorParams(actorId, {
+      shape: "cube",
+      size: 1,
+      segments: 24,
+      color: "#4fb3ff",
+      wireframe: false
+    });
+  }
+  return actorId;
 }

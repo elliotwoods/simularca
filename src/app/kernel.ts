@@ -36,7 +36,7 @@ function createKernelInternal(): AppKernel {
   };
 }
 
-const HMR_KEY = "kinetic-sim-kernel";
+const HMR_KEY = "simularca-kernel";
 
 export function getKernel(): AppKernel {
   const hot = import.meta.hot;

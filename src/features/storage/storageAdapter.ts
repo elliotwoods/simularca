@@ -8,6 +8,7 @@ export interface StorageAdapter {
   saveDefaults(pointer: DefaultSessionPointer): Promise<void>;
   loadSession(sessionName: string): Promise<string>;
   saveSession(sessionName: string, payload: string): Promise<void>;
+  renameSession(previousName: string, nextName: string): Promise<void>;
   importAsset(args: {
     sessionName: string;
     sourcePath: string;

@@ -1,106 +1,320 @@
-import { useEffect, useRef } from "react";
-import { Pane } from "tweakpane";
+import { useEffect, useMemo, useRef } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
+import type { ActorNode, FileParameterDefinition, ParameterDefinition } from "@/core/types";
+import type { ReloadableDescriptor } from "@/core/hotReload/types";
+import { importFileForActorParam } from "@/features/imports/fileParameterImport";
+import { FileField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
 
-function intersectKeys(objects: Array<Record<string, number | string | boolean>>): string[] {
-  const first = objects[0];
-  if (!first) {
-    return [];
-  }
-  const rest = objects.slice(1);
-  return Object.keys(first).filter((key) => rest.every((obj) => key in obj));
+type BindingValue = number | string | boolean;
+
+function resolveActorDescriptor(
+  actor: ActorNode,
+  descriptors: ReloadableDescriptor[]
+): ReloadableDescriptor | undefined {
+  return descriptors.find((descriptor) => {
+    if (!descriptor.spawn) {
+      return false;
+    }
+    if (descriptor.spawn.actorType !== actor.actorType) {
+      return false;
+    }
+    return descriptor.spawn.pluginType === actor.pluginType;
+  });
 }
 
-type PaneCompat = Pane & {
-  addBlade?: (params: Record<string, unknown>) => unknown;
-  addBinding?: (target: Record<string, unknown>, key: string) => { on?: (event: string, handler: (event: { value: unknown }) => void) => void };
-};
+function inferParamType(value: BindingValue): "number" | "boolean" | "string" {
+  if (typeof value === "number") {
+    return "number";
+  }
+  if (typeof value === "boolean") {
+    return "boolean";
+  }
+  return "string";
+}
+
+function getFallbackDefinitionsFromParams(actor: ActorNode): ParameterDefinition[] {
+  return Object.entries(actor.params).map(([key, value]) => ({
+    key,
+    label: key,
+    type: inferParamType(value)
+  }));
+}
+
+function getParameterDefinitions(actor: ActorNode, descriptors: ReloadableDescriptor[]): ParameterDefinition[] {
+  const descriptor = resolveActorDescriptor(actor, descriptors);
+  const schemaParams = descriptor?.schema.params ?? [];
+  if (schemaParams.length > 0) {
+    return schemaParams;
+  }
+  return getFallbackDefinitionsFromParams(actor);
+}
+
+function defaultValueForDefinition(definition: ParameterDefinition): BindingValue {
+  if (definition.type === "number") {
+    return 0;
+  }
+  if (definition.type === "boolean") {
+    return false;
+  }
+  if (definition.type === "select") {
+    return definition.options[0] ?? "";
+  }
+  return "";
+}
+
+function bindingValueFor(definition: ParameterDefinition, actor: ActorNode): BindingValue {
+  const value = actor.params[definition.key];
+  if (value !== undefined) {
+    return value;
+  }
+  return defaultValueForDefinition(definition);
+}
+
+function commonDefinitionsForGroup(
+  actorSelection: ActorNode[],
+  descriptors: ReloadableDescriptor[]
+): ParameterDefinition[] {
+  const firstActor = actorSelection[0];
+  if (!firstActor) {
+    return [];
+  }
+  const firstDefinitions = getParameterDefinitions(firstActor, descriptors);
+  const otherDefinitionsByActor = actorSelection.slice(1).map((actor) => {
+    return new Map(getParameterDefinitions(actor, descriptors).map((definition) => [definition.key, definition]));
+  });
+
+  return firstDefinitions.filter((definition) =>
+    otherDefinitionsByActor.every((definitions) => definitions.get(definition.key)?.type === definition.type)
+  );
+}
+
+function isMixedValue(values: BindingValue[]): boolean {
+  const first = values[0];
+  if (first === undefined) {
+    return false;
+  }
+  return values.some((value) => value !== first);
+}
+
+function buildFileFilters(definition: FileParameterDefinition): { name: string; extensions: string[] }[] {
+  const extensions = definition.accept
+    .map((extension) => extension.trim().toLowerCase())
+    .filter((extension) => extension.startsWith("."))
+    .map((extension) => extension.slice(1))
+    .filter((extension) => extension.length > 0);
+
+  if (extensions.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      name: definition.label,
+      extensions
+    }
+  ];
+}
+
+async function pickFileFromDialog(definition: FileParameterDefinition): Promise<string | null> {
+  if (!window.electronAPI) {
+    return null;
+  }
+  return window.electronAPI.openFileDialog({
+    title: definition.dialogTitle ?? `Select ${definition.label}`,
+    filters: buildFileFilters(definition)
+  });
+}
 
 export function InspectorPane() {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const paneRef = useRef<Pane | null>(null);
   const kernel = useKernel();
   const selection = useAppStore((store) => store.state.selection);
   const actors = useAppStore((store) => store.state.actors);
+  const assets = useAppStore((store) => store.state.assets);
+  const mode = useAppStore((store) => store.state.mode);
+  const sessionName = useAppStore((store) => store.state.activeSessionName);
+  const autosaveTimeoutRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    if (!rootRef.current) {
-      return;
+  const actorDescriptors = kernel.descriptorRegistry.listByKind("actor");
+
+  const actorSelection = useMemo(
+    () =>
+      selection
+        .filter((entry) => entry.kind === "actor")
+        .map((entry) => actors[entry.id])
+        .filter((actor): actor is NonNullable<typeof actor> => Boolean(actor)),
+    [selection, actors]
+  );
+
+  const definitions = useMemo(() => {
+    const first = actorSelection[0];
+    if (!first) {
+      return [];
     }
-
-    let pane: Pane;
-    try {
-      pane = new Pane({
-        container: rootRef.current,
-        title: "Inspector"
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown inspector initialization error.";
-      kernel.store.getState().actions.setStatus(`Inspector initialization failed: ${message}`);
-      return;
+    if (actorSelection.length === 1) {
+      return getParameterDefinitions(first, actorDescriptors);
     }
-    paneRef.current = pane;
-    const paneCompat = pane as PaneCompat;
+    return commonDefinitionsForGroup(actorSelection, actorDescriptors);
+  }, [actorSelection, actorDescriptors]);
 
-    const actorSelection = selection
-      .filter((entry) => entry.kind === "actor")
-      .map((entry) => actors[entry.id])
-      .filter((actor): actor is NonNullable<typeof actor> => Boolean(actor));
+  const readOnly = mode === "web-ro";
 
-    if (actorSelection.length === 0) {
-      paneCompat.addBlade?.({
-        view: "text",
-        label: "Selection",
-        value: "Select one or more actors/components"
-      });
-      return () => {
-        pane.dispose();
-      };
-    }
-
-    const commonKeys = intersectKeys(actorSelection.map((actor) => actor.params));
-    if (commonKeys.length === 0) {
-      paneCompat.addBlade?.({
-        view: "text",
-        label: "Params",
-        value: "No common editable params in current selection"
-      });
-      return () => {
-        pane.dispose();
-      };
-    }
-
-    for (const key of commonKeys) {
-      const firstActor = actorSelection[0];
-      if (!firstActor) {
-        continue;
+  useEffect(
+    () => () => {
+      if (autosaveTimeoutRef.current !== null) {
+        window.clearTimeout(autosaveTimeoutRef.current);
       }
-      const firstValue = firstActor.params[key];
-      const bindingTarget: Record<string, unknown> = { [key]: firstValue };
-      const binding = paneCompat.addBinding?.(bindingTarget, key);
-      binding?.on?.("change", (event: { value: unknown }) => {
-        const nextValue = event.value as number | string | boolean;
-        for (const actor of actorSelection) {
-          kernel.store.getState().actions.updateActorParams(actor.id, {
-            [key]: nextValue
-          });
+    },
+    []
+  );
+
+  const scheduleAutosave = () => {
+    if (autosaveTimeoutRef.current !== null) {
+      window.clearTimeout(autosaveTimeoutRef.current);
+    }
+    autosaveTimeoutRef.current = window.setTimeout(() => {
+      kernel.sessionService.queueAutosave();
+      autosaveTimeoutRef.current = null;
+    }, 120);
+  };
+
+  const updateSelectedActorParams = (key: string, nextValue: BindingValue): void => {
+    for (const actor of actorSelection) {
+      kernel.store.getState().actions.updateActorParams(actor.id, {
+        [key]: nextValue
+      });
+    }
+    scheduleAutosave();
+  };
+
+  if (actorSelection.length === 0) {
+    return <div className="inspector-empty">Select one or more actors/components</div>;
+  }
+
+  if (definitions.length === 0) {
+    return <div className="inspector-empty">No common editable params in current selection</div>;
+  }
+
+  return (
+    <div className="inspector-pane-root custom-inspector">
+      {definitions.map((definition) => {
+        const values = actorSelection.map((actor) => bindingValueFor(definition, actor));
+        const mixed = isMixedValue(values);
+        const current = values[0] ?? defaultValueForDefinition(definition);
+
+        if (definition.type === "number") {
+          return (
+            <NumberField
+              key={definition.key}
+              label={definition.label}
+              value={typeof current === "number" ? current : 0}
+              mixed={mixed}
+              min={definition.min}
+              max={definition.max}
+              step={definition.step}
+              precision={definition.precision}
+              unit={definition.unit}
+              dragSpeed={definition.dragSpeed}
+              disabled={readOnly}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next);
+              }}
+            />
+          );
         }
-        kernel.sessionService.queueAutosave();
-      });
-    }
 
-    return () => {
-      if (paneRef.current === pane) {
-        paneRef.current = null;
-      }
-      try {
-        pane.dispose();
-      } catch {
-        // Tweakpane may already be torn down during rapid remounts.
-      }
-    };
-  }, [selection, actors, kernel]);
+        if (definition.type === "boolean") {
+          return (
+            <ToggleField
+              key={definition.key}
+              label={definition.label}
+              checked={Boolean(current)}
+              mixed={mixed}
+              disabled={readOnly}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next);
+              }}
+            />
+          );
+        }
 
-  return <div className="inspector-pane-root" ref={rootRef} />;
+        if (definition.type === "select") {
+          return (
+            <SelectField
+              key={definition.key}
+              label={definition.label}
+              value={typeof current === "string" ? current : ""}
+              mixed={mixed}
+              options={definition.options}
+              disabled={readOnly}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "file") {
+          const assetId = typeof current === "string" ? current : "";
+          const asset = mixed ? undefined : assets.find((entry) => entry.id === assetId);
+          return (
+            <FileField
+              key={definition.key}
+              label={definition.label}
+              value={assetId}
+              mixed={mixed}
+              asset={asset}
+              disabled={readOnly}
+              onBrowse={() => {
+                void (async () => {
+                  try {
+                    const sourcePath = await pickFileFromDialog(definition);
+                    if (!sourcePath) {
+                      if (!window.electronAPI) {
+                        kernel.store
+                          .getState()
+                          .actions.setStatus("Desktop file dialogs are only available in Electron mode.");
+                      }
+                      return;
+                    }
+
+                    const importedAsset = await importFileForActorParam(kernel, {
+                      sessionName,
+                      sourcePath,
+                      definition
+                    });
+
+                    updateSelectedActorParams(definition.key, importedAsset.id);
+                    kernel.store
+                      .getState()
+                      .actions.setStatus(`${definition.label} imported: ${importedAsset.sourceFileName}`);
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : "Unknown file import error";
+                    kernel.store.getState().actions.setStatus(`Unable to import ${definition.label}: ${message}`);
+                  }
+                })();
+              }}
+              onClear={() => {
+                updateSelectedActorParams(definition.key, "");
+                kernel.store.getState().actions.setStatus(`${definition.label} cleared.`);
+              }}
+            />
+          );
+        }
+
+        return (
+          <TextField
+            key={definition.key}
+            label={definition.label}
+            value={typeof current === "string" ? current : ""}
+            mixed={mixed}
+            disabled={readOnly}
+            onChange={(next) => {
+              updateSelectedActorParams(definition.key, next);
+            }}
+          />
+        );
+      })}
+    </div>
+  );
 }

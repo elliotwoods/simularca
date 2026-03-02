@@ -6,6 +6,8 @@ import { SceneController } from "./sceneController";
 import type { SplatOverlayActorState, SplatOverlayHandle } from "./splatOverlay";
 import { DedicatedGaussianSplatOverlay, NoopSplatOverlay } from "./splatOverlay";
 
+const ENABLE_DEDICATED_SPLAT_OVERLAY = false;
+
 export class WebGpuViewport {
   private readonly renderer: WebGPURenderer;
   private readonly perspectiveCamera: any;
@@ -66,8 +68,9 @@ export class WebGpuViewport {
     this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.splatOverlay = overlay ?? new NoopSplatOverlay();
+    this.sceneController.setGaussianSplatFallbackEnabled(true);
 
-    if (!overlay) {
+    if (ENABLE_DEDICATED_SPLAT_OVERLAY && !overlay) {
       void this.bootstrapDedicatedSplatOverlay();
     }
   }
@@ -295,7 +298,6 @@ export class WebGpuViewport {
         });
       }
       await this.splatOverlay.syncActors(actors);
-      this.sceneController.setGaussianSplatFallbackEnabled(!this.splatOverlay.isDedicatedRenderer);
       this.lastSplatSignature = signature;
     } finally {
       this.splatSyncInFlight = false;

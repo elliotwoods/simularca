@@ -12,7 +12,9 @@ export const emptyActorDescriptor: ReloadableDescriptor<EmptyRuntime> = {
   schema: EMPTY_ACTOR_SCHEMA,
   spawn: {
     actorType: "empty",
-    label: "Empty"
+    label: "Empty",
+    description: "Neutral transform node for grouping and hierarchy.",
+    iconGlyph: "E"
   },
   createRuntime: () => ({
     tickCount: 0

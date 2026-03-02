@@ -13,7 +13,9 @@ export const environmentActorDescriptor: ReloadableDescriptor<EnvironmentRuntime
   schema: ENVIRONMENT_ACTOR_SCHEMA,
   spawn: {
     actorType: "environment",
-    label: "Environment"
+    label: "Environment",
+    description: "Assigns HDRI lighting and scene background.",
+    iconGlyph: "ENV"
   },
   createRuntime: ({ params }) => ({
     assetId: typeof params.assetId === "string" ? params.assetId : undefined,

@@ -1,4 +1,4 @@
-# Kinetic Simulation Environment
+# Simularca
 
 Desktop-first simulation environment for kinetic art pre-visualization.
 

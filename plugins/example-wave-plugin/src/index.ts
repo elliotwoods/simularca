@@ -4,11 +4,26 @@ export interface ParameterSchema {
   params: Array<{
     key: string;
     label: string;
-    type: "number" | "boolean" | "string" | "select";
+    description?: string;
+    type: "number" | "boolean" | "string" | "select" | "file";
     min?: number;
     max?: number;
     step?: number;
+    precision?: number;
+    unit?: string;
+    dragSpeed?: number;
     options?: string[];
+    accept?: string[];
+    dialogTitle?: string;
+    import?: {
+      mode: "import-asset" | "transcode-hdri";
+      kind?: "hdri" | "gaussian-splat" | "generic";
+      options?: {
+        uastc?: boolean;
+        zstdLevel?: number;
+        generateMipmaps?: boolean;
+      };
+    };
   }>;
 }
 
@@ -96,4 +111,3 @@ const handshake: PluginHandshakeModule = {
 
 export { handshake };
 export default handshake;
-

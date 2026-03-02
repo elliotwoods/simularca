@@ -1,12 +1,15 @@
+import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { SceneTree } from "@/ui/components/SceneTree";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
 
 export function LeftPanel() {
+  const kernel = useKernel();
   const stats = useAppStore((store) => store.state.stats);
   const selection = useAppStore((store) => store.state.selection);
   const mode = useAppStore((store) => store.state.mode);
   const readOnly = mode === "web-ro";
+  const plugins = kernel.pluginApi.listPlugins();
 
   return (
     <div className="left-panel">
@@ -14,7 +17,7 @@ export function LeftPanel() {
         <header>
           <h3>Scene Graph</h3>
           <div className="inline-actions">
-            <AddActorMenu disabled={readOnly} label="Add..." />
+            <AddActorMenu disabled={readOnly} />
           </div>
         </header>
         <SceneTree />
@@ -54,6 +57,24 @@ export function LeftPanel() {
             <dd>{selection.length}</dd>
           </div>
         </dl>
+      </section>
+
+      <section className="panel-section">
+        <header>
+          <h3>Plugins</h3>
+        </header>
+        {plugins.length === 0 ? (
+          <p>No plugins loaded.</p>
+        ) : (
+          <ul className="plugin-list">
+            {plugins.map((entry) => (
+              <li key={entry.definition.id}>
+                <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
+                <span>{entry.manifest?.version ?? "unknown version"}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

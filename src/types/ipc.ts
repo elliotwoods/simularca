@@ -18,6 +18,11 @@ export interface HdriTranscodeOptions {
   generateMipmaps?: boolean;
 }
 
+export interface FileDialogFilter {
+  name: string;
+  extensions: string[];
+}
+
 export interface ElectronApi {
   mode: AppMode;
   listSessions(): Promise<string[]>;
@@ -25,6 +30,7 @@ export interface ElectronApi {
   saveDefaults(pointer: DefaultSessionPointer): Promise<void>;
   loadSession(sessionName: string): Promise<string>;
   saveSession(sessionName: string, payload: string): Promise<void>;
+  renameSession(args: { previousName: string; nextName: string }): Promise<void>;
   importAsset(args: {
     sessionName: string;
     sourcePath: string;
@@ -37,11 +43,13 @@ export interface ElectronApi {
   }): Promise<SessionAssetRef>;
   deleteAsset(args: { sessionName: string; relativePath: string }): Promise<void>;
   resolveAssetPath(args: { sessionName: string; relativePath: string }): Promise<string>;
+  openFileDialog(args: { title?: string; filters?: FileDialogFilter[] }): Promise<string | null>;
   logRuntimeError(payload: Record<string, unknown>): void;
   getWindowState(): Promise<{ isMaximized: boolean }>;
   windowMinimize(): Promise<void>;
   windowToggleMaximize(): Promise<void>;
   windowClose(): Promise<void>;
+  showAppMenu(args: { x: number; y: number }): Promise<void>;
   onWindowStateChange(listener: (state: { isMaximized: boolean }) => void): () => void;
 }
 

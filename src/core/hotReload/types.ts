@@ -17,6 +17,8 @@ export interface ReloadableDescriptor<TRuntime = unknown> {
     actorType: ActorType;
     pluginType?: string;
     label?: string;
+    description?: string;
+    iconGlyph?: string;
   };
   createRuntime(args: { params: ParameterValues }): TRuntime;
   updateRuntime(runtime: TRuntime, args: { params: ParameterValues; dtSeconds: number }): void;

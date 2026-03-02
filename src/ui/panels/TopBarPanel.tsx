@@ -1,12 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCube,
-  faBookmark,
   faCamera,
   faCirclePause,
   faCirclePlay,
-  faFloppyDisk,
   faForwardStep,
   faKeyboard,
   faRotateLeft,
@@ -17,7 +14,6 @@ import { useAppStore } from "@/app/useAppStore";
 import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
 import { loadPluginFromModule } from "@/features/plugins/pluginLoader";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
-import { WindowControls } from "@/ui/components/WindowControls";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
 const CAMERA_PRESETS: CameraPreset[] = ["perspective", "isometric", "top", "left", "front", "back"];
@@ -31,89 +27,41 @@ function formatSpeed(speed: TimeSpeedPreset): string {
 
 interface TopBarPanelProps {
   onToggleKeyboardMap: () => void;
+  requestTextInput(args: {
+    title: string;
+    label: string;
+    initialValue?: string;
+    placeholder?: string;
+    confirmLabel?: string;
+  }): Promise<string | null>;
 }
 
 export function TopBarPanel(props: TopBarPanelProps) {
   const kernel = useKernel();
   const state = useAppStore((store) => store.state);
-  const [availableSessions, setAvailableSessions] = useState<string[]>([]);
-  const sessionOptions = useMemo(() => {
-    if (availableSessions.includes(state.activeSessionName)) {
-      return availableSessions;
-    }
-    return [state.activeSessionName, ...availableSessions];
-  }, [availableSessions, state.activeSessionName]);
-
-  useEffect(() => {
-    void kernel.sessionService.listSessions().then((sessions) => {
-      setAvailableSessions(sessions);
-    });
-  }, [kernel]);
 
   const isReadOnly = state.mode === "web-ro";
 
-  const sessionControls = useMemo(
-    () => (
-      <div className="toolbar-group">
-        <label title="Current session">Session</label>
-        <select
-          value={state.activeSessionName}
-          onChange={(event) => {
-            void kernel.sessionService.loadSession(event.target.value);
-          }}
-        >
-          {sessionOptions.map((sessionName) => (
-            <option key={sessionName} value={sessionName}>
-              {sessionName}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          disabled={isReadOnly}
-          title="Save"
-          onClick={() => {
-            void kernel.sessionService.saveSession();
-          }}
-        >
-          <FontAwesomeIcon icon={faFloppyDisk} />
-        </button>
-        <button
-          type="button"
-          disabled={isReadOnly}
-          title="Save As"
-          onClick={() => {
-            const nextName = window.prompt("Save as session name", state.activeSessionName);
-            if (!nextName) {
-              return;
-            }
-            void kernel.sessionService.saveAs(nextName).then(() => {
-              setAvailableSessions((prev) => (prev.includes(nextName) ? prev : [...prev, nextName]));
-            });
-          }}
-        >
-          <FontAwesomeIcon icon={faBookmark} />
-        </button>
-      </div>
-    ),
-    [isReadOnly, kernel, sessionOptions, state.activeSessionName]
-  );
-
   return (
     <div className="top-toolbar">
-      <div className="app-title">Kinetic Sim</div>
-      {sessionControls}
-
       <div className="toolbar-group">
         <label title="Camera presets">Camera</label>
         <button
           type="button"
           title="Save camera bookmark"
           onClick={() => {
-            const name = window.prompt("Bookmark name", `Camera ${state.cameraBookmarks.length + 1}`);
-            if (name) {
-              kernel.store.getState().actions.saveCameraBookmark(name);
-            }
+            void props
+              .requestTextInput({
+                title: "Save Camera Bookmark",
+                label: "Bookmark name",
+                initialValue: `Camera ${state.cameraBookmarks.length + 1}`,
+                confirmLabel: "Save"
+              })
+              .then((name) => {
+                if (name) {
+                  kernel.store.getState().actions.saveCameraBookmark(name);
+                }
+              });
           }}
         >
           <FontAwesomeIcon icon={faCamera} />
@@ -184,7 +132,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
 
       <div className="toolbar-group">
         <label title="Add actor">Add</label>
-        <AddActorMenu disabled={isReadOnly} label="Add..." />
+        <AddActorMenu disabled={isReadOnly} />
       </div>
 
       <div className="toolbar-group">
@@ -199,31 +147,33 @@ export function TopBarPanel(props: TopBarPanelProps) {
           type="button"
           title="Load plugin from module path"
           onClick={() => {
-            const modulePath = window.prompt(
-              "Plugin module path",
-              "file:///absolute/path/to/plugin/dist/index.js"
-            );
-            if (!modulePath) {
-              return;
-            }
-            void loadPluginFromModule(kernel, modulePath)
-              .then((result) => {
-                kernel.store
-                  .getState()
-                  .actions.setStatus(`Plugin loaded: ${result.manifest.name} (${result.manifest.version})`);
+            void props
+              .requestTextInput({
+                title: "Load Plugin",
+                label: "Plugin module path",
+                initialValue: "file:///absolute/path/to/plugin/dist/index.js",
+                confirmLabel: "Load"
               })
-              .catch((error) => {
-                const message = error instanceof Error ? error.message : "Unknown plugin loader error";
-                kernel.store.getState().actions.setStatus(`Plugin load failed: ${message}`);
+              .then((modulePath) => {
+                if (!modulePath) {
+                  return;
+                }
+                return loadPluginFromModule(kernel, modulePath)
+                  .then((result) => {
+                    kernel.store
+                      .getState()
+                      .actions.setStatus(`Plugin loaded: ${result.manifest.name} (${result.manifest.version})`);
+                  })
+                  .catch((error) => {
+                    const message = error instanceof Error ? error.message : "Unknown plugin loader error";
+                    kernel.store.getState().actions.setStatus(`Plugin load failed: ${message}`);
+                  });
               });
           }}
         >
           <FontAwesomeIcon icon={faCube} />
         </button>
       </div>
-
-      <div className="toolbar-spacer" />
-      <WindowControls />
     </div>
   );
 }

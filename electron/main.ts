@@ -1,17 +1,30 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
-import type { DefaultSessionPointer, HdriTranscodeOptions, SessionAssetRef } from "../src/types/ipc";
+import type { DefaultSessionPointer, FileDialogFilter, HdriTranscodeOptions, SessionAssetRef } from "../src/types/ipc";
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_DEV = Boolean(DEV_SERVER_URL);
 const DEFAULTS_FILE_NAME = "defaults.json";
 const SESSION_FILE_NAME = "session.json";
 const RUNTIME_LOG_FILE_NAME = "electron-runtime.log";
+const ASSET_PROTOCOL = "simularcaasset";
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: ASSET_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true
+    }
+  }
+]);
 
 function getRepoRoot(): string {
   return process.cwd();
@@ -74,6 +87,59 @@ function getSessionFile(sessionName: string): string {
 
 function getAssetDirectory(sessionName: string, kind: SessionAssetRef["kind"]): string {
   return path.join(getSessionDirectory(sessionName), "assets", kind);
+}
+
+function mimeTypeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".ply":
+      return "application/octet-stream";
+    case ".hdr":
+      return "image/vnd.radiance";
+    case ".exr":
+      return "image/aces";
+    case ".ktx2":
+      return "image/ktx2";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+async function registerAssetProtocol(): Promise<void> {
+  protocol.handle(ASSET_PROTOCOL, async (request) => {
+    try {
+      const parsed = new URL(request.url);
+      const sessionName = decodeURIComponent(parsed.hostname);
+      const relativeParts = parsed.pathname
+        .split("/")
+        .filter((part) => part.length > 0)
+        .map((part) => decodeURIComponent(part));
+      const relativePath = relativeParts.join("/");
+      const sessionRoot = path.resolve(getSessionDirectory(sessionName));
+      const targetPath = path.resolve(sessionRoot, relativePath);
+      if (!targetPath.startsWith(sessionRoot)) {
+        return new Response("Invalid asset path", { status: 400 });
+      }
+      const content = await fs.readFile(targetPath);
+      return new Response(content, {
+        status: 200,
+        headers: {
+          "content-type": mimeTypeForPath(targetPath)
+        }
+      });
+    } catch (error) {
+      void writeRuntimeLog("asset-protocol", "Failed to resolve request", {
+        url: request.url,
+        error
+      });
+      return new Response("Not found", { status: 404 });
+    }
+  });
 }
 
 async function ensureSessionDirectory(sessionName: string): Promise<void> {
@@ -272,6 +338,49 @@ function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     win?.close();
   });
+  ipcMain.handle("menu:show-app", (event, args: { x: number; y: number }) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) {
+      return;
+    }
+    const menu = Menu.buildFromTemplate([
+      { role: "fileMenu" },
+      { role: "editMenu" },
+      { role: "viewMenu" },
+      { role: "windowMenu" },
+      { role: "help", submenu: [{ label: "Simularca", enabled: false }] }
+    ]);
+    menu.popup({
+      window: win,
+      x: Math.max(0, Math.floor(args.x)),
+      y: Math.max(0, Math.floor(args.y))
+    });
+  });
+
+  ipcMain.handle(
+    "dialog:open-file",
+    async (
+      event,
+      args: {
+        title?: string;
+        filters?: FileDialogFilter[];
+      }
+    ) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const dialogOptions: OpenDialogOptions = {
+        title: args.title ?? "Select file",
+        properties: ["openFile"],
+        filters: args.filters
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
+      if (result.canceled) {
+        return null;
+      }
+      return result.filePaths[0] ?? null;
+    }
+  );
 
   ipcMain.handle("sessions:list", async () => {
     await fs.mkdir(getSaveDataRoot(), { recursive: true });
@@ -308,6 +417,71 @@ function registerIpcHandlers(): void {
     await ensureSessionDirectory(sessionName);
     await fs.writeFile(getSessionFile(sessionName), payload, "utf8");
   });
+  ipcMain.handle(
+    "session:rename",
+    async (
+      _event,
+      args: {
+        previousName: string;
+        nextName: string;
+      }
+    ) => {
+      const fromDir = getSessionDirectory(args.previousName);
+      const toDir = getSessionDirectory(args.nextName);
+      if (args.previousName === args.nextName) {
+        return;
+      }
+      try {
+        await fs.access(toDir);
+        throw new Error(`Session "${args.nextName}" already exists.`);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code && code !== "ENOENT") {
+          throw error;
+        }
+      }
+      try {
+        await fs.rename(fromDir, toDir);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EPERM" && code !== "EACCES") {
+          throw error;
+        }
+        // Windows can lock active files (e.g. currently loaded assets). Fallback to copy + best-effort cleanup.
+        await fs.cp(fromDir, toDir, {
+          recursive: true,
+          errorOnExist: true,
+          force: false
+        });
+        try {
+          await fs.rm(fromDir, {
+            recursive: true,
+            force: true
+          });
+        } catch (cleanupError) {
+          void writeRuntimeLog("session:rename", "Unable to remove old session directory after fallback copy", {
+            previousName: args.previousName,
+            nextName: args.nextName,
+            cleanupError
+          });
+        }
+      }
+      const defaultsPath = path.join(getSaveDataRoot(), DEFAULTS_FILE_NAME);
+      try {
+        const raw = await fs.readFile(defaultsPath, "utf8");
+        const current = JSON.parse(raw) as DefaultSessionPointer;
+        if (current.defaultSessionName === args.previousName) {
+          await fs.writeFile(
+            defaultsPath,
+            JSON.stringify({ defaultSessionName: args.nextName } satisfies DefaultSessionPointer, null, 2),
+            "utf8"
+          );
+        }
+      } catch {
+        // defaults file may be absent; ignore.
+      }
+    }
+  );
 
   ipcMain.handle(
     "asset:import",
@@ -398,8 +572,13 @@ function registerIpcHandlers(): void {
         relativePath: string;
       }
     ) => {
-      const absolute = path.resolve(getSessionDirectory(args.sessionName), args.relativePath);
-      return pathToFileURL(absolute).toString();
+      const encodedSession = encodeURIComponent(args.sessionName);
+      const encodedPath = args.relativePath
+        .split("/")
+        .filter((part) => part.length > 0)
+        .map((part) => encodeURIComponent(part))
+        .join("/");
+      return `${ASSET_PROTOCOL}://${encodedSession}/${encodedPath}`;
     }
   );
 }
@@ -427,6 +606,7 @@ void app.whenReady().then(async () => {
     devServerUrl: DEV_SERVER_URL ?? null
   });
   await ensureDefaultsFile();
+  await registerAssetProtocol();
   registerIpcHandlers();
   createWindow();
 

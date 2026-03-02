@@ -1,4 +1,4 @@
-# Kinetic Simulation Environment Spec
+# Simularca Spec
 
 ## 1. Purpose
 Build a pre-visualization simulation environment for kinetic artworks with a large interactive 3D viewport and fast local iteration.
@@ -13,7 +13,7 @@ Build a pre-visualization simulation environment for kinetic artworks with a lar
 - 3D: `Three.js` with `WebGPU` renderer for the main scene.
 - Splat support: allow isolated WebGL path for Gaussian splats when needed by library/runtime.
 - Layout: `GoldenLayout` dockable/resizable panes.
-- Inspector widgets: `Tweakpane`.
+- Inspector widgets: custom React widgets (schema-driven).
 - Icons: Font Awesome, icon-first with tooltips.
 
 ## 4. Visual Direction

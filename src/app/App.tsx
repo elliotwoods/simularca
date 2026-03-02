@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
+import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
 import { KeyboardMapModal } from "@/ui/components/KeyboardMapModal";
+import { TextInputModal } from "@/ui/components/TextInputModal";
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -19,9 +21,32 @@ function isEditableTarget(target: EventTarget | null): boolean {
 export function App() {
   const kernel = useKernel();
   const [keyboardMapOpen, setKeyboardMapOpen] = useState(false);
-  const dirty = useAppStore((store) => store.state.dirty);
+  const [textInputRequest, setTextInputRequest] = useState<{
+    title: string;
+    label: string;
+    initialValue?: string;
+    placeholder?: string;
+    confirmLabel?: string;
+    resolve: (value: string | null) => void;
+  } | null>(null);
   const activeSessionName = useAppStore((store) => store.state.activeSessionName);
-  const readOnly = useAppStore((store) => store.state.mode === "web-ro");
+
+  const requestTextInput = useCallback(
+    async (args: {
+      title: string;
+      label: string;
+      initialValue?: string;
+      placeholder?: string;
+      confirmLabel?: string;
+    }): Promise<string | null> =>
+      await new Promise((resolve) => {
+        setTextInputRequest({
+          ...args,
+          resolve
+        });
+      }),
+    []
+  );
 
   useEffect(() => {
     registerCoreActorDescriptors(kernel);
@@ -42,10 +67,36 @@ export function App() {
   }, [kernel]);
 
   useEffect(() => {
-    if (dirty && !readOnly) {
-      kernel.sessionService.queueAutosave();
-    }
-  }, [dirty, kernel, readOnly]);
+    const onWindowError = (event: ErrorEvent) => {
+      const detail = event.error instanceof Error ? event.error.stack ?? event.error.message : event.message;
+      kernel.store.getState().actions.addLog({
+        level: "error",
+        message: event.message || "Unhandled window error",
+        details: detail
+      });
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const detail =
+        reason instanceof Error
+          ? reason.stack ?? reason.message
+          : typeof reason === "string"
+            ? reason
+            : JSON.stringify(reason, null, 2);
+      kernel.store.getState().actions.addLog({
+        level: "error",
+        message: "Unhandled promise rejection",
+        details: detail
+      });
+    };
+
+    window.addEventListener("error", onWindowError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    };
+  }, [kernel]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -73,10 +124,16 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         if (event.shiftKey) {
-          const nextName = window.prompt("Save as session name", activeSessionName);
-          if (nextName) {
-            void kernel.sessionService.saveAs(nextName);
-          }
+          void requestTextInput({
+            title: "Save Session As",
+            label: "Session name",
+            initialValue: activeSessionName,
+            confirmLabel: "Save"
+          }).then((nextName) => {
+            if (nextName) {
+              void kernel.sessionService.saveAs(nextName);
+            }
+          });
           return;
         }
         void kernel.sessionService.saveSession();
@@ -96,17 +153,44 @@ export function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [activeSessionName, kernel]);
+  }, [activeSessionName, kernel, requestTextInput]);
 
   const topBar = useMemo(
-    () => <TopBarPanel onToggleKeyboardMap={() => setKeyboardMapOpen((value) => !value)} />,
-    []
+    () => (
+      <TopBarPanel
+        onToggleKeyboardMap={() => setKeyboardMapOpen((value) => !value)}
+        requestTextInput={requestTextInput}
+      />
+    ),
+    [requestTextInput]
+  );
+  const titleBar = useMemo(
+    () => <TitleBarPanel requestTextInput={requestTextInput} />,
+    [requestTextInput]
   );
 
   return (
     <div className="app-root">
-      <FlexLayoutHost topBar={topBar} />
+      <FlexLayoutHost titleBar={titleBar} topBar={topBar} />
       <KeyboardMapModal open={keyboardMapOpen} onClose={() => setKeyboardMapOpen(false)} />
+      <TextInputModal
+        open={textInputRequest !== null}
+        title={textInputRequest?.title ?? ""}
+        label={textInputRequest?.label ?? ""}
+        initialValue={textInputRequest?.initialValue}
+        placeholder={textInputRequest?.placeholder}
+        confirmLabel={textInputRequest?.confirmLabel}
+        onConfirm={(value) => {
+          const request = textInputRequest;
+          setTextInputRequest(null);
+          request?.resolve(value.trim());
+        }}
+        onCancel={() => {
+          const request = textInputRequest;
+          setTextInputRequest(null);
+          request?.resolve(null);
+        }}
+      />
     </div>
   );
 }

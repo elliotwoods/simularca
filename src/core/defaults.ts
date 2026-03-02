@@ -30,30 +30,9 @@ export function createDefaultScene(): {
     actorIds: [],
     sceneComponentIds: []
   };
-
-  const root: ActorNode = {
-    id: createId("actor"),
-    name: "Root",
-    enabled: true,
-    kind: "actor",
-    actorType: "empty",
-    parentActorId: null,
-    childActorIds: [],
-    componentIds: [],
-    transform: {
-      position: [0, 0, 0],
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1]
-    },
-    params: {}
-  };
-
-  scene.actorIds.push(root.id);
   return {
     scene,
-    actors: {
-      [root.id]: root
-    }
+    actors: {}
   };
 }
 
@@ -75,11 +54,12 @@ export function createInitialState(mode: AppState["mode"], sessionName = "demo")
       drawCalls: 0,
       triangles: 0,
       memoryMb: 0,
-      actorCount: 1,
+      actorCount: 0,
       sessionFileBytes: 0
     },
     dirty: false,
-    statusMessage: "Ready"
+    statusMessage: "Ready",
+    consoleLogs: []
   };
 }
 
