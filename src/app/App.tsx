@@ -1,12 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
+import { importFileAsActor, listCompatibleActorFileImportOptions, type ActorFileImportOption } from "@/features/imports/actorFileImport";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
+import { FileImportModal } from "@/ui/components/FileImportModal";
 import { KeyboardMapModal } from "@/ui/components/KeyboardMapModal";
 import { TextInputModal } from "@/ui/components/TextInputModal";
+
+function dataTransferHasFiles(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) {
+    return false;
+  }
+  if (Array.from(dataTransfer.items ?? []).some((item) => item.kind === "file")) {
+    return true;
+  }
+  return Array.from(dataTransfer.types ?? []).includes("Files");
+}
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -20,7 +32,20 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 export function App() {
   const kernel = useKernel();
+  const dragDepthRef = useRef(0);
   const [keyboardMapOpen, setKeyboardMapOpen] = useState(false);
+  const [dragImportState, setDragImportState] = useState<{
+    fileName: string;
+    fileExtension: string;
+    sourcePath: string | null;
+    options: ActorFileImportOption[];
+  } | null>(null);
+  const [fileImportModalState, setFileImportModalState] = useState<{
+    fileName: string;
+    fileExtension: string;
+    sourcePath: string | null;
+    options: ActorFileImportOption[];
+  } | null>(null);
   const [textInputRequest, setTextInputRequest] = useState<{
     title: string;
     label: string;
@@ -30,6 +55,126 @@ export function App() {
     resolve: (value: string | null) => void;
   } | null>(null);
   const activeSessionName = useAppStore((store) => store.state.activeSessionName);
+  const mode = useAppStore((store) => store.state.mode);
+  const readOnly = mode === "web-ro";
+
+  const fileExtensionFromName = (fileName: string): string => {
+    const dotIndex = fileName.lastIndexOf(".");
+    if (dotIndex === -1) {
+      return "";
+    }
+    return fileName.slice(dotIndex).toLowerCase();
+  };
+
+  const createDragImportState = useCallback(
+    (file?: File | null) => {
+      if (!file) {
+        return {
+          fileName: "Pending file import",
+          fileExtension: "",
+          sourcePath: null,
+          options: [] as ActorFileImportOption[]
+        };
+      }
+      const fileName = file.name;
+      const fileExtension = fileExtensionFromName(fileName);
+      const sourcePath = (file as File & { path?: string }).path ?? null;
+      const options = listCompatibleActorFileImportOptions(kernel, fileName);
+      return {
+        fileName,
+        fileExtension,
+        sourcePath,
+        options
+      };
+    },
+    [kernel]
+  );
+
+  const performImport = useCallback(
+    async (input: { descriptorId: string; fileName: string; sourcePath: string | null }) => {
+      if (!input.sourcePath) {
+        kernel.store
+          .getState()
+          .actions.setStatus("Drag-and-drop import requires desktop (Electron) mode with local file path access.");
+        return;
+      }
+      try {
+        await importFileAsActor(kernel, {
+          descriptorId: input.descriptorId,
+          sourcePath: input.sourcePath,
+          fileName: input.fileName,
+          sessionName: activeSessionName
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown file import error";
+        kernel.store.getState().actions.setStatus(`Unable to import ${input.fileName}: ${message}`);
+      }
+    },
+    [activeSessionName, kernel]
+  );
+
+  const handleDragEnter = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly || !dataTransferHasFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      if (dragImportState) {
+        return;
+      }
+      const file = event.dataTransfer.files?.[0];
+      setDragImportState(createDragImportState(file));
+    },
+    [createDragImportState, dragImportState, readOnly]
+  );
+
+  const handleDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly || !dataTransferHasFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      if (!dragImportState) {
+        const file = event.dataTransfer.files?.[0];
+        setDragImportState(createDragImportState(file));
+      }
+    },
+    [createDragImportState, dragImportState, readOnly]
+  );
+
+  const handleDragLeave = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly || !dataTransferHasFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) {
+        setDragImportState(null);
+      }
+    },
+    [readOnly]
+  );
+
+  const handleRootDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly || !dataTransferHasFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      const droppedFile = event.dataTransfer.files?.[0];
+      const current = droppedFile ? createDragImportState(droppedFile) : dragImportState;
+      setDragImportState(null);
+      if (!current) {
+        return;
+      }
+      setFileImportModalState(current);
+    },
+    [createDragImportState, dragImportState, readOnly]
+  );
 
   const requestTextInput = useCallback(
     async (args: {
@@ -170,8 +315,44 @@ export function App() {
   );
 
   return (
-    <div className="app-root">
-      <FlexLayoutHost titleBar={titleBar} topBar={topBar} />
+    <div
+      className="app-root"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleRootDrop}
+    >
+      <FlexLayoutHost titleBar={titleBar} topBar={topBar} pendingDropFileName={dragImportState?.fileName ?? null} />
+      {dragImportState ? (
+        <div className="file-drop-overlay">
+          <div className="file-drop-overlay-head">
+            <h2>Drop File To Import</h2>
+            <p>{dragImportState.fileName || "Pending file import"}</p>
+            <small>Release anywhere to open the import picker.</small>
+          </div>
+        </div>
+      ) : null}
+      <FileImportModal
+        open={fileImportModalState !== null}
+        fileName={fileImportModalState?.fileName ?? ""}
+        fileExtension={fileImportModalState?.fileExtension ?? ""}
+        options={fileImportModalState?.options ?? []}
+        onConfirm={(descriptorId) => {
+          const state = fileImportModalState;
+          setFileImportModalState(null);
+          if (!state) {
+            return;
+          }
+          void performImport({
+            descriptorId,
+            fileName: state.fileName,
+            sourcePath: state.sourcePath
+          });
+        }}
+        onCancel={() => {
+          setFileImportModalState(null);
+        }}
+      />
       <KeyboardMapModal open={keyboardMapOpen} onClose={() => setKeyboardMapOpen(false)} />
       <TextInputModal
         open={textInputRequest !== null}

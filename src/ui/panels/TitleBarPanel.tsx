@@ -83,16 +83,31 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
       </div>
 
       <div className="titlebar-center titlebar-interactive">
-        <div className="titlebar-session" ref={menuRef}>
-          <button
-            type="button"
-            className="titlebar-session-trigger"
-            title="Switch session"
-            onClick={() => setSessionMenuOpen((value) => !value)}
-          >
-            Session: <strong>{state.activeSessionName}</strong>
-            {state.dirty ? <em>*</em> : null}
-          </button>
+        <div className="titlebar-session">
+          <div className="titlebar-session-row" ref={menuRef}>
+            <button
+              type="button"
+              className="titlebar-session-trigger"
+              title="Switch session"
+              onClick={() => setSessionMenuOpen((value) => !value)}
+            >
+              Session: <strong>{state.activeSessionName}</strong>
+              {state.dirty ? <em>*</em> : null}
+            </button>
+            {state.dirty ? (
+              <button
+                type="button"
+                className="titlebar-session-save-stale"
+                disabled={isReadOnly}
+                title="Save session"
+                onClick={() => {
+                  void kernel.sessionService.saveSession();
+                }}
+              >
+                <FontAwesomeIcon icon={faFloppyDisk} />
+              </button>
+            ) : null}
+          </div>
           {isSessionMenuOpen ? (
             <div className="titlebar-session-popover">
               <label>Active Session</label>

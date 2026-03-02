@@ -44,8 +44,28 @@ export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
         kind: "gaussian-splat"
       }
     },
+    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3 },
     { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01 },
     { key: "pointSize", label: "Point Size", type: "number", min: 0.001, max: 0.2, step: 0.001 }
+  ]
+};
+
+export const MESH_ACTOR_SCHEMA: ParameterSchema = {
+  id: "actor.mesh",
+  title: "Mesh",
+  params: [
+    {
+      key: "assetId",
+      label: "Mesh Asset",
+      type: "file",
+      accept: [".glb", ".gltf", ".fbx", ".dae", ".obj"],
+      dialogTitle: "Select mesh file",
+      import: {
+        mode: "import-asset",
+        kind: "generic"
+      }
+    },
+    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3 }
   ]
 };
 

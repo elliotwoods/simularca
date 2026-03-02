@@ -1,9 +1,19 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import type { AppKernel } from "@/app/kernel";
 import type { ActorNode } from "@/core/types";
+
+const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
+const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
+const MESH_RENDER_ROOT_NAME = "mesh-render-root";
+const SPLAT_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ");
+const SPLAT_COORDINATE_CORRECTION_QUATERNION = new THREE.Quaternion().setFromEuler(SPLAT_COORDINATE_CORRECTION_EULER);
 
 function formatLoadError(error: unknown): string {
   if (error instanceof Error) {
@@ -44,16 +54,63 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function readAttributeRange(attribute: any): { min: number; max: number } {
+  if (!attribute || typeof attribute.count !== "number" || attribute.count <= 0) {
+    return { min: 0, max: 0 };
+  }
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < attribute.count; i += 1) {
+    const value = attribute.getX(i);
+    if (value < min) {
+      min = value;
+    }
+    if (value > max) {
+      max = value;
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return { min: 0, max: 0 };
+  }
+  return { min, max };
+}
+
+function correctedBoundsForViewport(bounds: any): any {
+  const corners = [
+    new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+    new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+    new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+    new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+    new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+    new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+    new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+    new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z)
+  ];
+  for (const corner of corners) {
+    corner.applyQuaternion(SPLAT_COORDINATE_CORRECTION_QUATERNION);
+  }
+  return new THREE.Box3().setFromPoints(corners);
+}
+
 export class SceneController {
   public readonly scene = new THREE.Scene();
   private readonly actorObjects = new Map<string, any>();
   private readonly gaussianAssetByActorId = new Map<string, string>();
+  private readonly gaussianReloadTokenByActorId = new Map<string, number>();
+  private readonly meshAssetByActorId = new Map<string, string>();
+  private readonly meshReloadTokenByActorId = new Map<string, number>();
   private readonly gaussianBoundsHelpers = new Map<string, any>();
+  private readonly meshLoadTokenByActorId = new Map<string, number>();
   private readonly primitiveSignatureByActorId = new Map<string, string>();
   private readonly plyLoader = new PLYLoader();
+  private readonly gltfLoader = new GLTFLoader();
+  private readonly fbxLoader = new FBXLoader();
+  private readonly colladaLoader = new ColladaLoader();
+  private readonly objLoader = new OBJLoader();
   private readonly rgbeLoader = new RGBELoader();
   private readonly ktx2Loader = new KTX2Loader();
   private currentEnvironmentAssetId: string | null = null;
+  private currentEnvironmentReloadToken = 0;
   private renderGaussianSplatFallback = true;
 
   public constructor(private readonly kernel: AppKernel) {
@@ -82,12 +139,16 @@ export class SceneController {
         }
         this.actorObjects.delete(existing);
         this.gaussianAssetByActorId.delete(existing);
+        this.gaussianReloadTokenByActorId.delete(existing);
+        this.meshAssetByActorId.delete(existing);
+        this.meshReloadTokenByActorId.delete(existing);
+        this.meshLoadTokenByActorId.delete(existing);
         const helper = this.gaussianBoundsHelpers.get(existing);
         if (helper) {
           this.scene.remove(helper);
           this.gaussianBoundsHelpers.delete(existing);
         }
-        this.kernel.store.getState().actions.setSplatDiagnostics(existing, null);
+        this.kernel.store.getState().actions.setActorStatus(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
       }
     }
@@ -104,6 +165,9 @@ export class SceneController {
       await this.ensureActorObject(actor);
       if (actor.actorType === "gaussian-splat" && this.renderGaussianSplatFallback) {
         await this.syncGaussianSplatAsset(actor);
+      }
+      if (actor.actorType === "mesh") {
+        await this.syncMeshAsset(actor);
       }
       if (actor.actorType === "primitive") {
         this.syncPrimitiveActor(actor);
@@ -128,9 +192,24 @@ export class SceneController {
 
   private async createObjectForActor(actor: ActorNode): Promise<any> {
     if (actor.actorType === "gaussian-splat") {
-      const group = new THREE.Group();
-      group.name = "gaussian-splat-container";
-      return group;
+      const container = new THREE.Group();
+      container.name = "gaussian-splat-container";
+
+      const correctedRoot = new THREE.Group();
+      correctedRoot.name = GAUSSIAN_RENDER_ROOT_NAME;
+      correctedRoot.rotation.copy(SPLAT_COORDINATE_CORRECTION_EULER);
+
+      container.add(correctedRoot);
+      return container;
+    }
+
+    if (actor.actorType === "mesh") {
+      const container = new THREE.Group();
+      container.name = "mesh-container";
+      const renderRoot = new THREE.Group();
+      renderRoot.name = MESH_RENDER_ROOT_NAME;
+      container.add(renderRoot);
+      return container;
     }
 
     if (actor.actorType === "environment") {
@@ -237,13 +316,20 @@ export class SceneController {
     object.position.set(...actor.transform.position);
     object.rotation.set(...actor.transform.rotation);
     object.scale.set(...actor.transform.scale);
-    if (actor.actorType === "gaussian-splat" && object instanceof THREE.Points) {
-      const material = object.material;
-      if (material instanceof THREE.PointsMaterial) {
-        const opacity = Number(actor.params.opacity ?? 1);
-        const pointSize = Number(actor.params.pointSize ?? 0.02);
-        material.opacity = Number.isFinite(opacity) ? opacity : 1;
-        material.size = Number.isFinite(pointSize) ? pointSize : 0.02;
+    if (actor.actorType === "gaussian-splat" && object instanceof THREE.Group) {
+      const correctedRoot = object.getObjectByName(GAUSSIAN_RENDER_ROOT_NAME);
+      if (correctedRoot instanceof THREE.Group) {
+        const scaleFactor = Number(actor.params.scaleFactor ?? 1);
+        const safe = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+        correctedRoot.scale.setScalar(safe);
+      }
+    }
+    if (actor.actorType === "mesh" && object instanceof THREE.Group) {
+      const renderRoot = object.getObjectByName(MESH_RENDER_ROOT_NAME);
+      if (renderRoot instanceof THREE.Group) {
+        const scaleFactor = Number(actor.params.scaleFactor ?? 1);
+        const safe = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+        renderRoot.scale.setScalar(safe);
       }
     }
   }
@@ -253,27 +339,43 @@ export class SceneController {
     if (!(object instanceof THREE.Group)) {
       return;
     }
+    const correctedRoot = object.getObjectByName(GAUSSIAN_RENDER_ROOT_NAME);
+    if (!(correctedRoot instanceof THREE.Group)) {
+      return;
+    }
 
     const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+    const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
     const previousAssetId = this.gaussianAssetByActorId.get(actor.id) ?? "";
-    if (assetId === previousAssetId) {
+    const previousReloadToken = this.gaussianReloadTokenByActorId.get(actor.id) ?? 0;
+    if (assetId === previousAssetId && reloadToken === previousReloadToken) {
       return;
     }
     this.gaussianAssetByActorId.set(actor.id, assetId);
+    this.gaussianReloadTokenByActorId.set(actor.id, reloadToken);
     if (!assetId) {
-      this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, null);
-      object.geometry.dispose();
-      object.geometry = new THREE.BufferGeometry();
+      this.kernel.store.getState().actions.setActorStatus(actor.id, null);
+      const existing = correctedRoot.getObjectByName(GAUSSIAN_RENDER_MESH_NAME);
+      if (existing) {
+        correctedRoot.remove(existing);
+      }
+      const helper = this.gaussianBoundsHelpers.get(actor.id);
+      if (helper) {
+        correctedRoot.remove(helper);
+        this.gaussianBoundsHelpers.delete(actor.id);
+      }
       return;
     }
 
     const state = this.kernel.store.getState().state;
     const asset = state.assets.find((entry) => entry.id === assetId);
     if (!asset) {
-      this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
-        backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-        loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-        loaderVersion: THREE.REVISION,
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {
+          backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+          loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+          loaderVersion: THREE.REVISION
+        },
         error: "Asset reference not found in session state.",
         updatedAtIso: new Date().toISOString()
       });
@@ -291,23 +393,24 @@ export class SceneController {
         const position = geometry.getAttribute("position");
         const pointCount = position?.count ?? 0;
         const bounds = geometry.boundingBox;
-        const existing = object.getObjectByName("gaussian-splat-render");
+        const existing = correctedRoot.getObjectByName(GAUSSIAN_RENDER_MESH_NAME);
         if (existing) {
-          object.remove(existing);
+          correctedRoot.remove(existing);
         }
         const pointSize = Number(actor.params.pointSize ?? 0.02);
         const opacity = Number(actor.params.opacity ?? 1);
         const renderMesh = this.buildGaussianFallbackMesh(geometry, pointSize, opacity);
-        renderMesh.name = "gaussian-splat-render";
-        object.add(renderMesh);
+        renderMesh.name = GAUSSIAN_RENDER_MESH_NAME;
+        correctedRoot.add(renderMesh);
 
         if (bounds) {
-          const min = `${bounds.min.x.toFixed(3)}, ${bounds.min.y.toFixed(3)}, ${bounds.min.z.toFixed(3)}`;
-          const max = `${bounds.max.x.toFixed(3)}, ${bounds.max.y.toFixed(3)}, ${bounds.max.z.toFixed(3)}`;
+          const correctedBounds = correctedBoundsForViewport(bounds);
+          const min = `${correctedBounds.min.x.toFixed(3)}, ${correctedBounds.min.y.toFixed(3)}, ${correctedBounds.min.z.toFixed(3)}`;
+          const max = `${correctedBounds.max.x.toFixed(3)}, ${correctedBounds.max.y.toFixed(3)}, ${correctedBounds.max.z.toFixed(3)}`;
           const maxExtent = Math.max(
-            bounds.max.x - bounds.min.x,
-            bounds.max.y - bounds.min.y,
-            bounds.max.z - bounds.min.z
+            correctedBounds.max.x - correctedBounds.min.x,
+            correctedBounds.max.y - correctedBounds.min.y,
+            correctedBounds.max.z - correctedBounds.min.z
           );
           const suggestedPointSize = Math.max(0.02, Math.min(0.25, maxExtent / 1200));
           const currentPointSize = Number(actor.params.pointSize ?? 0.02);
@@ -318,37 +421,41 @@ export class SceneController {
           }
           let helper = this.gaussianBoundsHelpers.get(actor.id);
           if (!helper) {
-            helper = new THREE.Box3Helper(bounds.clone(), 0xff5bd6);
+            helper = new THREE.Box3Helper(correctedBounds.clone(), 0xff5bd6);
             this.gaussianBoundsHelpers.set(actor.id, helper);
-            this.scene.add(helper);
+            correctedRoot.add(helper);
           } else {
-            helper.box.copy(bounds);
+            helper.box.copy(correctedBounds);
           }
           this.kernel.store
             .getState()
             .actions.setStatus(
               `Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount} | bounds: [${min}] -> [${max}] | pointSize: ${Number(suggestedPointSize.toFixed(3))}`
             );
-          this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
-            backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-            loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-            loaderVersion: THREE.REVISION,
-            assetFileName: asset.sourceFileName,
-            pointCount,
-            boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
-            boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z],
+          this.kernel.store.getState().actions.setActorStatus(actor.id, {
+            values: {
+              backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+              loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+              loaderVersion: THREE.REVISION,
+              assetFileName: asset.sourceFileName,
+              pointCount,
+              boundsMin: [correctedBounds.min.x, correctedBounds.min.y, correctedBounds.min.z],
+              boundsMax: [correctedBounds.max.x, correctedBounds.max.y, correctedBounds.max.z]
+            },
             updatedAtIso: new Date().toISOString()
           });
         } else {
           this.kernel.store
             .getState()
             .actions.setStatus(`Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount}`);
-          this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
-            backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-            loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-            loaderVersion: THREE.REVISION,
-            assetFileName: asset.sourceFileName,
-            pointCount,
+          this.kernel.store.getState().actions.setActorStatus(actor.id, {
+            values: {
+              backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+              loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+              loaderVersion: THREE.REVISION,
+              assetFileName: asset.sourceFileName,
+              pointCount
+            },
             updatedAtIso: new Date().toISOString()
           });
         }
@@ -356,11 +463,13 @@ export class SceneController {
       undefined,
       (error) => {
         const errorMessage = formatLoadError(error);
-        this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
-          backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-          loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-          loaderVersion: THREE.REVISION,
-          assetFileName: asset.sourceFileName,
+        this.kernel.store.getState().actions.setActorStatus(actor.id, {
+          values: {
+            backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+            loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+            loaderVersion: THREE.REVISION,
+            assetFileName: asset.sourceFileName
+          },
           error: errorMessage,
           updatedAtIso: new Date().toISOString()
         });
@@ -369,6 +478,183 @@ export class SceneController {
           .actions.setStatus(`Gaussian splat load failed: ${asset.sourceFileName} (${errorMessage})`);
       }
     );
+  }
+
+  private async syncMeshAsset(actor: ActorNode): Promise<void> {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) {
+      return;
+    }
+    const renderRoot = object.getObjectByName(MESH_RENDER_ROOT_NAME);
+    if (!(renderRoot instanceof THREE.Group)) {
+      return;
+    }
+
+    const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+    const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+    const previousAssetId = this.meshAssetByActorId.get(actor.id) ?? "";
+    const previousReloadToken = this.meshReloadTokenByActorId.get(actor.id) ?? 0;
+    if (assetId === previousAssetId && reloadToken === previousReloadToken) {
+      return;
+    }
+    this.meshAssetByActorId.set(actor.id, assetId);
+    this.meshReloadTokenByActorId.set(actor.id, reloadToken);
+
+    renderRoot.clear();
+
+    if (!assetId) {
+      this.kernel.store.getState().actions.setActorStatus(actor.id, null);
+      return;
+    }
+
+    const state = this.kernel.store.getState().state;
+    const asset = state.assets.find((entry) => entry.id === assetId);
+    if (!asset) {
+      this.kernel.store.getState().actions.setStatus("Mesh asset reference not found in session state.");
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {},
+        error: "Asset reference not found in session state.",
+        updatedAtIso: new Date().toISOString()
+      });
+      return;
+    }
+
+    const extension = asset.relativePath.split(".").pop()?.toLowerCase() ?? "";
+    const url = await this.kernel.storage.resolveAssetPath({
+      sessionName: state.activeSessionName,
+      relativePath: asset.relativePath
+    });
+
+    const loadToken = (this.meshLoadTokenByActorId.get(actor.id) ?? 0) + 1;
+    this.meshLoadTokenByActorId.set(actor.id, loadToken);
+
+    const attachLoaded = (loadedObject: any) => {
+      if (this.meshLoadTokenByActorId.get(actor.id) !== loadToken) {
+        return;
+      }
+      renderRoot.clear();
+      renderRoot.add(loadedObject);
+      loadedObject.traverse((node: any) => {
+        if (node instanceof THREE.Mesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+          if (!Array.isArray(node.material) && node.material) {
+            node.material.needsUpdate = true;
+          }
+        }
+      });
+      const bounds = new THREE.Box3().setFromObject(loadedObject);
+      const size = new THREE.Vector3();
+      bounds.getSize(size);
+      let meshCount = 0;
+      let triangleCount = 0;
+      loadedObject.traverse((node: any) => {
+        if (!(node instanceof THREE.Mesh)) {
+          return;
+        }
+        meshCount += 1;
+        const geometry = node.geometry;
+        const indexCount = geometry?.index?.count;
+        const positionCount = geometry?.attributes?.position?.count;
+        if (typeof indexCount === "number" && indexCount > 0) {
+          triangleCount += Math.floor(indexCount / 3);
+          return;
+        }
+        if (typeof positionCount === "number" && positionCount > 0) {
+          triangleCount += Math.floor(positionCount / 3);
+        }
+      });
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {
+          format: extension || "unknown",
+          assetFileName: asset.sourceFileName,
+          meshCount,
+          triangleCount,
+          boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
+          boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z],
+          size: [size.x, size.y, size.z]
+        },
+        updatedAtIso: new Date().toISOString()
+      });
+      this.kernel.store
+        .getState()
+        .actions.setStatus(
+          `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size: ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}`
+        );
+    };
+
+    const onError = (error: unknown) => {
+      const message = formatLoadError(error);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {
+          format: extension || "unknown",
+          assetFileName: asset.sourceFileName
+        },
+        error: message,
+        updatedAtIso: new Date().toISOString()
+      });
+      this.kernel.store.getState().actions.setStatus(`Mesh load failed: ${asset.sourceFileName} (${message})`);
+    };
+
+    try {
+      if (extension === "glb" || extension === "gltf") {
+        this.gltfLoader.load(
+          url,
+          (result: any) => {
+            attachLoaded(result.scene);
+          },
+          undefined,
+          onError
+        );
+        return;
+      }
+      if (extension === "fbx") {
+        this.fbxLoader.load(
+          url,
+          (fbx: any) => {
+            attachLoaded(fbx);
+          },
+          undefined,
+          onError
+        );
+        return;
+      }
+      if (extension === "dae") {
+        this.colladaLoader.load(
+          url,
+          (collada: any) => {
+            attachLoaded(collada.scene);
+          },
+          undefined,
+          onError
+        );
+        return;
+      }
+      if (extension === "obj") {
+        this.objLoader.load(
+          url,
+          (obj: any) => {
+            attachLoaded(obj);
+          },
+          undefined,
+          onError
+        );
+        return;
+      }
+      this.kernel.store
+        .getState()
+        .actions.setStatus(`Unsupported mesh format: .${extension}. Supported: glb, gltf, fbx, dae, obj`);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {
+          format: extension || "unknown",
+          assetFileName: asset.sourceFileName
+        },
+        error: "Unsupported mesh format. Supported: glb, gltf, fbx, dae, obj",
+        updatedAtIso: new Date().toISOString()
+      });
+    } catch (error) {
+      onError(error);
+    }
   }
 
   private buildGaussianFallbackMesh(geometry: any, pointSize: number, opacity: number): any {
@@ -392,15 +678,26 @@ export class SceneController {
     const rot2 = getAttribute(geometry, ["rot_2", "qy"]);
     const rot3 = getAttribute(geometry, ["rot_3", "qz"]);
 
+    const scale0Range = readAttributeRange(scale0);
+    const scale1Range = readAttributeRange(scale1);
+    const scale2Range = readAttributeRange(scale2);
+    const useLogScale =
+      Boolean(scale0 && scale1 && scale2) &&
+      (scale0Range.min < 0 || scale1Range.min < 0 || scale2Range.min < 0);
+    const opacityRange = readAttributeRange(opacityAttr);
+    const opacityIsLogit = opacityRange.min < 0 || opacityRange.max > 1;
+
     const maxInstances = 50000;
     const stride = Math.max(1, Math.ceil(position.count / maxInstances));
     const instanceCount = Math.ceil(position.count / stride);
-    const baseRadius = Math.max(0.002, pointSize * 0.1);
+    const baseRadius = Math.max(0.002, pointSize * 0.08);
     const baseGeometry = new THREE.SphereGeometry(baseRadius, 6, 5);
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
+      depthWrite: false,
       opacity: Math.min(1, Math.max(0, opacity)),
+      blending: THREE.NormalBlending,
       vertexColors: Boolean(color || red || fdc0)
     });
     const mesh = new THREE.InstancedMesh(baseGeometry, material, instanceCount);
@@ -417,11 +714,14 @@ export class SceneController {
       translation.set(position.getX(index), position.getY(index), position.getZ(index));
 
       if (scale0 && scale1 && scale2) {
-        // 3DGS stores log-scales in many PLY exports.
-        const sx = Math.exp(scale0.getX(index));
-        const sy = Math.exp(scale1.getX(index));
-        const sz = Math.exp(scale2.getX(index));
-        const scaleFactor = Math.max(0.001, pointSize);
+        // Some exports store log-scales, others store linear dimensions.
+        const rawScaleX = scale0.getX(index);
+        const rawScaleY = scale1.getX(index);
+        const rawScaleZ = scale2.getX(index);
+        const sx = useLogScale ? Math.exp(rawScaleX) : Math.max(0.0001, rawScaleX);
+        const sy = useLogScale ? Math.exp(rawScaleY) : Math.max(0.0001, rawScaleY);
+        const sz = useLogScale ? Math.exp(rawScaleZ) : Math.max(0.0001, rawScaleZ);
+        const scaleFactor = useLogScale ? Math.max(0.001, pointSize) : Math.max(0.002, pointSize * 0.02);
         scale.set(
           Math.max(0.0005, sx * scaleFactor),
           Math.max(0.0005, sy * scaleFactor),
@@ -455,7 +755,8 @@ export class SceneController {
       }
 
       if (opacityAttr) {
-        const alpha = sigmoid(opacityAttr.getX(index));
+        const rawOpacity = opacityAttr.getX(index);
+        const alpha = opacityIsLogit ? sigmoid(rawOpacity) : clamp01(rawOpacity);
         tempColor.multiplyScalar(Math.max(0.08, alpha));
       }
 
@@ -484,12 +785,27 @@ export class SceneController {
     }
 
     const assetId = typeof environmentActor.params.assetId === "string" ? environmentActor.params.assetId : null;
-    if (!assetId || assetId === this.currentEnvironmentAssetId) {
+    const reloadToken =
+      typeof environmentActor.params.assetIdReloadToken === "number" ? environmentActor.params.assetIdReloadToken : 0;
+    if (!assetId || (assetId === this.currentEnvironmentAssetId && reloadToken === this.currentEnvironmentReloadToken)) {
+      if (!assetId) {
+        this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+          values: {
+            loadState: "idle"
+          },
+          updatedAtIso: new Date().toISOString()
+        });
+      }
       return;
     }
 
     const asset = state.assets.find((entry) => entry.id === assetId);
     if (!asset) {
+      this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+        values: {},
+        error: "Asset reference not found in session state.",
+        updatedAtIso: new Date().toISOString()
+      });
       return;
     }
     const url = await this.kernel.storage.resolveAssetPath({
@@ -506,9 +822,27 @@ export class SceneController {
           this.scene.environment = texture;
           this.scene.background = texture;
           this.currentEnvironmentAssetId = asset.id;
+          this.currentEnvironmentReloadToken = reloadToken;
+          this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+            values: {
+              format: "ktx2",
+              assetFileName: asset.sourceFileName,
+              loadState: "loaded"
+            },
+            updatedAtIso: new Date().toISOString()
+          });
         },
         undefined,
         () => {
+          this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+            values: {
+              format: "ktx2",
+              assetFileName: asset.sourceFileName,
+              loadState: "failed"
+            },
+            error: "KTX2 environment load failed. Ensure basis transcoders are available.",
+            updatedAtIso: new Date().toISOString()
+          });
           this.kernel.store.getState().actions.setStatus(
             "KTX2 environment load failed. Ensure basis transcoder files are available in /public/basis."
           );
@@ -524,9 +858,27 @@ export class SceneController {
         this.scene.environment = texture;
         this.scene.background = texture;
         this.currentEnvironmentAssetId = asset.id;
+        this.currentEnvironmentReloadToken = reloadToken;
+        this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+          values: {
+            format: extension ?? "hdr",
+            assetFileName: asset.sourceFileName,
+            loadState: "loaded"
+          },
+          updatedAtIso: new Date().toISOString()
+        });
       },
       undefined,
       () => {
+        this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+          values: {
+            format: extension ?? "hdr",
+            assetFileName: asset.sourceFileName,
+            loadState: "failed"
+          },
+          error: "Environment texture load failed.",
+          updatedAtIso: new Date().toISOString()
+        });
         this.kernel.store.getState().actions.setStatus("Environment texture load failed.");
       }
     );

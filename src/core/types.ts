@@ -3,7 +3,7 @@ import type { AppMode, HdriTranscodeOptions, SessionAssetRef } from "@/types/ipc
 export const SESSION_SCHEMA_VERSION = 1;
 
 export type SceneNodeKind = "scene" | "actor" | "component";
-export type ActorType = "empty" | "environment" | "gaussian-splat" | "primitive" | "plugin";
+export type ActorType = "empty" | "environment" | "gaussian-splat" | "mesh" | "primitive" | "plugin";
 export type CameraPreset = "perspective" | "top" | "left" | "front" | "back" | "isometric";
 export type TimeSpeedPreset = 0.125 | 0.25 | 0.5 | 1 | 2 | 4;
 export type SelectionKind = "actor" | "component";
@@ -160,14 +160,10 @@ export interface SceneStats {
   sessionFileBytes: number;
 }
 
-export interface SplatDiagnostics {
-  backend: "fallback-ply" | "dedicated-overlay" | "unknown";
-  loader: string;
-  loaderVersion?: string;
-  assetFileName?: string;
-  pointCount?: number;
-  boundsMin?: [number, number, number];
-  boundsMax?: [number, number, number];
+export type ActorStatusValue = string | number | boolean | [number, number, number];
+
+export interface ActorRuntimeStatus {
+  values: Record<string, ActorStatusValue | undefined>;
   error?: string;
   updatedAtIso: string;
 }
@@ -195,6 +191,6 @@ export interface AppState {
   dirty: boolean;
   statusMessage: string;
   consoleLogs: ConsoleLogEntry[];
-  splatDiagnosticsByActorId: Record<string, SplatDiagnostics>;
+  actorStatusByActorId: Record<string, ActorRuntimeStatus>;
 }
 

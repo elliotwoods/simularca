@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef } from "react";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faCopy } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import type { ActorNode, FileParameterDefinition, ParameterDefinition } from "@/core/types";
-import type { ReloadableDescriptor } from "@/core/hotReload/types";
+import type { ActorStatusEntry, ReloadableDescriptor } from "@/core/hotReload/types";
 import { importFileForActorParam } from "@/features/imports/fileParameterImport";
-import { FileField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
+import { DigitScrubInput, FileField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
 
 type BindingValue = number | string | boolean;
+const RAD_TO_DEG = 180 / Math.PI;
+const DEG_TO_RAD = Math.PI / 180;
 
 function resolveActorDescriptor(
   actor: ActorNode,
@@ -48,6 +52,31 @@ function getParameterDefinitions(actor: ActorNode, descriptors: ReloadableDescri
     return schemaParams;
   }
   return getFallbackDefinitionsFromParams(actor);
+}
+
+function getDefaultStatusEntries(actor: ActorNode): ActorStatusEntry[] {
+  return [
+    { label: "Type", value: actor.actorType },
+    { label: "Enabled", value: actor.enabled },
+    { label: "Children", value: actor.childActorIds.length },
+    { label: "Components", value: actor.componentIds.length }
+  ];
+}
+
+function formatStatusValue(value: ActorStatusEntry["value"]): string {
+  if (Array.isArray(value)) {
+    return `${value[0].toFixed(3)}, ${value[1].toFixed(3)}, ${value[2].toFixed(3)}`;
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(3).replace(/\.?0+$/, "");
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  if (value === null || value === undefined || value === "") {
+    return "n/a";
+  }
+  return value;
 }
 
 function defaultValueForDefinition(definition: ParameterDefinition): BindingValue {
@@ -97,6 +126,14 @@ function isMixedValue(values: BindingValue[]): boolean {
   return values.some((value) => value !== first);
 }
 
+function isMixedNumber(values: number[]): boolean {
+  const first = values[0];
+  if (first === undefined) {
+    return false;
+  }
+  return values.some((value) => Math.abs(value - first) > 1e-9);
+}
+
 function buildFileFilters(definition: FileParameterDefinition): { name: string; extensions: string[] }[] {
   const extensions = definition.accept
     .map((extension) => extension.trim().toLowerCase())
@@ -128,12 +165,13 @@ async function pickFileFromDialog(definition: FileParameterDefinition): Promise<
 
 export function InspectorPane() {
   const kernel = useKernel();
-  const selection = useAppStore((store) => store.state.selection);
-  const actors = useAppStore((store) => store.state.actors);
-  const assets = useAppStore((store) => store.state.assets);
-  const splatDiagnosticsByActorId = useAppStore((store) => store.state.splatDiagnosticsByActorId);
-  const mode = useAppStore((store) => store.state.mode);
-  const sessionName = useAppStore((store) => store.state.activeSessionName);
+  const appState = useAppStore((store) => store.state);
+  const selection = appState.selection;
+  const actors = appState.actors;
+  const assets = appState.assets;
+  const actorStatusByActorId = appState.actorStatusByActorId;
+  const mode = appState.mode;
+  const sessionName = appState.activeSessionName;
   const autosaveTimeoutRef = useRef<number | null>(null);
 
   const actorDescriptors = kernel.descriptorRegistry.listByKind("actor");
@@ -188,22 +226,151 @@ export function InspectorPane() {
     scheduleAutosave();
   };
 
+  const reloadSelectedActorFileParam = (key: string): void => {
+    const reloadKey = `${key}ReloadToken`;
+    let updatedCount = 0;
+    for (const actor of actorSelection) {
+      const value = actor.params[key];
+      if (typeof value !== "string" || value.length === 0) {
+        continue;
+      }
+      updatedCount += 1;
+      kernel.store.getState().actions.updateActorParams(actor.id, {
+        [reloadKey]: Date.now() + updatedCount
+      });
+    }
+    if (updatedCount > 0) {
+      scheduleAutosave();
+      kernel.store.getState().actions.setStatus(`Reload requested for ${updatedCount} file asset${updatedCount === 1 ? "" : "s"}.`);
+    }
+  };
+
+  const updateSelectedActorEnabled = (nextEnabled: boolean): void => {
+    for (const actor of actorSelection) {
+      kernel.store.getState().actions.setNodeEnabled({ kind: "actor", id: actor.id }, nextEnabled);
+    }
+    scheduleAutosave();
+  };
+
+  const updateSelectedActorTransformAxis = (
+    key: "position" | "rotation",
+    axisIndex: 0 | 1 | 2,
+    nextValue: number
+  ): void => {
+    for (const actor of actorSelection) {
+      const current = actor.transform[key];
+      const next: [number, number, number] = [current[0], current[1], current[2]];
+      next[axisIndex] = nextValue;
+      kernel.store.getState().actions.setActorTransform(actor.id, key, next);
+    }
+    scheduleAutosave();
+  };
+
   if (actorSelection.length === 0) {
     return <div className="inspector-empty">Select one or more actors/components</div>;
   }
 
-  if (definitions.length === 0) {
-    return <div className="inspector-empty">No common editable params in current selection</div>;
-  }
-
   const singleSelection = actorSelection.length === 1 ? actorSelection[0] : null;
-  const showSplatDiagnostics = singleSelection?.actorType === "gaussian-splat";
-  const splatDiagnostics = showSplatDiagnostics ? splatDiagnosticsByActorId[singleSelection.id] : undefined;
-  const formatVector = (vector?: [number, number, number]): string =>
-    vector ? `${vector[0].toFixed(3)}, ${vector[1].toFixed(3)}, ${vector[2].toFixed(3)}` : "n/a";
+  const descriptorForSingleSelection = singleSelection ? resolveActorDescriptor(singleSelection, actorDescriptors) : undefined;
+  const runtimeStatus = singleSelection ? actorStatusByActorId[singleSelection.id] : undefined;
+  const statusEntries = singleSelection
+    ? (descriptorForSingleSelection?.status?.build({
+        actor: singleSelection,
+        state: appState,
+        runtimeStatus
+      }) ?? getDefaultStatusEntries(singleSelection))
+    : [];
+  const visibleStatusEntries = statusEntries.filter(
+    (entry) => entry.value !== null && entry.value !== undefined && entry.value !== ""
+  );
+  const copyText = (value: string, label: string): void => {
+    void navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "Clipboard write failed";
+        kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
+      });
+  };
+
+  const enabledValues = actorSelection.map((actor) => actor.enabled);
+  const enabledMixed = enabledValues.some((value) => value !== enabledValues[0]);
+  const enabledValue = enabledValues[0] ?? true;
+
+  const positionValuesByAxis: [number[], number[], number[]] = [
+    actorSelection.map((actor) => actor.transform.position[0]),
+    actorSelection.map((actor) => actor.transform.position[1]),
+    actorSelection.map((actor) => actor.transform.position[2])
+  ];
+  const rotationValuesByAxis: [number[], number[], number[]] = [
+    actorSelection.map((actor) => actor.transform.rotation[0] * RAD_TO_DEG),
+    actorSelection.map((actor) => actor.transform.rotation[1] * RAD_TO_DEG),
+    actorSelection.map((actor) => actor.transform.rotation[2] * RAD_TO_DEG)
+  ];
 
   return (
     <div className="inspector-pane-root custom-inspector">
+      <section className="inspector-common-card">
+        <header>
+          <h4>Actor</h4>
+        </header>
+        <div className="inspector-common-grid">
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Enabled</span>
+            <ToggleField
+              label=""
+              checked={enabledValue}
+              mixed={enabledMixed}
+              disabled={readOnly}
+              embedded
+              onChange={(next) => updateSelectedActorEnabled(next)}
+            />
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Translate</span>
+            <div className="inspector-vector-inputs">
+              {([0, 1, 2] as const).map((axisIndex) => {
+                const values = positionValuesByAxis[axisIndex];
+                return (
+                  <div key={`pos-${axisIndex}`} className="inspector-vector-cell">
+                    <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
+                    <DigitScrubInput
+                      value={values[0] ?? 0}
+                      mixed={isMixedNumber(values)}
+                      precision={3}
+                      disabled={readOnly}
+                      onChange={(next) => updateSelectedActorTransformAxis("position", axisIndex, next)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Rotate (deg)</span>
+            <div className="inspector-vector-inputs">
+              {([0, 1, 2] as const).map((axisIndex) => {
+                const values = rotationValuesByAxis[axisIndex];
+                return (
+                  <div key={`rot-${axisIndex}`} className="inspector-vector-cell">
+                    <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
+                    <DigitScrubInput
+                      value={values[0] ?? 0}
+                      mixed={isMixedNumber(values)}
+                      precision={2}
+                      disabled={readOnly}
+                      onChange={(next) => updateSelectedActorTransformAxis("rotation", axisIndex, next * DEG_TO_RAD)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
+      {definitions.length === 0 ? <div className="inspector-empty">No common editable params in current selection</div> : null}
       {definitions.map((definition) => {
         const values = actorSelection.map((actor) => bindingValueFor(definition, actor));
         const mixed = isMixedValue(values);
@@ -301,6 +468,9 @@ export function InspectorPane() {
                   }
                 })();
               }}
+              onReload={() => {
+                reloadSelectedActorFileParam(definition.key);
+              }}
               onClear={() => {
                 updateSelectedActorParams(definition.key, "");
                 kernel.store.getState().actions.setStatus(`${definition.label} cleared.`);
@@ -322,53 +492,42 @@ export function InspectorPane() {
           />
         );
       })}
-      {showSplatDiagnostics ? (
+      {singleSelection ? (
         <section className="inspector-debug-card">
-          <header>
-            <h4>Gaussian Splat Diagnostics</h4>
+          <header className="inspector-card-header">
+            <h4>Status</h4>
+            <button
+              type="button"
+              className="inspector-copy-button"
+              title="Copy panel contents"
+              onClick={() => {
+                const lines = ["Status", ...visibleStatusEntries.map((entry) => `${entry.label}: ${formatStatusValue(entry.value)}`)];
+                copyText(lines.join("\n"), "Status");
+              }}
+            >
+              <FontAwesomeIcon icon={faCopy} />
+            </button>
           </header>
-          {!splatDiagnostics ? (
-            <p className="panel-empty">Diagnostics unavailable. Load a splat asset to populate stats.</p>
+          {visibleStatusEntries.length === 0 ? (
+            <p className="panel-empty">No status available.</p>
           ) : (
             <dl className="inspector-debug-list">
-              <div>
-                <dt>Backend</dt>
-                <dd>{splatDiagnostics.backend}</dd>
-              </div>
-              <div>
-                <dt>Loader</dt>
-                <dd>{splatDiagnostics.loader}</dd>
-              </div>
-              <div>
-                <dt>Loader Version</dt>
-                <dd>{splatDiagnostics.loaderVersion ?? "n/a"}</dd>
-              </div>
-              <div>
-                <dt>Asset</dt>
-                <dd>{splatDiagnostics.assetFileName ?? "n/a"}</dd>
-              </div>
-              <div>
-                <dt>Point Count</dt>
-                <dd>{splatDiagnostics.pointCount?.toLocaleString() ?? "n/a"}</dd>
-              </div>
-              <div>
-                <dt>Bounds Min</dt>
-                <dd>{formatVector(splatDiagnostics.boundsMin)}</dd>
-              </div>
-              <div>
-                <dt>Bounds Max</dt>
-                <dd>{formatVector(splatDiagnostics.boundsMax)}</dd>
-              </div>
-              <div>
-                <dt>Last Update</dt>
-                <dd>{new Date(splatDiagnostics.updatedAtIso).toLocaleString()}</dd>
-              </div>
-              {splatDiagnostics.error ? (
-                <div>
-                  <dt>Error</dt>
-                  <dd className="inspector-debug-error">{splatDiagnostics.error}</dd>
+              {visibleStatusEntries.map((entry) => (
+                <div key={entry.label}>
+                  <dt>{entry.label}</dt>
+                  <dd
+                    className={
+                      entry.tone === "error"
+                        ? "inspector-debug-error"
+                        : entry.tone === "warning"
+                          ? "inspector-debug-warning"
+                          : undefined
+                    }
+                  >
+                    {formatStatusValue(entry.value)}
+                  </dd>
                 </div>
-              ) : null}
+              ))}
             </dl>
           )}
         </section>

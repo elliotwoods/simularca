@@ -1,5 +1,5 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faCircleInfo, faFolderOpen, faTrashCan, faFile } from "@fortawesome/free-solid-svg-icons";
+import { faCircleInfo, faFolderOpen, faTrashCan, faFile, faRotateRight } from "@fortawesome/free-solid-svg-icons";
 import type { SessionAssetRef } from "@/types/ipc";
 import { InspectorFieldRow } from "@/ui/widgets/InspectorFieldRow";
 
@@ -11,6 +11,7 @@ interface FileFieldProps {
   asset?: SessionAssetRef;
   disabled?: boolean;
   onBrowse: () => void;
+  onReload: () => void;
   onClear: () => void;
 }
 
@@ -75,6 +76,15 @@ export function FileField(props: FileFieldProps) {
           <button type="button" className="widget-file-btn" disabled={props.disabled} onClick={props.onBrowse}>
             <FontAwesomeIcon icon={faFolderOpen} />
             <span>Browse</span>
+          </button>
+          <button
+            type="button"
+            className="widget-file-btn"
+            disabled={props.disabled || !hasValue}
+            onClick={props.onReload}
+          >
+            <FontAwesomeIcon icon={faRotateRight} />
+            <span>Reload</span>
           </button>
           <button
             type="button"

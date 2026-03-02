@@ -43,6 +43,7 @@ export interface ElectronApi {
   }): Promise<SessionAssetRef>;
   deleteAsset(args: { sessionName: string; relativePath: string }): Promise<void>;
   resolveAssetPath(args: { sessionName: string; relativePath: string }): Promise<string>;
+  readAssetBytes(args: { sessionName: string; relativePath: string }): Promise<Uint8Array>;
   openFileDialog(args: { title?: string; filters?: FileDialogFilter[] }): Promise<string | null>;
   logRuntimeError(payload: Record<string, unknown>): void;
   getWindowState(): Promise<{ isMaximized: boolean }>;

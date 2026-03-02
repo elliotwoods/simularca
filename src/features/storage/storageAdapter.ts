@@ -25,5 +25,6 @@ export interface StorageAdapter {
   }): Promise<SessionAssetRef>;
   deleteAsset(args: { sessionName: string; relativePath: string }): Promise<void>;
   resolveAssetPath(args: { sessionName: string; relativePath: string }): Promise<string>;
+  readAssetBytes(args: { sessionName: string; relativePath: string }): Promise<Uint8Array>;
 }
 

@@ -6,7 +6,7 @@ import { SceneController } from "./sceneController";
 import type { SplatOverlayActorState, SplatOverlayHandle } from "./splatOverlay";
 import { DedicatedGaussianSplatOverlay, NoopSplatOverlay } from "./splatOverlay";
 
-const ENABLE_DEDICATED_SPLAT_OVERLAY = false;
+const ENABLE_DEDICATED_SPLAT_OVERLAY = true;
 
 export class WebGpuViewport {
   private readonly renderer: WebGPURenderer;
@@ -22,6 +22,8 @@ export class WebGpuViewport {
   private lastAppliedCameraSignature = "";
   private lastSplatSignature = "";
   private readonly assetUrlCache = new Map<string, string>();
+  private readonly blobAssetUrls = new Set<string>();
+  private dedicatedOverlayError: string | null = null;
   private splatSyncInFlight = false;
   private cachedSessionName = "";
   private started = false;
@@ -102,6 +104,7 @@ export class WebGpuViewport {
     }
     this.controls.dispose();
     this.splatOverlay.dispose();
+    this.revokeBlobAssetUrls();
     if (this.initialized) {
       try {
         this.renderer.dispose();
@@ -144,19 +147,27 @@ export class WebGpuViewport {
     if (!("WebGL2RenderingContext" in window)) {
       return;
     }
-    const overlay = new DedicatedGaussianSplatOverlay((message) => {
+    const overlay = new DedicatedGaussianSplatOverlay(this.mountEl, (message) => {
       this.kernel.store.getState().actions.setStatus(message);
     });
     try {
       await overlay.initialize();
       this.splatOverlay = overlay;
       this.sceneController.setGaussianSplatFallbackEnabled(false);
+      this.dedicatedOverlayError = null;
+      this.splatOverlay.setCamera(this.activeCamera);
       this.splatOverlay.setSize(this.mountEl.clientWidth, this.mountEl.clientHeight);
       this.kernel.store.getState().actions.setStatus("Dedicated Gaussian splat overlay enabled.");
     } catch (error) {
       this.splatOverlay = new NoopSplatOverlay();
       this.sceneController.setGaussianSplatFallbackEnabled(true);
       const reason = error instanceof Error ? error.message : "Unknown reason";
+      this.dedicatedOverlayError = reason;
+      this.kernel.store.getState().actions.addLog({
+        level: "error",
+        message: "Dedicated Gaussian splat overlay unavailable",
+        details: reason
+      });
       this.kernel.store
         .getState()
         .actions.setStatus(`Dedicated Gaussian splat overlay unavailable, fallback enabled. ${reason}`);
@@ -250,6 +261,7 @@ export class WebGpuViewport {
     const state = this.kernel.store.getState().state;
     if (state.activeSessionName !== this.cachedSessionName) {
       this.cachedSessionName = state.activeSessionName;
+      this.revokeBlobAssetUrls();
       this.assetUrlCache.clear();
       this.lastSplatSignature = "";
     }
@@ -257,17 +269,46 @@ export class WebGpuViewport {
       .filter((actor) => actor.actorType === "gaussian-splat" && actor.enabled)
       .map((actor) => {
         const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+        const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+        const scaleFactor = Number(actor.params.scaleFactor ?? 1);
+        const safeScaleFactor = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
         return {
           actorId: actor.id,
           assetId,
+          reloadToken,
           opacity: Number(actor.params.opacity ?? 1),
           pointSize: Number(actor.params.pointSize ?? 0.02),
-          transform: actor.transform
+          transform: {
+            ...actor.transform,
+            scale: [
+              actor.transform.scale[0] * safeScaleFactor,
+              actor.transform.scale[1] * safeScaleFactor,
+              actor.transform.scale[2] * safeScaleFactor
+            ] as [number, number, number]
+          }
         };
       })
       .filter((actor) => actor.assetId.length > 0);
 
     const signature = JSON.stringify(candidates);
+    if (!this.splatOverlay.isDedicatedRenderer && this.dedicatedOverlayError) {
+      for (const candidate of candidates) {
+        const existingStatus = state.actorStatusByActorId[candidate.actorId];
+        this.kernel.store.getState().actions.setActorStatus(candidate.actorId, {
+          values: {
+            backend: "fallback-ply",
+            loader: "three/examples/jsm/loaders/PLYLoader",
+            loaderVersion: existingStatus?.values.loaderVersion ?? THREE.REVISION,
+            assetFileName: existingStatus?.values.assetFileName,
+            pointCount: existingStatus?.values.pointCount,
+            boundsMin: existingStatus?.values.boundsMin as [number, number, number] | undefined,
+            boundsMax: existingStatus?.values.boundsMax as [number, number, number] | undefined
+          },
+          error: `Dedicated overlay unavailable: ${this.dedicatedOverlayError}`,
+          updatedAtIso: new Date().toISOString()
+        });
+      }
+    }
     if (signature === this.lastSplatSignature) {
       return;
     }
@@ -286,6 +327,17 @@ export class WebGpuViewport {
             sessionName: state.activeSessionName,
             relativePath: asset.relativePath
           });
+          if (this.splatOverlay.isDedicatedRenderer && assetUrl.startsWith("simularcaasset://")) {
+            const bytes = await this.kernel.storage.readAssetBytes({
+              sessionName: state.activeSessionName,
+              relativePath: asset.relativePath
+            });
+            const normalizedBytes = new Uint8Array(bytes.byteLength);
+            normalizedBytes.set(bytes);
+            const blobUrl = URL.createObjectURL(new Blob([normalizedBytes.buffer], { type: "application/octet-stream" }));
+            this.blobAssetUrls.add(blobUrl);
+            assetUrl = blobUrl;
+          }
           this.assetUrlCache.set(candidate.assetId, assetUrl);
         }
         actors.push({
@@ -299,9 +351,31 @@ export class WebGpuViewport {
       }
       await this.splatOverlay.syncActors(actors);
       this.lastSplatSignature = signature;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.kernel.store.getState().actions.addLog({
+        level: "error",
+        message: "Dedicated Gaussian splat sync failed",
+        details: reason
+      });
+      this.kernel.store.getState().actions.setStatus(`Dedicated Gaussian splat sync failed, fallback enabled. ${reason}`);
+      this.dedicatedOverlayError = reason;
+      if (this.splatOverlay.isDedicatedRenderer) {
+        this.splatOverlay.dispose();
+        this.splatOverlay = new NoopSplatOverlay();
+        this.sceneController.setGaussianSplatFallbackEnabled(true);
+      }
+      this.lastSplatSignature = signature;
     } finally {
       this.splatSyncInFlight = false;
     }
+  }
+
+  private revokeBlobAssetUrls(): void {
+    for (const blobUrl of this.blobAssetUrls) {
+      URL.revokeObjectURL(blobUrl);
+    }
+    this.blobAssetUrls.clear();
   }
 }
 

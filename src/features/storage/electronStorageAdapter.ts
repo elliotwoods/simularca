@@ -17,7 +17,8 @@ export function createElectronStorageAdapter(): StorageAdapter {
     importAsset: (args) => window.electronAPI!.importAsset(args),
     transcodeHdriToKtx2: (args) => window.electronAPI!.transcodeHdriToKtx2(args),
     deleteAsset: (args) => window.electronAPI!.deleteAsset(args),
-    resolveAssetPath: (args) => window.electronAPI!.resolveAssetPath(args)
+    resolveAssetPath: (args) => window.electronAPI!.resolveAssetPath(args),
+    readAssetBytes: (args) => window.electronAPI!.readAssetBytes(args)
   };
 }
 

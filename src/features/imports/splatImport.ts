@@ -19,6 +19,7 @@ export async function importGaussianSplat(kernel: AppKernel, request: SplatImpor
   }
   kernel.store.getState().actions.updateActorParams(actorId, {
     assetId: asset.id,
+    scaleFactor: 1,
     opacity: 1,
     pointSize: 0.02
   });

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -11,7 +11,12 @@ const IS_DEV = Boolean(DEV_SERVER_URL);
 const DEFAULTS_FILE_NAME = "defaults.json";
 const SESSION_FILE_NAME = "session.json";
 const RUNTIME_LOG_FILE_NAME = "electron-runtime.log";
+const WINDOW_STATE_FILE_NAME = "window-state.json";
 const ASSET_PROTOCOL = "simularcaasset";
+const DEFAULT_WINDOW_WIDTH = 1680;
+const DEFAULT_WINDOW_HEIGHT = 960;
+const MIN_WINDOW_WIDTH = 1200;
+const MIN_WINDOW_HEIGHT = 720;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -79,6 +84,85 @@ function getSaveDataRoot(): string {
 
 function getSessionDirectory(sessionName: string): string {
   return path.join(getSaveDataRoot(), sessionName);
+}
+
+interface PersistedWindowState {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  isMaximized?: boolean;
+}
+
+function getWindowStateFilePath(): string {
+  return path.join(getSaveDataRoot(), WINDOW_STATE_FILE_NAME);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function clampWindowDimension(value: number, min: number): number {
+  return Math.max(min, Math.floor(value));
+}
+
+function readPersistedWindowState(): PersistedWindowState | null {
+  const filePath = getWindowStateFilePath();
+  try {
+    if (!fsSync.existsSync(filePath)) {
+      return null;
+    }
+    const raw = fsSync.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<PersistedWindowState>;
+    if (!isFiniteNumber(parsed.width) || !isFiniteNumber(parsed.height)) {
+      return null;
+    }
+    const next: PersistedWindowState = {
+      width: clampWindowDimension(parsed.width, MIN_WINDOW_WIDTH),
+      height: clampWindowDimension(parsed.height, MIN_WINDOW_HEIGHT)
+    };
+    if (isFiniteNumber(parsed.x)) {
+      next.x = Math.floor(parsed.x);
+    }
+    if (isFiniteNumber(parsed.y)) {
+      next.y = Math.floor(parsed.y);
+    }
+    if (typeof parsed.isMaximized === "boolean") {
+      next.isMaximized = parsed.isMaximized;
+    }
+    return next;
+  } catch (error) {
+    void writeRuntimeLog("window", "Failed to read persisted window state", error);
+    return null;
+  }
+}
+
+function isWindowBoundsVisible(state: PersistedWindowState): boolean {
+  if (!isFiniteNumber(state.x) || !isFiniteNumber(state.y)) {
+    return true;
+  }
+  const bounds = {
+    x: state.x,
+    y: state.y,
+    width: state.width,
+    height: state.height
+  };
+  const display = screen.getDisplayMatching(bounds);
+  return (
+    bounds.x < display.bounds.x + display.bounds.width &&
+    bounds.x + bounds.width > display.bounds.x &&
+    bounds.y < display.bounds.y + display.bounds.height &&
+    bounds.y + bounds.height > display.bounds.y
+  );
+}
+
+function persistWindowState(state: PersistedWindowState): void {
+  try {
+    fsSync.mkdirSync(getSaveDataRoot(), { recursive: true });
+    fsSync.writeFileSync(getWindowStateFilePath(), JSON.stringify(state, null, 2), "utf8");
+  } catch (error) {
+    void writeRuntimeLog("window", "Failed to persist window state", error);
+  }
 }
 
 function getSessionFile(sessionName: string): string {
@@ -211,11 +295,15 @@ async function runToktx({
 }
 
 function createWindow(): BrowserWindow {
+  const persisted = readPersistedWindowState();
+  const usePersistedBounds = persisted && isWindowBoundsVisible(persisted);
   const mainWindow = new BrowserWindow({
-    width: 1680,
-    height: 960,
-    minWidth: 1200,
-    minHeight: 720,
+    width: usePersistedBounds ? persisted.width : DEFAULT_WINDOW_WIDTH,
+    height: usePersistedBounds ? persisted.height : DEFAULT_WINDOW_HEIGHT,
+    x: usePersistedBounds && isFiniteNumber(persisted.x) ? persisted.x : undefined,
+    y: usePersistedBounds && isFiniteNumber(persisted.y) ? persisted.y : undefined,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     frame: false,
     backgroundColor: "#0a0f17",
     autoHideMenuBar: true,
@@ -282,6 +370,27 @@ function createWindow(): BrowserWindow {
     void writeRuntimeLog("window", "BrowserWindow closed");
   });
 
+  let persistTimeout: ReturnType<typeof setTimeout> | null = null;
+  const persistCurrentWindowState = () => {
+    const normalBounds = mainWindow.isMaximized() ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+    persistWindowState({
+      width: clampWindowDimension(normalBounds.width, MIN_WINDOW_WIDTH),
+      height: clampWindowDimension(normalBounds.height, MIN_WINDOW_HEIGHT),
+      x: Math.floor(normalBounds.x),
+      y: Math.floor(normalBounds.y),
+      isMaximized: mainWindow.isMaximized()
+    });
+  };
+  const queuePersistWindowState = () => {
+    if (persistTimeout) {
+      clearTimeout(persistTimeout);
+    }
+    persistTimeout = setTimeout(() => {
+      persistCurrentWindowState();
+      persistTimeout = null;
+    }, 150);
+  };
+
   const pushWindowState = () => {
     mainWindow.webContents.send("window:state", {
       isMaximized: mainWindow.isMaximized()
@@ -291,9 +400,18 @@ function createWindow(): BrowserWindow {
   mainWindow.on("unmaximize", pushWindowState);
   mainWindow.on("enter-full-screen", pushWindowState);
   mainWindow.on("leave-full-screen", pushWindowState);
+  mainWindow.on("maximize", queuePersistWindowState);
+  mainWindow.on("unmaximize", queuePersistWindowState);
+  mainWindow.on("moved", queuePersistWindowState);
+  mainWindow.on("resized", queuePersistWindowState);
+  mainWindow.on("close", persistCurrentWindowState);
   mainWindow.webContents.once("did-finish-load", () => {
     pushWindowState();
   });
+
+  if (persisted?.isMaximized) {
+    mainWindow.maximize();
+  }
 
   if (IS_DEV && DEV_SERVER_URL) {
     void mainWindow.loadURL(DEV_SERVER_URL).catch((error) => {
@@ -579,6 +697,25 @@ function registerIpcHandlers(): void {
         .map((part) => encodeURIComponent(part))
         .join("/");
       return `${ASSET_PROTOCOL}://${encodedSession}/${encodedPath}`;
+    }
+  );
+
+  ipcMain.handle(
+    "asset:read-bytes",
+    async (
+      _event,
+      args: {
+        sessionName: string;
+        relativePath: string;
+      }
+    ) => {
+      const sessionRoot = path.resolve(getSessionDirectory(args.sessionName));
+      const absolutePath = path.resolve(sessionRoot, args.relativePath);
+      if (!absolutePath.startsWith(sessionRoot)) {
+        throw new Error("Invalid asset path");
+      }
+      const bytes = await fs.readFile(absolutePath);
+      return Uint8Array.from(bytes);
     }
   );
 }

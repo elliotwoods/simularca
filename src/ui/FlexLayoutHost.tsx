@@ -166,6 +166,7 @@ function persistLayoutConfig(model: Model): void {
 interface FlexLayoutHostProps {
   titleBar: React.ReactNode;
   topBar: React.ReactNode;
+  pendingDropFileName?: string | null;
 }
 
 export function FlexLayoutHost(props: FlexLayoutHostProps) {
@@ -175,7 +176,7 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
     const component = node.getComponent();
     switch (component) {
       case "left":
-        return <LeftPanel />;
+        return <LeftPanel pendingDropFileName={props.pendingDropFileName} />;
       case "center":
         return <ViewportPanel />;
       case "right":

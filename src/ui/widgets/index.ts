@@ -1,3 +1,4 @@
+export { DigitScrubInput } from "@/ui/widgets/DigitScrubInput";
 export { FileField } from "@/ui/widgets/FileField";
 export { InspectorFieldRow } from "@/ui/widgets/InspectorFieldRow";
 export { NumberField } from "@/ui/widgets/NumberField";

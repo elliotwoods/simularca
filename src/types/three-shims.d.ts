@@ -53,6 +53,50 @@ declare module "three/examples/jsm/loaders/KTX2Loader.js" {
   }
 }
 
+declare module "three/examples/jsm/loaders/GLTFLoader.js" {
+  export class GLTFLoader {
+    public load(
+      url: string,
+      onLoad: (result: { scene: any }) => void,
+      onProgress?: (event: ProgressEvent<EventTarget>) => void,
+      onError?: (event: unknown) => void
+    ): void;
+  }
+}
+
+declare module "three/examples/jsm/loaders/FBXLoader.js" {
+  export class FBXLoader {
+    public load(
+      url: string,
+      onLoad: (object: any) => void,
+      onProgress?: (event: ProgressEvent<EventTarget>) => void,
+      onError?: (event: unknown) => void
+    ): void;
+  }
+}
+
+declare module "three/examples/jsm/loaders/ColladaLoader.js" {
+  export class ColladaLoader {
+    public load(
+      url: string,
+      onLoad: (result: { scene: any }) => void,
+      onProgress?: (event: ProgressEvent<EventTarget>) => void,
+      onError?: (event: unknown) => void
+    ): void;
+  }
+}
+
+declare module "three/examples/jsm/loaders/OBJLoader.js" {
+  export class OBJLoader {
+    public load(
+      url: string,
+      onLoad: (object: any) => void,
+      onProgress?: (event: ProgressEvent<EventTarget>) => void,
+      onError?: (event: unknown) => void
+    ): void;
+  }
+}
+
 declare module "three/webgpu" {
   export class WebGPURenderer {
     public domElement: HTMLCanvasElement;
@@ -68,5 +112,17 @@ declare module "three/webgpu" {
     public render(scene: any, camera: any): void;
     public dispose(): void;
   }
+}
+
+declare module "@mkkellogg/gaussian-splats-3d" {
+  export const Viewer: new (...args: any[]) => any;
+  const mod: any;
+  export default mod;
+}
+
+declare module "@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js" {
+  export const Viewer: new (...args: any[]) => any;
+  const mod: any;
+  export default mod;
 }
 

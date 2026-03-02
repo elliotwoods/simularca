@@ -61,7 +61,11 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
   );
 }
 
-export function SceneTree() {
+interface SceneTreeProps {
+  pendingDropFileName?: string | null;
+}
+
+export function SceneTree(props: SceneTreeProps) {
   const kernel = useKernel();
   const actorIds = useAppStore((store) => store.state.scene.actorIds);
   const actors = useAppStore((store) => store.state.actors);
@@ -78,6 +82,12 @@ export function SceneTree() {
 
   return (
     <div className="scene-tree-root" onDrop={onDropRoot} onDragOver={(event) => event.preventDefault()}>
+      {props.pendingDropFileName ? (
+        <div className="scene-tree-import-placeholder" title="A file is currently being dragged for import.">
+          <span className="scene-tree-import-dot">+</span>
+          <span className="scene-tree-import-text">Pending Import: {props.pendingDropFileName}</span>
+        </div>
+      ) : null}
       {rootActors.map((actor) => (
         <ActorItem key={actor.id} actor={actor} depth={0} />
       ))}

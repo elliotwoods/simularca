@@ -98,6 +98,10 @@ Build a pre-visualization simulation environment for kinetic artworks with a lar
   - copy into session assets
   - dedicated splat renderer overlay path when optional module is installed
   - automatic fallback to built-in point cloud renderer when unavailable
+- `Mesh` actor:
+  - local import (`.glb`, `.gltf`, `.fbx`, `.dae`, `.obj`)
+  - copy into session assets
+  - runtime loading via format-specific Three.js loaders
 - `Plugin` actor:
   - formal API registration with stub runtime in phase 1.
 
@@ -109,6 +113,8 @@ Build a pre-visualization simulation environment for kinetic artworks with a lar
   - transcode to KTX2 (`toktx` toolchain)
 - Gaussian import:
   - `.ply` copy and runtime loading path
+- Mesh import:
+  - `.glb/.gltf/.fbx/.dae/.obj` copy and runtime loading path
 
 ## 13. Hot Reload Requirements
 - Avoid full refresh for most renderer-side code changes.

@@ -56,7 +56,7 @@ export interface AppActions {
   loadCameraBookmark(id: string): void;
   removeCameraBookmark(id: string): void;
   setStats(stats: Partial<SceneStats>): void;
-  setSplatDiagnostics(actorId: string, diagnostics: AppState["splatDiagnosticsByActorId"][string] | null): void;
+  setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
 }
 
 export interface AppStore {
@@ -118,7 +118,7 @@ function removeActorRecursive(state: AppState, actorId: string): void {
   }
 
   delete state.actors[actorId];
-  delete state.splatDiagnosticsByActorId[actorId];
+  delete state.actorStatusByActorId[actorId];
   state.selection = state.selection.filter((entry) => entry.id !== actorId);
 }
 
@@ -522,14 +522,14 @@ export function createAppStore(mode: AppMode): AppStoreApi {
           })
         });
       },
-      setSplatDiagnostics(actorId, diagnostics) {
+      setActorStatus(actorId, status) {
         set({
           state: produce(get().state, (draft) => {
-            if (diagnostics === null) {
-              delete draft.splatDiagnosticsByActorId[actorId];
+            if (status === null) {
+              delete draft.actorStatusByActorId[actorId];
               return;
             }
-            draft.splatDiagnosticsByActorId[actorId] = diagnostics;
+            draft.actorStatusByActorId[actorId] = status;
           })
         });
       }

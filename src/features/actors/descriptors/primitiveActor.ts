@@ -18,7 +18,8 @@ export const primitiveActorDescriptor: ReloadableDescriptor<PrimitiveRuntime> = 
     actorType: "primitive",
     label: "Primitive",
     description: "Simple analytic mesh actor (cube/sphere/torus/etc).",
-    iconGlyph: "PRM"
+    iconGlyph: "PRM",
+    fileExtensions: []
   },
   createRuntime: ({ params }) => ({
     shape: typeof params.shape === "string" ? params.shape : "cube",
@@ -33,5 +34,17 @@ export const primitiveActorDescriptor: ReloadableDescriptor<PrimitiveRuntime> = 
     runtime.segments = typeof params.segments === "number" ? params.segments : runtime.segments;
     runtime.color = typeof params.color === "string" ? params.color : runtime.color;
     runtime.wireframe = typeof params.wireframe === "boolean" ? params.wireframe : runtime.wireframe;
+  },
+  status: {
+    build({ actor }) {
+      return [
+        { label: "Type", value: "Primitive" },
+        { label: "Shape", value: typeof actor.params.shape === "string" ? actor.params.shape : "cube" },
+        { label: "Size", value: typeof actor.params.size === "number" ? actor.params.size : 1 },
+        { label: "Segments", value: typeof actor.params.segments === "number" ? actor.params.segments : 24 },
+        { label: "Color", value: typeof actor.params.color === "string" ? actor.params.color : "#4fb3ff" },
+        { label: "Wireframe", value: Boolean(actor.params.wireframe) }
+      ];
+    }
   }
 };

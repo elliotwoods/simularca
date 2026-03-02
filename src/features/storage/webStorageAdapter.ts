@@ -46,7 +46,10 @@ export function createWebStorageAdapter(): StorageAdapter {
     async deleteAsset() {
       throw new Error("Read-only mode: assets cannot be deleted.");
     },
-    resolveAssetPath: async ({ sessionName, relativePath }) => `/sessions/${sessionName}/${relativePath}`
+    resolveAssetPath: async ({ sessionName, relativePath }) => `/sessions/${sessionName}/${relativePath}`,
+    async readAssetBytes() {
+      throw new Error("Read-only mode: assets cannot be read as bytes.");
+    }
   };
 }
 

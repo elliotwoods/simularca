@@ -60,7 +60,7 @@ export function createInitialState(mode: AppState["mode"], sessionName = "demo")
     dirty: false,
     statusMessage: "Ready",
     consoleLogs: [],
-    splatDiagnosticsByActorId: {}
+    actorStatusByActorId: {}
   };
 }
 

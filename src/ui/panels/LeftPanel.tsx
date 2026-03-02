@@ -3,7 +3,11 @@ import { useAppStore } from "@/app/useAppStore";
 import { SceneTree } from "@/ui/components/SceneTree";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
 
-export function LeftPanel() {
+interface LeftPanelProps {
+  pendingDropFileName?: string | null;
+}
+
+export function LeftPanel(props: LeftPanelProps) {
   const kernel = useKernel();
   const stats = useAppStore((store) => store.state.stats);
   const selection = useAppStore((store) => store.state.selection);
@@ -20,7 +24,7 @@ export function LeftPanel() {
             <AddActorMenu disabled={readOnly} />
           </div>
         </header>
-        <SceneTree />
+        <SceneTree pendingDropFileName={props.pendingDropFileName} />
       </section>
 
       <section className="panel-section">

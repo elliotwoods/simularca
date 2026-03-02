@@ -46,6 +46,7 @@ const api = {
   transcodeHdriToKtx2: (args) => ipcRenderer.invoke("asset:transcode-hdri", args),
   deleteAsset: (args) => ipcRenderer.invoke("asset:delete", args),
   resolveAssetPath: (args) => ipcRenderer.invoke("asset:resolve-path", args),
+  readAssetBytes: (args) => ipcRenderer.invoke("asset:read-bytes", args),
   openFileDialog: (args) => ipcRenderer.invoke("dialog:open-file", args),
   logRuntimeError: (payload) => ipcRenderer.send("renderer:runtime-error", payload),
   getWindowState: () => ipcRenderer.invoke("window:get-state"),

@@ -14,13 +14,22 @@ export const emptyActorDescriptor: ReloadableDescriptor<EmptyRuntime> = {
     actorType: "empty",
     label: "Empty",
     description: "Neutral transform node for grouping and hierarchy.",
-    iconGlyph: "E"
+    iconGlyph: "E",
+    fileExtensions: []
   },
   createRuntime: () => ({
     tickCount: 0
   }),
   updateRuntime(runtime) {
     runtime.tickCount += 1;
+  },
+  status: {
+    build({ actor }) {
+      return [
+        { label: "Type", value: "Empty" },
+        { label: "Children", value: actor.childActorIds.length },
+        { label: "Components", value: actor.componentIds.length }
+      ];
+    }
   }
 };
-
