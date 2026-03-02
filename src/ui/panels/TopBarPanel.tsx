@@ -17,6 +17,7 @@ import { useAppStore } from "@/app/useAppStore";
 import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
 import { loadPluginFromModule } from "@/features/plugins/pluginLoader";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
+import { WindowControls } from "@/ui/components/WindowControls";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
 const CAMERA_PRESETS: CameraPreset[] = ["perspective", "isometric", "top", "left", "front", "back"];
@@ -100,6 +101,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
 
   return (
     <div className="top-toolbar">
+      <div className="app-title">Kinetic Sim</div>
       {sessionControls}
 
       <div className="toolbar-group">
@@ -219,6 +221,9 @@ export function TopBarPanel(props: TopBarPanelProps) {
           <FontAwesomeIcon icon={faCube} />
         </button>
       </div>
+
+      <div className="toolbar-spacer" />
+      <WindowControls />
     </div>
   );
 }

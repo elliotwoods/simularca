@@ -47,7 +47,7 @@ body {
 
 .layout-shell-top {
   min-height: 0;
-  background: linear-gradient(90deg, #0f1a2b, #0a1321);
+  background: #0d1726;
   border-bottom: 1px solid var(--line-strong);
   -webkit-app-region: drag;
 }
@@ -72,7 +72,6 @@ body {
   background: transparent;
   border-bottom: 0;
   font-family: var(--font-mono);
-  padding-right: 150px;
 }
 
 .layout-shell-top .top-toolbar {
@@ -83,11 +82,13 @@ body {
 .top-toolbar button,
 .top-toolbar select,
 .top-toolbar input,
-.top-toolbar label {
+.top-toolbar label,
+.top-toolbar .window-controls {
   -webkit-app-region: no-drag;
 }
 
 .flexlayout__layout {
+  font-family: var(--font-ui);
   --fl-color-1: #0b1523;
   --fl-color-2: #0f1b2d;
   --fl-color-3: #122238;
@@ -105,6 +106,13 @@ body {
 
 .flexlayout__tab_button--selected {
   background-color: #132840;
+}
+
+.flexlayout__tab_button,
+.flexlayout__tabset_header,
+.flexlayout__tabset_tabbar_outer,
+.flexlayout__tab_toolbar {
+  font-family: var(--font-ui);
 }
 
 .flexlayout__splitter {
@@ -163,11 +171,54 @@ select {
   padding: 0 6px;
 }
 
+.app-title {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  border: 1px solid var(--line);
+  background: #0f1d30;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.window-controls {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--line);
+  background: #0f1d30;
+}
+
+.window-controls button {
+  border: 0;
+  border-right: 1px solid var(--line);
+  min-width: 40px;
+  padding: 0;
+  height: 28px;
+  background: transparent;
+}
+
+.window-controls button:last-child {
+  border-right: 0;
+}
+
+.window-controls .window-control-close:hover {
+  background: #8c2f3a;
+  border-color: #8c2f3a;
+}
+
 .left-panel,
 .right-panel {
   width: 100%;
   height: 100%;
-  background: linear-gradient(180deg, #0b1421, #0a111d);
+  background: #0b1421;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -339,7 +390,7 @@ select {
   max-height: 82vh;
   overflow: auto;
   border: 1px solid var(--line-strong);
-  background: linear-gradient(180deg, #0a1423, #0a111b);
+  background: #0a1423;
   padding: 16px;
 }
 
