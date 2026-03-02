@@ -56,6 +56,7 @@ export interface AppActions {
   loadCameraBookmark(id: string): void;
   removeCameraBookmark(id: string): void;
   setStats(stats: Partial<SceneStats>): void;
+  setSplatDiagnostics(actorId: string, diagnostics: AppState["splatDiagnosticsByActorId"][string] | null): void;
 }
 
 export interface AppStore {
@@ -117,6 +118,7 @@ function removeActorRecursive(state: AppState, actorId: string): void {
   }
 
   delete state.actors[actorId];
+  delete state.splatDiagnosticsByActorId[actorId];
   state.selection = state.selection.filter((entry) => entry.id !== actorId);
 }
 
@@ -517,6 +519,17 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         set({
           state: produce(get().state, (draft) => {
             draft.stats = { ...draft.stats, ...stats };
+          })
+        });
+      },
+      setSplatDiagnostics(actorId, diagnostics) {
+        set({
+          state: produce(get().state, (draft) => {
+            if (diagnostics === null) {
+              delete draft.splatDiagnosticsByActorId[actorId];
+              return;
+            }
+            draft.splatDiagnosticsByActorId[actorId] = diagnostics;
           })
         });
       }

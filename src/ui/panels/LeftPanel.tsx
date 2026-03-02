@@ -64,7 +64,7 @@ export function LeftPanel() {
           <h3>Plugins</h3>
         </header>
         {plugins.length === 0 ? (
-          <p>No plugins loaded.</p>
+          <p className="panel-empty">No plugins loaded.</p>
         ) : (
           <ul className="plugin-list">
             {plugins.map((entry) => (

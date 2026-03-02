@@ -678,10 +678,11 @@ select {
   overflow: hidden;
 }
 
-.right-panel p {
+.panel-empty {
   margin: 0;
   color: var(--text-muted);
   font-size: 12px;
+  font-family: var(--font-ui);
 }
 
 .plugin-list {
@@ -900,6 +901,51 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.inspector-debug-card {
+  border: 1px solid var(--line);
+  background: #0d1828;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.inspector-debug-card header h4 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+}
+
+.inspector-debug-list {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.inspector-debug-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.inspector-debug-list dt {
+  color: var(--text-muted);
+}
+
+.inspector-debug-list dd {
+  margin: 0;
+  text-align: right;
+  word-break: break-word;
+}
+
+.inspector-debug-error {
+  color: var(--warning);
 }
 
 .keyboard-map-backdrop {

@@ -26,10 +26,29 @@ function formatLoadError(error: unknown): string {
   return String(error);
 }
 
+function getAttribute(geometry: any, names: string[]): any {
+  for (const name of names) {
+    const attribute = geometry.getAttribute?.(name);
+    if (attribute) {
+      return attribute;
+    }
+  }
+  return null;
+}
+
+function sigmoid(value: number): number {
+  return 1 / (1 + Math.exp(-value));
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 export class SceneController {
   public readonly scene = new THREE.Scene();
   private readonly actorObjects = new Map<string, any>();
   private readonly gaussianAssetByActorId = new Map<string, string>();
+  private readonly gaussianBoundsHelpers = new Map<string, any>();
   private readonly primitiveSignatureByActorId = new Map<string, string>();
   private readonly plyLoader = new PLYLoader();
   private readonly rgbeLoader = new RGBELoader();
@@ -63,6 +82,12 @@ export class SceneController {
         }
         this.actorObjects.delete(existing);
         this.gaussianAssetByActorId.delete(existing);
+        const helper = this.gaussianBoundsHelpers.get(existing);
+        if (helper) {
+          this.scene.remove(helper);
+          this.gaussianBoundsHelpers.delete(existing);
+        }
+        this.kernel.store.getState().actions.setSplatDiagnostics(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
       }
     }
@@ -103,17 +128,9 @@ export class SceneController {
 
   private async createObjectForActor(actor: ActorNode): Promise<any> {
     if (actor.actorType === "gaussian-splat") {
-      const points = new THREE.Points(
-        new THREE.BufferGeometry(),
-        new THREE.PointsMaterial({
-          size: Number(actor.params.pointSize ?? 0.02),
-          color: 0x8bd3ff,
-          transparent: true,
-          opacity: Number(actor.params.opacity ?? 1)
-        })
-      );
-      points.frustumCulled = false;
-      return points;
+      const group = new THREE.Group();
+      group.name = "gaussian-splat-container";
+      return group;
     }
 
     if (actor.actorType === "environment") {
@@ -233,13 +250,8 @@ export class SceneController {
 
   private async syncGaussianSplatAsset(actor: ActorNode): Promise<void> {
     const object = this.actorObjects.get(actor.id);
-    if (!(object instanceof THREE.Points)) {
+    if (!(object instanceof THREE.Group)) {
       return;
-    }
-    const material = object.material;
-    if (material instanceof THREE.PointsMaterial) {
-      material.opacity = Number(actor.params.opacity ?? 1);
-      material.size = Number(actor.params.pointSize ?? 0.02);
     }
 
     const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
@@ -249,6 +261,7 @@ export class SceneController {
     }
     this.gaussianAssetByActorId.set(actor.id, assetId);
     if (!assetId) {
+      this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, null);
       object.geometry.dispose();
       object.geometry = new THREE.BufferGeometry();
       return;
@@ -257,6 +270,13 @@ export class SceneController {
     const state = this.kernel.store.getState().state;
     const asset = state.assets.find((entry) => entry.id === assetId);
     if (!asset) {
+      this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
+        backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+        loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+        loaderVersion: THREE.REVISION,
+        error: "Asset reference not found in session state.",
+        updatedAtIso: new Date().toISOString()
+      });
       return;
     }
     const url = await this.kernel.storage.resolveAssetPath({
@@ -266,18 +286,20 @@ export class SceneController {
     this.plyLoader.load(
       url,
       (geometry) => {
-        geometry.computeVertexNormals();
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
         const position = geometry.getAttribute("position");
         const pointCount = position?.count ?? 0;
         const bounds = geometry.boundingBox;
-        const material = object.material;
-        if (material instanceof THREE.PointsMaterial) {
-          material.vertexColors = geometry.hasAttribute("color");
+        const existing = object.getObjectByName("gaussian-splat-render");
+        if (existing) {
+          object.remove(existing);
         }
-        object.geometry.dispose();
-        object.geometry = geometry;
+        const pointSize = Number(actor.params.pointSize ?? 0.02);
+        const opacity = Number(actor.params.opacity ?? 1);
+        const renderMesh = this.buildGaussianFallbackMesh(geometry, pointSize, opacity);
+        renderMesh.name = "gaussian-splat-render";
+        object.add(renderMesh);
 
         if (bounds) {
           const min = `${bounds.min.x.toFixed(3)}, ${bounds.min.y.toFixed(3)}, ${bounds.min.z.toFixed(3)}`;
@@ -287,31 +309,166 @@ export class SceneController {
             bounds.max.y - bounds.min.y,
             bounds.max.z - bounds.min.z
           );
-          const suggestedPointSize = Math.max(0.02, Math.min(0.2, maxExtent / 1500));
+          const suggestedPointSize = Math.max(0.02, Math.min(0.25, maxExtent / 1200));
           const currentPointSize = Number(actor.params.pointSize ?? 0.02);
           if (Number.isFinite(currentPointSize) && currentPointSize < suggestedPointSize) {
             this.kernel.store.getState().actions.updateActorParams(actor.id, {
               pointSize: Number(suggestedPointSize.toFixed(3))
             });
           }
+          let helper = this.gaussianBoundsHelpers.get(actor.id);
+          if (!helper) {
+            helper = new THREE.Box3Helper(bounds.clone(), 0xff5bd6);
+            this.gaussianBoundsHelpers.set(actor.id, helper);
+            this.scene.add(helper);
+          } else {
+            helper.box.copy(bounds);
+          }
           this.kernel.store
             .getState()
             .actions.setStatus(
               `Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount} | bounds: [${min}] -> [${max}] | pointSize: ${Number(suggestedPointSize.toFixed(3))}`
             );
+          this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
+            backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+            loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+            loaderVersion: THREE.REVISION,
+            assetFileName: asset.sourceFileName,
+            pointCount,
+            boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
+            boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z],
+            updatedAtIso: new Date().toISOString()
+          });
         } else {
           this.kernel.store
             .getState()
             .actions.setStatus(`Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount}`);
+          this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
+            backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+            loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+            loaderVersion: THREE.REVISION,
+            assetFileName: asset.sourceFileName,
+            pointCount,
+            updatedAtIso: new Date().toISOString()
+          });
         }
       },
       undefined,
       (error) => {
+        const errorMessage = formatLoadError(error);
+        this.kernel.store.getState().actions.setSplatDiagnostics(actor.id, {
+          backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+          loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+          loaderVersion: THREE.REVISION,
+          assetFileName: asset.sourceFileName,
+          error: errorMessage,
+          updatedAtIso: new Date().toISOString()
+        });
         this.kernel.store
           .getState()
-          .actions.setStatus(`Gaussian splat load failed: ${asset.sourceFileName} (${formatLoadError(error)})`);
+          .actions.setStatus(`Gaussian splat load failed: ${asset.sourceFileName} (${errorMessage})`);
       }
     );
+  }
+
+  private buildGaussianFallbackMesh(geometry: any, pointSize: number, opacity: number): any {
+    const position = geometry.getAttribute("position");
+    if (!position) {
+      return new THREE.Group();
+    }
+    const color = getAttribute(geometry, ["color", "rgb", "diffuse"]);
+    const red = getAttribute(geometry, ["red"]);
+    const green = getAttribute(geometry, ["green"]);
+    const blue = getAttribute(geometry, ["blue"]);
+    const fdc0 = getAttribute(geometry, ["f_dc_0"]);
+    const fdc1 = getAttribute(geometry, ["f_dc_1"]);
+    const fdc2 = getAttribute(geometry, ["f_dc_2"]);
+    const opacityAttr = getAttribute(geometry, ["opacity", "alpha"]);
+    const scale0 = getAttribute(geometry, ["scale_0", "sx"]);
+    const scale1 = getAttribute(geometry, ["scale_1", "sy"]);
+    const scale2 = getAttribute(geometry, ["scale_2", "sz"]);
+    const rot0 = getAttribute(geometry, ["rot_0", "qw"]);
+    const rot1 = getAttribute(geometry, ["rot_1", "qx"]);
+    const rot2 = getAttribute(geometry, ["rot_2", "qy"]);
+    const rot3 = getAttribute(geometry, ["rot_3", "qz"]);
+
+    const maxInstances = 50000;
+    const stride = Math.max(1, Math.ceil(position.count / maxInstances));
+    const instanceCount = Math.ceil(position.count / stride);
+    const baseRadius = Math.max(0.002, pointSize * 0.1);
+    const baseGeometry = new THREE.SphereGeometry(baseRadius, 6, 5);
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: Math.min(1, Math.max(0, opacity)),
+      vertexColors: Boolean(color || red || fdc0)
+    });
+    const mesh = new THREE.InstancedMesh(baseGeometry, material, instanceCount);
+    mesh.frustumCulled = false;
+    const matrix = new THREE.Matrix4();
+    const translation = new THREE.Vector3();
+    const scale = new THREE.Vector3(1, 1, 1);
+    const rotation = new THREE.Quaternion();
+    const tempColor = new THREE.Color(0xffffff);
+    const SH_C0 = 0.28209479177387814;
+
+    let cursor = 0;
+    for (let index = 0; index < position.count; index += stride) {
+      translation.set(position.getX(index), position.getY(index), position.getZ(index));
+
+      if (scale0 && scale1 && scale2) {
+        // 3DGS stores log-scales in many PLY exports.
+        const sx = Math.exp(scale0.getX(index));
+        const sy = Math.exp(scale1.getX(index));
+        const sz = Math.exp(scale2.getX(index));
+        const scaleFactor = Math.max(0.001, pointSize);
+        scale.set(
+          Math.max(0.0005, sx * scaleFactor),
+          Math.max(0.0005, sy * scaleFactor),
+          Math.max(0.0005, sz * scaleFactor)
+        );
+      } else {
+        const fallback = Math.max(0.002, pointSize * 0.1);
+        scale.set(fallback, fallback, fallback);
+      }
+
+      if (rot0 && rot1 && rot2 && rot3) {
+        rotation.set(rot1.getX(index), rot2.getX(index), rot3.getX(index), rot0.getX(index)).normalize();
+      } else {
+        rotation.identity();
+      }
+
+      matrix.compose(translation, rotation, scale);
+      mesh.setMatrixAt(cursor, matrix);
+      if (color) {
+        tempColor.setRGB(color.getX(index), color.getY(index), color.getZ(index));
+      } else if (red && green && blue) {
+        tempColor.setRGB(clamp01(red.getX(index) / 255), clamp01(green.getX(index) / 255), clamp01(blue.getX(index) / 255));
+      } else if (fdc0 && fdc1 && fdc2) {
+        tempColor.setRGB(
+          clamp01(0.5 + SH_C0 * fdc0.getX(index)),
+          clamp01(0.5 + SH_C0 * fdc1.getX(index)),
+          clamp01(0.5 + SH_C0 * fdc2.getX(index))
+        );
+      } else {
+        tempColor.setRGB(1, 1, 1);
+      }
+
+      if (opacityAttr) {
+        const alpha = sigmoid(opacityAttr.getX(index));
+        tempColor.multiplyScalar(Math.max(0.08, alpha));
+      }
+
+      if (mesh.instanceColor) {
+        mesh.setColorAt(cursor, tempColor);
+      }
+      cursor += 1;
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) {
+      mesh.instanceColor.needsUpdate = true;
+    }
+    return mesh;
   }
 
   private async updateEnvironmentTexture(): Promise<void> {

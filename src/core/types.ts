@@ -160,6 +160,18 @@ export interface SceneStats {
   sessionFileBytes: number;
 }
 
+export interface SplatDiagnostics {
+  backend: "fallback-ply" | "dedicated-overlay" | "unknown";
+  loader: string;
+  loaderVersion?: string;
+  assetFileName?: string;
+  pointCount?: number;
+  boundsMin?: [number, number, number];
+  boundsMax?: [number, number, number];
+  error?: string;
+  updatedAtIso: string;
+}
+
 export interface ConsoleLogEntry {
   id: string;
   level: LogLevel;
@@ -183,5 +195,6 @@ export interface AppState {
   dirty: boolean;
   statusMessage: string;
   consoleLogs: ConsoleLogEntry[];
+  splatDiagnosticsByActorId: Record<string, SplatDiagnostics>;
 }
 

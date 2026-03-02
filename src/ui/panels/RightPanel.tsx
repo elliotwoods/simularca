@@ -16,7 +16,7 @@ export function RightPanel() {
         <header>
           <h3>Selection</h3>
         </header>
-        <p>{selection.length === 0 ? "Nothing selected." : `${selection.length} item(s) selected`}</p>
+        <p className="panel-empty">{selection.length === 0 ? "Nothing selected." : `${selection.length} item(s) selected`}</p>
       </section>
     </div>
   );

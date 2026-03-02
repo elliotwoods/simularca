@@ -131,6 +131,7 @@ export function InspectorPane() {
   const selection = useAppStore((store) => store.state.selection);
   const actors = useAppStore((store) => store.state.actors);
   const assets = useAppStore((store) => store.state.assets);
+  const splatDiagnosticsByActorId = useAppStore((store) => store.state.splatDiagnosticsByActorId);
   const mode = useAppStore((store) => store.state.mode);
   const sessionName = useAppStore((store) => store.state.activeSessionName);
   const autosaveTimeoutRef = useRef<number | null>(null);
@@ -194,6 +195,12 @@ export function InspectorPane() {
   if (definitions.length === 0) {
     return <div className="inspector-empty">No common editable params in current selection</div>;
   }
+
+  const singleSelection = actorSelection.length === 1 ? actorSelection[0] : null;
+  const showSplatDiagnostics = singleSelection?.actorType === "gaussian-splat";
+  const splatDiagnostics = showSplatDiagnostics ? splatDiagnosticsByActorId[singleSelection.id] : undefined;
+  const formatVector = (vector?: [number, number, number]): string =>
+    vector ? `${vector[0].toFixed(3)}, ${vector[1].toFixed(3)}, ${vector[2].toFixed(3)}` : "n/a";
 
   return (
     <div className="inspector-pane-root custom-inspector">
@@ -315,6 +322,57 @@ export function InspectorPane() {
           />
         );
       })}
+      {showSplatDiagnostics ? (
+        <section className="inspector-debug-card">
+          <header>
+            <h4>Gaussian Splat Diagnostics</h4>
+          </header>
+          {!splatDiagnostics ? (
+            <p className="panel-empty">Diagnostics unavailable. Load a splat asset to populate stats.</p>
+          ) : (
+            <dl className="inspector-debug-list">
+              <div>
+                <dt>Backend</dt>
+                <dd>{splatDiagnostics.backend}</dd>
+              </div>
+              <div>
+                <dt>Loader</dt>
+                <dd>{splatDiagnostics.loader}</dd>
+              </div>
+              <div>
+                <dt>Loader Version</dt>
+                <dd>{splatDiagnostics.loaderVersion ?? "n/a"}</dd>
+              </div>
+              <div>
+                <dt>Asset</dt>
+                <dd>{splatDiagnostics.assetFileName ?? "n/a"}</dd>
+              </div>
+              <div>
+                <dt>Point Count</dt>
+                <dd>{splatDiagnostics.pointCount?.toLocaleString() ?? "n/a"}</dd>
+              </div>
+              <div>
+                <dt>Bounds Min</dt>
+                <dd>{formatVector(splatDiagnostics.boundsMin)}</dd>
+              </div>
+              <div>
+                <dt>Bounds Max</dt>
+                <dd>{formatVector(splatDiagnostics.boundsMax)}</dd>
+              </div>
+              <div>
+                <dt>Last Update</dt>
+                <dd>{new Date(splatDiagnostics.updatedAtIso).toLocaleString()}</dd>
+              </div>
+              {splatDiagnostics.error ? (
+                <div>
+                  <dt>Error</dt>
+                  <dd className="inspector-debug-error">{splatDiagnostics.error}</dd>
+                </div>
+              ) : null}
+            </dl>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }
