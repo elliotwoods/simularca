@@ -6,6 +6,7 @@ import type {
   ActorNode,
   AppState,
   CameraPreset,
+  ConsoleCommandEntry,
   ConsoleLogEntry,
   ComponentNode,
   LogLevel,
@@ -26,6 +27,8 @@ export interface AppActions {
   setMode(mode: AppMode): void;
   setStatus(message: string): void;
   addLog(entry: { level: LogLevel; message: string; details?: string }): void;
+  appendCommandEntry(entry: Omit<ConsoleCommandEntry, "id" | "kind" | "timestampIso"> & { source: string }): string;
+  updateCommandEntry(entryId: string, patch: Partial<Omit<ConsoleCommandEntry, "id" | "kind" | "source" | "timestampIso">>): void;
   clearLogs(): void;
   setDirty(dirty: boolean): void;
   pushHistory(label: string): void;
@@ -72,17 +75,18 @@ function cloneState(state: AppState): AppState {
   return structuredClone(state);
 }
 
-const MAX_CONSOLE_LOGS = 500;
+const MAX_CONSOLE_ENTRIES = 500;
 
 function appendConsoleLog(state: AppState, entry: { level: LogLevel; message: string; details?: string }): void {
   const log: ConsoleLogEntry = {
+    kind: "log",
     id: createId("log"),
     level: entry.level,
     message: entry.message,
     details: entry.details,
     timestampIso: new Date().toISOString()
   };
-  state.consoleLogs = [...state.consoleLogs, log].slice(-MAX_CONSOLE_LOGS);
+  state.consoleEntries = [...state.consoleEntries, log].slice(-MAX_CONSOLE_ENTRIES);
 }
 
 function withHistory(get: () => AppStore, set: (partial: Partial<AppStore>) => void, label: string): void {
@@ -193,10 +197,52 @@ export function createAppStore(mode: AppMode): AppStoreApi {
           })
         });
       },
+      appendCommandEntry(entry) {
+        const commandId = createId("cmd");
+        set({
+          state: produce(get().state, (draft) => {
+            draft.consoleEntries = [
+              ...draft.consoleEntries,
+              {
+                kind: "command",
+                id: commandId,
+                source: entry.source,
+                status: entry.status,
+                summary: entry.summary,
+                result: entry.result,
+                error: entry.error,
+                details: entry.details,
+                finishedAtIso: entry.finishedAtIso,
+                timestampIso: new Date().toISOString()
+              } satisfies ConsoleCommandEntry
+            ].slice(-MAX_CONSOLE_ENTRIES);
+          })
+        });
+        return commandId;
+      },
+      updateCommandEntry(entryId, patch) {
+        set({
+          state: produce(get().state, (draft) => {
+            const index = draft.consoleEntries.findIndex((entry) => entry.kind === "command" && entry.id === entryId);
+            if (index === -1) {
+              return;
+            }
+            const current = draft.consoleEntries[index];
+            if (!current || current.kind !== "command") {
+              return;
+            }
+            const nextEntry: ConsoleCommandEntry = {
+              ...current,
+              ...patch
+            };
+            draft.consoleEntries[index] = nextEntry;
+          })
+        });
+      },
       clearLogs() {
         set({
           state: produce(get().state, (draft) => {
-            draft.consoleLogs = [];
+            draft.consoleEntries = [];
           })
         });
       },

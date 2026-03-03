@@ -180,12 +180,30 @@ export interface ActorRuntimeStatus {
 }
 
 export interface ConsoleLogEntry {
+  kind: "log";
   id: string;
   level: LogLevel;
   message: string;
   timestampIso: string;
   details?: string;
 }
+
+export type ConsoleCommandStatus = "running" | "success" | "error";
+
+export interface ConsoleCommandEntry {
+  kind: "command";
+  id: string;
+  source: string;
+  status: ConsoleCommandStatus;
+  timestampIso: string;
+  finishedAtIso?: string;
+  summary?: string;
+  result?: unknown;
+  error?: string;
+  details?: string;
+}
+
+export type ConsoleEntry = ConsoleLogEntry | ConsoleCommandEntry;
 
 export interface AppState {
   mode: AppMode;
@@ -201,7 +219,7 @@ export interface AppState {
   stats: SceneStats;
   dirty: boolean;
   statusMessage: string;
-  consoleLogs: ConsoleLogEntry[];
+  consoleEntries: ConsoleEntry[];
   actorStatusByActorId: Record<string, ActorRuntimeStatus>;
 }
 
