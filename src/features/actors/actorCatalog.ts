@@ -55,6 +55,7 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
   if (descriptorId === "actor.gaussianSplat") {
     kernel.store.getState().actions.updateActorParams(actorId, {
       scaleFactor: 1,
+      splatSize: 1,
       opacity: 1,
       filterMode: "off",
       filterRegionActorIds: []

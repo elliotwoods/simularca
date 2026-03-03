@@ -200,9 +200,13 @@ interface SceneTreeProps {
 
 export function SceneTree(props: SceneTreeProps) {
   const kernel = useKernel();
+  const scene = useAppStore((store) => store.state.scene);
+  const selection = useAppStore((store) => store.state.selection);
   const actorIds = useAppStore((store) => store.state.scene.actorIds);
   const actors = useAppStore((store) => store.state.actors);
+  const [sceneExpanded, setSceneExpanded] = useState(true);
   const rootActors = actorIds.map((id) => actors[id]).filter((actor): actor is ActorNode => Boolean(actor));
+  const sceneSelected = selection.length === 0;
 
   const onDropRoot = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -222,9 +226,29 @@ export function SceneTree(props: SceneTreeProps) {
           <span className="scene-tree-import-text">Pending Import: {props.pendingDropFileName}</span>
         </div>
       ) : null}
-      {rootActors.map((actor) => (
-        <ActorItem key={actor.id} actor={actor} depth={0} />
-      ))}
+      <div className="scene-tree-item" onDrop={onDropRoot} onDragOver={(event) => event.preventDefault()}>
+        <div className="scene-tree-item-row" style={{ paddingLeft: "8px" }}>
+          <button
+            className={`scene-tree-expand${rootActors.length === 0 ? " placeholder" : ""}`}
+            type="button"
+            disabled={rootActors.length === 0}
+            title={rootActors.length > 0 ? (sceneExpanded ? "Collapse" : "Expand") : "No actors"}
+            onClick={() => setSceneExpanded((value) => !value)}
+          >
+            <FontAwesomeIcon icon={sceneExpanded ? faChevronDown : faChevronRight} />
+          </button>
+          <button
+            className={`scene-tree-label ${sceneSelected ? "selected" : ""}`}
+            type="button"
+            onClick={() => kernel.store.getState().actions.clearSelection()}
+          >
+            {scene.name}
+          </button>
+        </div>
+        {sceneExpanded
+          ? rootActors.map((actor) => <ActorItem key={actor.id} actor={actor} depth={1} />)
+          : null}
+      </div>
     </div>
   );
 }

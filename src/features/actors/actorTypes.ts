@@ -45,6 +45,7 @@ export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
       }
     },
     { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 },
+    { key: "splatSize", label: "Splat Size", type: "number", min: 0.05, max: 20, step: 0.05, defaultValue: 1 },
     { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 },
     {
       key: "filterMode",

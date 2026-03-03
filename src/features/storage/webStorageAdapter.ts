@@ -40,6 +40,12 @@ export function createWebStorageAdapter(): StorageAdapter {
     }) {
       throw new Error("Read-only mode: assets cannot be imported.");
     },
+    async importGaussianSplat() {
+      throw new Error("Read-only mode: Gaussian splats cannot be imported.");
+    },
+    async convertGaussianAsset() {
+      throw new Error("Read-only mode: Gaussian splats cannot be converted.");
+    },
     async transcodeHdriToKtx2() {
       throw new Error("Read-only mode: HDRI transcoding is disabled.");
     },
@@ -47,8 +53,12 @@ export function createWebStorageAdapter(): StorageAdapter {
       throw new Error("Read-only mode: assets cannot be deleted.");
     },
     resolveAssetPath: async ({ sessionName, relativePath }) => `/sessions/${sessionName}/${relativePath}`,
-    async readAssetBytes() {
-      throw new Error("Read-only mode: assets cannot be read as bytes.");
+    async readAssetBytes({ sessionName, relativePath }) {
+      const response = await fetch(`/sessions/${sessionName}/${relativePath}`);
+      if (!response.ok) {
+        throw new Error(`Unable to fetch asset bytes: ${relativePath}`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
     }
   };
 }

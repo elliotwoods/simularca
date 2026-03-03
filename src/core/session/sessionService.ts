@@ -3,6 +3,8 @@ import { buildSessionManifest } from "@/core/session/sessionManifest";
 import { parseSession, serializeSession } from "@/core/session/sessionSchema";
 import type { StorageAdapter } from "@/features/storage/storageAdapter";
 import type { AppStoreApi } from "@/core/store/appStore";
+import type { SessionAssetRef } from "@/types/ipc";
+import type { SessionManifest } from "@/core/types";
 
 export class SessionService {
   public constructor(
@@ -26,7 +28,9 @@ export class SessionService {
       });
       return;
     }
-    const manifest = parseSession(raw);
+    const parsed = parseSession(raw);
+    const migrated = await this.migrateLegacyGaussianAssets(parsed);
+    const manifest = migrated.manifest;
     const sessionBytes = new Blob([raw]).size;
     this.store.getState().actions.hydrate({
       ...createInitialState(this.storage.mode, sessionName),
@@ -44,6 +48,10 @@ export class SessionService {
       sessionFileBytes: sessionBytes,
       sessionFileBytesSaved: sessionBytes
     });
+    if (migrated.changed && !this.storage.isReadOnly) {
+      await this.saveSession();
+      this.store.getState().actions.setStatus("Converted legacy Gaussian assets to native splat binary.");
+    }
   }
 
   public async saveSession(): Promise<void> {
@@ -110,5 +118,35 @@ export class SessionService {
 
   public get isReadOnly(): boolean {
     return this.storage.isReadOnly;
+  }
+
+  private async migrateLegacyGaussianAssets(
+    manifest: SessionManifest
+  ): Promise<{ manifest: SessionManifest; changed: boolean }> {
+    if (this.storage.isReadOnly) {
+      return { manifest, changed: false };
+    }
+    let changed = false;
+    const nextAssets: SessionAssetRef[] = [];
+    for (const asset of manifest.assets) {
+      const isGaussian = asset.kind === "gaussian-splat";
+      const alreadyNative = asset.encoding === "splatbin-v1" || asset.relativePath.toLowerCase().endsWith(".splatbin");
+      if (!isGaussian || alreadyNative) {
+        nextAssets.push(asset);
+        continue;
+      }
+      const converted = await this.storage.convertGaussianAsset({
+        sessionName: manifest.sessionName,
+        assetId: asset.id,
+        relativePath: asset.relativePath,
+        sourceFileName: asset.sourceFileName
+      });
+      nextAssets.push(converted);
+      changed = true;
+    }
+    return {
+      manifest: changed ? { ...manifest, assets: nextAssets } : manifest,
+      changed
+    };
   }
 }

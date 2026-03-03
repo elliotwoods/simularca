@@ -7,12 +7,20 @@ interface SelectFieldProps {
   options: string[];
   mixed?: boolean;
   disabled?: boolean;
+  showReset?: boolean;
+  onReset?: () => void;
   onChange: (value: string) => void;
 }
 
 export function SelectField(props: SelectFieldProps) {
   return (
-    <InspectorFieldRow label={props.label} description={props.description}>
+    <InspectorFieldRow
+      label={props.label}
+      description={props.description}
+      showReset={props.showReset}
+      onReset={props.onReset}
+      resetDisabled={props.disabled}
+    >
       <select
         className="widget-select"
         value={props.mixed ? "" : props.value}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
+import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
 import { importFileAsActor, listCompatibleActorFileImportOptions, type ActorFileImportOption } from "@/features/imports/actorFileImport";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
@@ -258,12 +259,7 @@ export function App() {
       }
       if (event.key === "Delete") {
         event.preventDefault();
-        const deleteEvent = new CustomEvent<{ key: string }>("simularca:before-delete-selection", {
-          cancelable: true,
-          detail: { key: "Delete" }
-        });
-        window.dispatchEvent(deleteEvent);
-        if (deleteEvent.defaultPrevented) {
+        if (keyboardCommandRouter.dispatch("delete-selection", event)) {
           return;
         }
         actions.deleteSelection();

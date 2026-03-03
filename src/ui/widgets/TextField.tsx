@@ -7,6 +7,8 @@ interface TextFieldProps {
   value: string;
   mixed?: boolean;
   disabled?: boolean;
+  showReset?: boolean;
+  onReset?: () => void;
   onChange: (value: string) => void;
 }
 
@@ -18,7 +20,13 @@ export function TextField(props: TextFieldProps) {
   }, [props.value]);
 
   return (
-    <InspectorFieldRow label={props.label} description={props.description}>
+    <InspectorFieldRow
+      label={props.label}
+      description={props.description}
+      showReset={props.showReset}
+      onReset={props.onReset}
+      resetDisabled={props.disabled}
+    >
       <input
         className="widget-text"
         value={props.mixed ? "" : draft}

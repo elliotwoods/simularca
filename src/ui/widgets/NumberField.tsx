@@ -13,6 +13,8 @@ interface NumberFieldProps {
   unit?: string;
   dragSpeed?: number;
   disabled?: boolean;
+  showReset?: boolean;
+  onReset?: () => void;
   onChange: (value: number) => void;
 }
 
@@ -157,7 +159,13 @@ export function NumberField(props: NumberFieldProps) {
     : 0;
 
   return (
-    <InspectorFieldRow label={props.label} description={props.description}>
+    <InspectorFieldRow
+      label={props.label}
+      description={props.description}
+      showReset={props.showReset}
+      onReset={props.onReset}
+      resetDisabled={props.disabled}
+    >
       <div className="widget-number">
         {hasRange ? (
           <input

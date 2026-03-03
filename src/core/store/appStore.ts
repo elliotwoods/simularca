@@ -36,6 +36,7 @@ export interface AppActions {
   undo(): void;
   redo(): void;
   setSessionName(name: string): void;
+  setSceneBackgroundColor(color: string): void;
   createActor(input: {
     actorType: ActorNode["actorType"];
     name?: string;
@@ -313,6 +314,15 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         set({
           state: produce(get().state, (draft) => {
             draft.activeSessionName = name;
+            draft.dirty = true;
+          })
+        });
+      },
+      setSceneBackgroundColor(color) {
+        withHistory(get, set, "Set scene background");
+        set({
+          state: produce(get().state, (draft) => {
+            draft.scene.backgroundColor = color;
             draft.dirty = true;
           })
         });

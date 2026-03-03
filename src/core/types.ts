@@ -1,6 +1,6 @@
 import type { AppMode, HdriTranscodeOptions, SessionAssetRef } from "@/types/ipc";
 
-export const SESSION_SCHEMA_VERSION = 1;
+export const SESSION_SCHEMA_VERSION = 2;
 
 export type SceneNodeKind = "scene" | "actor" | "component";
 export type ActorType = "empty" | "environment" | "gaussian-splat" | "mesh" | "primitive" | "curve" | "plugin";
@@ -125,6 +125,7 @@ export interface SceneState extends SceneNodeBase {
   kind: "scene";
   actorIds: string[];
   sceneComponentIds: string[];
+  backgroundColor: string;
 }
 
 export interface CameraState {
@@ -174,12 +175,10 @@ export interface SceneStats {
   fps: number;
   frameMs: number;
   drawCalls: number;
-  drawCallsMain: number;
-  drawCallsOverlay: number;
   triangles: number;
-  trianglesMain: number;
-  trianglesOverlay: number;
-  overlayPoints: number;
+  splatDrawCalls: number;
+  splatTriangles: number;
+  splatVisibleCount: number;
   memoryMb: number;
   heapMb: number;
   resourceMb: number;

@@ -2,6 +2,7 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { SceneTree } from "@/ui/components/SceneTree";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
+import { StatsBlock } from "@/ui/components/StatsBlock";
 
 interface LeftPanelProps {
   pendingDropFileName?: string | null;
@@ -48,73 +49,35 @@ export function LeftPanel(props: LeftPanelProps) {
       </section>
 
       <section className="panel-section">
-        <header>
-          <h3>Scene Stats</h3>
-        </header>
-        <dl className="stats-list">
-          <div>
-            <dt>FPS</dt>
-            <dd>
-              {stats.fps.toFixed(1)} ({stats.frameMs.toFixed(1)} ms)
-            </dd>
-          </div>
-          <div>
-            <dt>Draw Calls</dt>
-            <dd>{formatInteger(stats.drawCalls)}</dd>
-          </div>
-          <div>
-            <dt>Render Split</dt>
-            <dd>
-              main {formatInteger(stats.drawCallsMain)} / overlay {formatInteger(stats.drawCallsOverlay)} calls
-            </dd>
-          </div>
-          <div>
-            <dt>Triangles</dt>
-            <dd>{formatInteger(stats.triangles)}</dd>
-          </div>
-          <div>
-            <dt>Geo Split</dt>
-            <dd>
-              main {formatInteger(stats.trianglesMain)} / overlay {formatInteger(stats.trianglesOverlay)} tris
-            </dd>
-          </div>
-          <div>
-            <dt>Splat Points</dt>
-            <dd>{formatInteger(stats.overlayPoints)}</dd>
-          </div>
-          <div>
-            <dt>Memory MB</dt>
-            <dd>{formatMegabytes(stats.memoryMb)}</dd>
-          </div>
-          <div>
-            <dt>Memory Split</dt>
-            <dd>
-              heap {stats.heapMb > 0 ? formatMegabytes(stats.heapMb) : "n/a"} / resource {formatMegabytes(stats.resourceMb)}
-            </dd>
-          </div>
-          <div>
-            <dt>Actors</dt>
-            <dd>{formatInteger(stats.actorCount)}</dd>
-          </div>
-          <div>
-            <dt>Enabled</dt>
-            <dd>
-              {formatInteger(stats.actorCountEnabled)} / {formatInteger(stats.actorCount)}
-            </dd>
-          </div>
-          <div>
-            <dt>Session Bytes</dt>
-            <dd>{formatInteger(stats.sessionFileBytes)}</dd>
-          </div>
-          <div>
-            <dt>Saved Bytes</dt>
-            <dd>{formatInteger(stats.sessionFileBytesSaved)}</dd>
-          </div>
-          <div>
-            <dt>Selection</dt>
-            <dd>{selection.length}</dd>
-          </div>
-        </dl>
+        <StatsBlock
+          title="Scene Stats"
+          className="stats-block-embedded"
+          titleLevel="h3"
+          rows={[
+            { label: "FPS", value: `${stats.fps.toFixed(1)} (${stats.frameMs.toFixed(1)} ms)` },
+            { label: "Draw Calls", value: formatInteger(stats.drawCalls) },
+            { label: "Triangles", value: formatInteger(stats.triangles) },
+            { label: "Splat Draw Calls", value: formatInteger(stats.splatDrawCalls) },
+            { label: "Splat Triangles", value: formatInteger(stats.splatTriangles) },
+            { label: "Splat Visible", value: formatInteger(stats.splatVisibleCount) },
+            { label: "Memory MB", value: formatMegabytes(stats.memoryMb) },
+            {
+              label: "Memory Split",
+              value: `heap ${stats.heapMb > 0 ? formatMegabytes(stats.heapMb) : "n/a"} / resource ${formatMegabytes(stats.resourceMb)}`
+            },
+            { label: "Actors", value: formatInteger(stats.actorCount) },
+            { label: "Enabled", value: `${formatInteger(stats.actorCountEnabled)} / ${formatInteger(stats.actorCount)}` },
+            { label: "Session Bytes", value: formatInteger(stats.sessionFileBytes) },
+            { label: "Saved Bytes", value: formatInteger(stats.sessionFileBytesSaved) },
+            { label: "Selection", value: String(selection.length) }
+          ]}
+          onCopySuccess={(label) => {
+            kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
+          }}
+          onCopyError={(label, message) => {
+            kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
+          }}
+        />
       </section>
 
       <section className="panel-section">

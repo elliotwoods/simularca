@@ -3,17 +3,6 @@ import type { ActorNode, SceneStats } from "@/core/types";
 export interface RenderStatsSample {
   drawCalls: number;
   triangles: number;
-  points: number;
-}
-
-export interface CombinedRenderStats {
-  drawCalls: number;
-  drawCallsMain: number;
-  drawCallsOverlay: number;
-  triangles: number;
-  trianglesMain: number;
-  trianglesOverlay: number;
-  overlayPoints: number;
 }
 
 export interface MemorySummary {
@@ -24,24 +13,6 @@ export interface MemorySummary {
 
 export function bytesToMb(value: number): number {
   return value / (1024 * 1024);
-}
-
-export function combineRenderStats(main: RenderStatsSample, overlay: RenderStatsSample): CombinedRenderStats {
-  const drawCallsMain = Math.max(0, Math.floor(main.drawCalls));
-  const drawCallsOverlay = Math.max(0, Math.floor(overlay.drawCalls));
-  const trianglesMain = Math.max(0, Math.floor(main.triangles));
-  const trianglesOverlay = Math.max(0, Math.floor(overlay.triangles));
-  const overlayPoints = Math.max(0, Math.floor(overlay.points));
-
-  return {
-    drawCalls: drawCallsMain + drawCallsOverlay,
-    drawCallsMain,
-    drawCallsOverlay,
-    triangles: trianglesMain + trianglesOverlay,
-    trianglesMain,
-    trianglesOverlay,
-    overlayPoints
-  };
 }
 
 export function summarizeMemory(heapBytes: number | null, resourceBytes: number): MemorySummary {

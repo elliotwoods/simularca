@@ -7,6 +7,8 @@ interface ToggleFieldProps {
   mixed?: boolean;
   disabled?: boolean;
   embedded?: boolean;
+  showReset?: boolean;
+  onReset?: () => void;
   onChange: (value: boolean) => void;
 }
 
@@ -31,5 +33,15 @@ export function ToggleField(props: ToggleFieldProps) {
   if (props.embedded) {
     return content;
   }
-  return <InspectorFieldRow label={props.label} description={props.description}>{content}</InspectorFieldRow>;
+  return (
+    <InspectorFieldRow
+      label={props.label}
+      description={props.description}
+      showReset={props.showReset}
+      onReset={props.onReset}
+      resetDisabled={props.disabled}
+    >
+      {content}
+    </InspectorFieldRow>
+  );
 }

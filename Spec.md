@@ -11,7 +11,7 @@ Build a pre-visualization simulation environment for kinetic artworks with a lar
 
 ## 3. Core Tech Stack
 - 3D: `Three.js` with `WebGPU` renderer for the main scene.
-- Splat support: allow isolated WebGL path for Gaussian splats when needed by library/runtime.
+- Splat support: native in-scene Gaussian splat pipeline integrated with main WebGPU scene.
 - Layout: `GoldenLayout` dockable/resizable panes.
 - Inspector widgets: custom React widgets (schema-driven).
 - Icons: Font Awesome, icon-first with tooltips.
@@ -95,9 +95,9 @@ Build a pre-visualization simulation environment for kinetic artworks with a lar
   - HDRI preprocessing to KTX2 pipeline
 - `Gaussian Splat` actor:
   - `.ply` import
+  - import-time conversion to native `splatbin-v1` asset format
   - copy into session assets
-  - dedicated splat renderer overlay path when optional module is installed
-  - automatic fallback to built-in point cloud renderer when unavailable
+  - in-scene native renderer path with scene depth integration
 - `Mesh` actor:
   - local import (`.glb`, `.gltf`, `.fbx`, `.dae`, `.obj`)
   - copy into session assets

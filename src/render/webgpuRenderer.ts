@@ -4,13 +4,10 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AppKernel } from "@/app/kernel";
 import { estimateSessionPayloadBytes } from "@/core/session/sessionSize";
 import { SceneController } from "./sceneController";
-import type { SplatOverlayActorState, SplatOverlayHandle } from "./splatOverlay";
-import { DedicatedGaussianSplatOverlay, NoopSplatOverlay } from "./splatOverlay";
-import { hasActiveGaussianFilter } from "./gaussianFilter";
-import { combineRenderStats, countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
+import { clearSplatQueryProvider, registerSplatQueryProvider } from "./splatQueryRegistry";
+import { countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 import { CurveEditController } from "./curveEditController";
 
-const ENABLE_DEDICATED_SPLAT_OVERLAY = true;
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
 
@@ -22,7 +19,6 @@ export class WebGpuViewport {
   private readonly controls: OrbitControls;
   private readonly sceneController: SceneController;
   private readonly curveEditController: CurveEditController;
-  private splatOverlay: SplatOverlayHandle;
   private frameHandle = 0;
   private frameCount = 0;
   private frameTimeAccumulatorMs = 0;
@@ -30,14 +26,10 @@ export class WebGpuViewport {
   private fastStatsLastSampleAt = performance.now();
   private slowStatsLastSampleAt = performance.now();
   private lastAppliedCameraSignature = "";
-  private lastSplatSignature = "";
-  private readonly assetUrlCache = new Map<string, string>();
-  private readonly blobAssetUrls = new Set<string>();
   private readonly geometryByteCache = new WeakMap<object, number>();
   private readonly textureByteCache = new WeakMap<object, number>();
-  private dedicatedOverlayError: string | null = null;
-  private splatSyncInFlight = false;
-  private cachedSessionName = "";
+  private readonly queryVisibleSplats = (args?: Parameters<SceneController["queryVisibleSplats"]>[0]) =>
+    this.sceneController.queryVisibleSplats(args);
   private started = false;
   private disposed = false;
   private initialized = false;
@@ -46,13 +38,7 @@ export class WebGpuViewport {
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
   private previousMainRenderSample: RenderStatsSample | null = null;
-  private previousOverlayRenderSample: RenderStatsSample | null = null;
-
-  public constructor(
-    private readonly kernel: AppKernel,
-    private readonly mountEl: HTMLElement,
-    overlay?: SplatOverlayHandle
-  ) {
+  public constructor(private readonly kernel: AppKernel, private readonly mountEl: HTMLElement) {
     if (!("gpu" in navigator)) {
       throw new Error("WebGPU is required by this application.");
     }
@@ -93,12 +79,7 @@ export class WebGpuViewport {
       this.renderer.domElement,
       this.activeCamera
     );
-    this.splatOverlay = overlay ?? new NoopSplatOverlay();
-    this.sceneController.setGaussianSplatFallbackEnabled(true);
-
-    if (ENABLE_DEDICATED_SPLAT_OVERLAY && !overlay) {
-      void this.bootstrapDedicatedSplatOverlay();
-    }
+    registerSplatQueryProvider(this.queryVisibleSplats);
   }
 
   public async start(): Promise<void> {
@@ -138,8 +119,7 @@ export class WebGpuViewport {
     }
     this.controls.dispose();
     this.curveEditController.dispose();
-    this.splatOverlay.dispose();
-    this.revokeBlobAssetUrls();
+    clearSplatQueryProvider(this.queryVisibleSplats);
     if (this.initialized) {
       try {
         this.renderer.dispose();
@@ -162,11 +142,11 @@ export class WebGpuViewport {
     }
     this.kernel.clock.tick(performance.now(), this.kernel.store);
     void this.sceneController.syncFromState();
-    void this.syncSplatOverlay();
     this.syncCameraState();
     this.curveEditController.setCamera(this.activeCamera);
     this.curveEditController.update();
     this.controls.update();
+    this.sceneController.updateGaussianDepthSorting(this.activeCamera);
     this.syncCameraToState();
     this.renderInFlight = true;
     const renderPromise =
@@ -176,41 +156,8 @@ export class WebGpuViewport {
     void Promise.resolve(renderPromise).finally(() => {
       this.renderInFlight = false;
     });
-    this.splatOverlay.setCamera(this.activeCamera);
-    this.splatOverlay.update();
     this.updateStats();
   };
-
-  private async bootstrapDedicatedSplatOverlay(): Promise<void> {
-    if (!("WebGL2RenderingContext" in window)) {
-      return;
-    }
-    const overlay = new DedicatedGaussianSplatOverlay(this.mountEl, (message) => {
-      this.kernel.store.getState().actions.setStatus(message);
-    });
-    try {
-      await overlay.initialize();
-      this.splatOverlay = overlay;
-      this.sceneController.setGaussianSplatFallbackEnabled(false);
-      this.dedicatedOverlayError = null;
-      this.splatOverlay.setCamera(this.activeCamera);
-      this.splatOverlay.setSize(this.mountEl.clientWidth, this.mountEl.clientHeight);
-      this.kernel.store.getState().actions.setStatus("Dedicated Gaussian splat overlay enabled.");
-    } catch (error) {
-      this.splatOverlay = new NoopSplatOverlay();
-      this.sceneController.setGaussianSplatFallbackEnabled(true);
-      const reason = error instanceof Error ? error.message : "Unknown reason";
-      this.dedicatedOverlayError = reason;
-      this.kernel.store.getState().actions.addLog({
-        level: "error",
-        message: "Dedicated Gaussian splat overlay unavailable",
-        details: reason
-      });
-      this.kernel.store
-        .getState()
-        .actions.setStatus(`Dedicated Gaussian splat overlay unavailable, fallback enabled. ${reason}`);
-    }
-  }
 
   private syncCameraState(): void {
     const cameraState = this.kernel.store.getState().state.camera;
@@ -252,7 +199,6 @@ export class WebGpuViewport {
     this.orthographicCamera.top = orthoSize;
     this.orthographicCamera.bottom = -orthoSize;
     this.orthographicCamera.updateProjectionMatrix();
-    this.splatOverlay.setSize(width, height);
   };
 
   private collectResizeObservedElements(): HTMLElement[] {
@@ -320,39 +266,24 @@ export class WebGpuViewport {
       this.fastStatsLastSampleAt = now;
 
       const mainRenderStatsCumulative = this.readMainRenderStats();
-      const overlayStats = this.splatOverlay.getStats();
-      const overlayRenderStatsCumulative: RenderStatsSample = {
-        drawCalls: overlayStats.drawCalls,
-        triangles: overlayStats.triangles,
-        points: overlayStats.points
-      };
       const mainRenderStats = this.renderDeltaPerFrame(
         mainRenderStatsCumulative,
         this.previousMainRenderSample,
         framesInWindow
       );
-      const overlayRenderStats = this.renderDeltaPerFrame(
-        overlayRenderStatsCumulative,
-        this.previousOverlayRenderSample,
-        framesInWindow
-      );
       this.previousMainRenderSample = mainRenderStatsCumulative;
-      this.previousOverlayRenderSample = overlayRenderStatsCumulative;
-
-      const combined = combineRenderStats(mainRenderStats, overlayRenderStats);
+      const splatStats = this.sceneController.getGaussianRenderStats();
       const actorCounts = countActorStats(this.kernel.store.getState().state.actors);
       const currentStats = this.kernel.store.getState().state.stats;
 
       this.kernel.store.getState().actions.setStats({
         fps,
         frameMs,
-        drawCalls: combined.drawCalls,
-        drawCallsMain: combined.drawCallsMain,
-        drawCallsOverlay: combined.drawCallsOverlay,
-        triangles: combined.triangles,
-        trianglesMain: combined.trianglesMain,
-        trianglesOverlay: combined.trianglesOverlay,
-        overlayPoints: combined.overlayPoints,
+        drawCalls: Math.max(0, Math.floor(mainRenderStats.drawCalls)),
+        triangles: Math.max(0, Math.floor(mainRenderStats.triangles)),
+        splatDrawCalls: splatStats.drawCalls,
+        splatTriangles: splatStats.triangles,
+        splatVisibleCount: splatStats.visibleCount,
         actorCount: actorCounts.actorCount,
         actorCountEnabled: actorCounts.actorCountEnabled,
         sessionFileBytes: currentStats.sessionFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
@@ -364,8 +295,7 @@ export class WebGpuViewport {
     if (now - this.slowStatsLastSampleAt >= SLOW_STATS_INTERVAL_MS) {
       this.slowStatsLastSampleAt = now;
       const state = this.kernel.store.getState().state;
-      const overlayStats = this.splatOverlay.getStats();
-      const resourceBytes = this.estimateResourceBytes() + overlayStats.bufferBytes;
+      const resourceBytes = this.estimateResourceBytes();
       const heapBytes = this.getHeapBytes();
       const memory = summarizeMemory(heapBytes, resourceBytes);
       const estimatedSessionBytes = state.dirty
@@ -384,8 +314,7 @@ export class WebGpuViewport {
     const info = this.renderer.info.render;
     return {
       drawCalls: Number(info.calls ?? 0),
-      triangles: Number(info.triangles ?? 0),
-      points: Number((info as { points?: number }).points ?? 0)
+      triangles: Number(info.triangles ?? 0)
     };
   }
 
@@ -404,8 +333,7 @@ export class WebGpuViewport {
     };
     return {
       drawCalls: delta(current.drawCalls, previous?.drawCalls ?? null) / safeFrames,
-      triangles: delta(current.triangles, previous?.triangles ?? null) / safeFrames,
-      points: delta(current.points, previous?.points ?? null) / safeFrames
+      triangles: delta(current.triangles, previous?.triangles ?? null) / safeFrames
     };
   }
 
@@ -502,124 +430,6 @@ export class WebGpuViewport {
     return bytes;
   }
 
-  private async syncSplatOverlay(): Promise<void> {
-    if (this.splatSyncInFlight) {
-      return;
-    }
-
-    const state = this.kernel.store.getState().state;
-    if (state.activeSessionName !== this.cachedSessionName) {
-      this.cachedSessionName = state.activeSessionName;
-      this.revokeBlobAssetUrls();
-      this.assetUrlCache.clear();
-      this.lastSplatSignature = "";
-    }
-    const candidates = Object.values(state.actors)
-      .filter(
-        (actor) =>
-          actor.actorType === "gaussian-splat" &&
-          actor.enabled &&
-          !hasActiveGaussianFilter(actor, state.actors)
-      )
-      .map((actor) => {
-        const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
-        const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
-        const scaleFactor = Number(actor.params.scaleFactor ?? 1);
-        const safeScaleFactor = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
-        const worldTransform = this.resolveActorWorldTransform(actor.id, state.actors);
-        return {
-          actorId: actor.id,
-          assetId,
-          reloadToken,
-          opacity: Number(actor.params.opacity ?? 1),
-          transform: {
-            ...worldTransform,
-            scale: [
-              worldTransform.scale[0] * safeScaleFactor,
-              worldTransform.scale[1] * safeScaleFactor,
-              worldTransform.scale[2] * safeScaleFactor
-            ] as [number, number, number]
-          }
-        };
-      })
-      .filter((actor) => actor.assetId.length > 0);
-
-    const signature = JSON.stringify(candidates);
-    if (!this.splatOverlay.isDedicatedRenderer && this.dedicatedOverlayError) {
-      for (const candidate of candidates) {
-        const existingStatus = state.actorStatusByActorId[candidate.actorId];
-        this.kernel.store.getState().actions.setActorStatus(candidate.actorId, {
-          values: {
-            backend: "fallback-ply",
-            loader: "three/examples/jsm/loaders/PLYLoader",
-            loaderVersion: existingStatus?.values.loaderVersion ?? THREE.REVISION,
-            assetFileName: existingStatus?.values.assetFileName,
-            pointCount: existingStatus?.values.pointCount,
-            boundsMin: existingStatus?.values.boundsMin as [number, number, number] | undefined,
-            boundsMax: existingStatus?.values.boundsMax as [number, number, number] | undefined
-          },
-          error: `Dedicated overlay unavailable: ${this.dedicatedOverlayError}`,
-          updatedAtIso: new Date().toISOString()
-        });
-      }
-    }
-    if (signature === this.lastSplatSignature) {
-      return;
-    }
-
-    this.splatSyncInFlight = true;
-    try {
-      const actors: SplatOverlayActorState[] = [];
-      for (const candidate of candidates) {
-        let assetUrl = this.assetUrlCache.get(candidate.assetId);
-        if (!assetUrl) {
-          const asset = state.assets.find((entry) => entry.id === candidate.assetId);
-          if (!asset) {
-            continue;
-          }
-          assetUrl = await this.kernel.storage.resolveAssetPath({
-            sessionName: state.activeSessionName,
-            relativePath: asset.relativePath
-          });
-          this.assetUrlCache.set(candidate.assetId, assetUrl);
-        }
-        actors.push({
-          actorId: candidate.actorId,
-          assetId: candidate.assetId,
-          assetUrl,
-          opacity: candidate.opacity,
-          transform: candidate.transform
-        });
-      }
-      await this.splatOverlay.syncActors(actors);
-      this.lastSplatSignature = signature;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.kernel.store.getState().actions.addLog({
-        level: "error",
-        message: "Dedicated Gaussian splat sync failed",
-        details: reason
-      });
-      this.kernel.store.getState().actions.setStatus(`Dedicated Gaussian splat sync failed, fallback enabled. ${reason}`);
-      this.dedicatedOverlayError = reason;
-      if (this.splatOverlay.isDedicatedRenderer) {
-        this.splatOverlay.dispose();
-        this.splatOverlay = new NoopSplatOverlay();
-        this.sceneController.setGaussianSplatFallbackEnabled(true);
-      }
-      this.lastSplatSignature = signature;
-    } finally {
-      this.splatSyncInFlight = false;
-    }
-  }
-
-  private revokeBlobAssetUrls(): void {
-    for (const blobUrl of this.blobAssetUrls) {
-      URL.revokeObjectURL(blobUrl);
-    }
-    this.blobAssetUrls.clear();
-  }
-
   private syncCameraToState(): void {
     const camera = this.activeCamera;
     const target = this.controls.target;
@@ -647,62 +457,6 @@ export class WebGpuViewport {
     });
   }
 
-  private resolveActorWorldTransform(
-    actorId: string,
-    actors: Record<string, { id: string; parentActorId: string | null; transform: { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] } }>
-  ): { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] } {
-    const chain: string[] = [];
-    const visited = new Set<string>();
-    let cursor = actors[actorId];
-    while (cursor) {
-      if (visited.has(cursor.id)) {
-        break;
-      }
-      visited.add(cursor.id);
-      chain.push(cursor.id);
-      cursor = cursor.parentActorId ? actors[cursor.parentActorId] : undefined;
-    }
-
-    const worldMatrix = new THREE.Matrix4().identity();
-    for (let index = chain.length - 1; index >= 0; index -= 1) {
-      const chainId = chain[index];
-      if (!chainId) {
-        continue;
-      }
-      const actor = actors[chainId];
-      if (!actor) {
-        continue;
-      }
-      worldMatrix.multiply(this.actorLocalMatrix(actor.transform));
-    }
-
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const scale = new THREE.Vector3();
-    worldMatrix.decompose(position, quaternion, scale);
-    const rotation = new THREE.Euler().setFromQuaternion(quaternion, "XYZ");
-
-    return {
-      position: [position.x, position.y, position.z],
-      rotation: [rotation.x, rotation.y, rotation.z],
-      scale: [scale.x, scale.y, scale.z]
-    };
-  }
-
-  private actorLocalMatrix(transform: {
-    position: [number, number, number];
-    rotation: [number, number, number];
-    scale: [number, number, number];
-  }): any {
-    const matrix = new THREE.Matrix4();
-    const position = new THREE.Vector3(transform.position[0], transform.position[1], transform.position[2]);
-    const quaternion = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(transform.rotation[0], transform.rotation[1], transform.rotation[2], "XYZ")
-    );
-    const scale = new THREE.Vector3(transform.scale[0], transform.scale[1], transform.scale[2]);
-    matrix.compose(position, quaternion, scale);
-    return matrix;
-  }
 }
 
 function distanceSq3(a: [number, number, number], b: [number, number, number]): number {

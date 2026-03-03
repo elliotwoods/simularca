@@ -1,4 +1,4 @@
-import type { CurveData, CurvePoint } from "@/features/curves/types";
+import type { CurveData, CurveHandleMode, CurvePoint } from "@/features/curves/types";
 
 function add3(a: [number, number, number], b: [number, number, number]): [number, number, number] {
   return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -6,6 +6,10 @@ function add3(a: [number, number, number], b: [number, number, number]): [number
 
 function mul3(v: [number, number, number], scalar: number): [number, number, number] {
   return [v[0] * scalar, v[1] * scalar, v[2] * scalar];
+}
+
+function sub3(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
 function norm3(v: [number, number, number]): number {
@@ -77,6 +81,26 @@ export function setCurveAnchorPosition(curve: CurveData, pointIndex: number, pos
   return next;
 }
 
+export function setCurvePointMode(curve: CurveData, pointIndex: number, mode: CurveHandleMode): CurveData {
+  const next = cloneCurveData(curve);
+  const point = next.points[pointIndex];
+  if (!point) {
+    return next;
+  }
+  if (point.mode === mode) {
+    return next;
+  }
+
+  if (mode === "mirrored" && point.mode !== "mirrored") {
+    const mirroredOut = mul3(sub3(point.handleOut, point.handleIn), 0.5);
+    point.handleOut = mirroredOut;
+    point.handleIn = mul3(mirroredOut, -1);
+  }
+
+  point.mode = mode;
+  return next;
+}
+
 export function setCurveHandlePosition(
   curve: CurveData,
   pointIndex: number,
@@ -96,9 +120,11 @@ export function setCurveHandlePosition(
   }
 
   const edited = handleKind === "in" ? point.handleIn : point.handleOut;
-  const opposite = handleKind === "in" ? point.handleOut : point.handleIn;
-  const oppositeLength = norm3(opposite);
   const editedLength = norm3(edited);
+
+  if (point.mode === "hard" || point.mode === "normal") {
+    return next;
+  }
 
   if (point.mode === "mirrored") {
     if (editedLength <= 1e-9) {
@@ -116,18 +142,6 @@ export function setCurveHandlePosition(
       point.handleIn = mirrored;
     }
     return next;
-  }
-
-  if (point.mode === "aligned") {
-    if (editedLength <= 1e-9 || oppositeLength <= 1e-9) {
-      return next;
-    }
-    const aligned = mul3(normalize3(edited), -oppositeLength);
-    if (handleKind === "in") {
-      point.handleOut = aligned;
-    } else {
-      point.handleIn = aligned;
-    }
   }
 
   return next;

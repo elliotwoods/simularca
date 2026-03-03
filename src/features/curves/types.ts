@@ -1,4 +1,4 @@
-export type CurveHandleMode = "free" | "aligned" | "mirrored";
+export type CurveHandleMode = "normal" | "mirrored" | "hard";
 
 export interface CurvePoint {
   position: [number, number, number];
@@ -29,10 +29,13 @@ function sanitizeVector3(value: unknown, fallback: [number, number, number]): [n
 }
 
 function sanitizeHandleMode(value: unknown): CurveHandleMode {
-  if (value === "aligned" || value === "mirrored") {
+  if (value === "mirrored" || value === "hard" || value === "normal") {
     return value;
   }
-  return "free";
+  if (value === "free" || value === "aligned") {
+    return "normal";
+  }
+  return "normal";
 }
 
 function sanitizePoint(value: unknown, fallback: CurvePoint): CurvePoint {

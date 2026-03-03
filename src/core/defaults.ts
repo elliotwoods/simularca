@@ -28,7 +28,8 @@ export function createDefaultScene(): {
     enabled: true,
     kind: "scene",
     actorIds: [],
-    sceneComponentIds: []
+    sceneComponentIds: [],
+    backgroundColor: "#070b12"
   };
   return {
     scene,
@@ -53,12 +54,10 @@ export function createInitialState(mode: AppState["mode"], sessionName = "demo")
       fps: 0,
       frameMs: 0,
       drawCalls: 0,
-      drawCallsMain: 0,
-      drawCallsOverlay: 0,
       triangles: 0,
-      trianglesMain: 0,
-      trianglesOverlay: 0,
-      overlayPoints: 0,
+      splatDrawCalls: 0,
+      splatTriangles: 0,
+      splatVisibleCount: 0,
       memoryMb: 0,
       heapMb: 0,
       resourceMb: 0,

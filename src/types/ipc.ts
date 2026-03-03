@@ -7,6 +7,7 @@ export interface DefaultSessionPointer {
 export interface SessionAssetRef {
   id: string;
   kind: "hdri" | "gaussian-splat" | "generic";
+  encoding?: "raw" | "ktx2" | "splatbin-v1";
   relativePath: string;
   sourceFileName: string;
   byteSize: number;
@@ -35,6 +36,16 @@ export interface ElectronApi {
     sessionName: string;
     sourcePath: string;
     kind: SessionAssetRef["kind"];
+  }): Promise<SessionAssetRef>;
+  importGaussianSplat(args: {
+    sessionName: string;
+    sourcePath: string;
+  }): Promise<SessionAssetRef>;
+  convertGaussianAsset(args: {
+    sessionName: string;
+    assetId: string;
+    relativePath: string;
+    sourceFileName: string;
   }): Promise<SessionAssetRef>;
   transcodeHdriToKtx2(args: {
     sessionName: string;

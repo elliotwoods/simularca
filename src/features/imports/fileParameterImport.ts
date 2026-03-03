@@ -30,11 +30,17 @@ export async function importFileForActorParam(
     });
   }
 
-  const asset = await kernel.storage.importAsset({
-    sessionName: args.sessionName,
-    sourcePath: args.sourcePath,
-    kind: args.definition.import.kind
-  });
+  const asset =
+    args.definition.import.kind === "gaussian-splat"
+      ? await kernel.storage.importGaussianSplat({
+          sessionName: args.sessionName,
+          sourcePath: args.sourcePath
+        })
+      : await kernel.storage.importAsset({
+          sessionName: args.sessionName,
+          sourcePath: args.sourcePath,
+          kind: args.definition.import.kind
+        });
   appendAsset(kernel, asset);
   kernel.sessionService.queueAutosave();
   return asset;

@@ -10,6 +10,8 @@ interface FileFieldProps {
   mixed?: boolean;
   asset?: SessionAssetRef;
   disabled?: boolean;
+  showReset?: boolean;
+  onReset?: () => void;
   onBrowse: () => void;
   onReload: () => void;
   onClear: () => void;
@@ -59,7 +61,14 @@ export function FileField(props: FileFieldProps) {
   const tooltip = buildAssetTooltip(props.asset, props.mixed, props.value);
 
   return (
-    <InspectorFieldRow label={props.label} description={props.description}>
+    <InspectorFieldRow
+      label={props.label}
+      description={props.description}
+      showReset={props.showReset}
+      onReset={props.onReset}
+      resetDisabled={props.disabled}
+      resetAlign="start"
+    >
       <div className="widget-file">
         <div className="widget-file-main" title={tooltip}>
           <span className="widget-file-icon" aria-hidden>

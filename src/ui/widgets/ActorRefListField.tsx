@@ -12,6 +12,8 @@ interface ActorRefListFieldProps {
   options: ActorRefOption[];
   mixed?: boolean;
   disabled?: boolean;
+  showReset?: boolean;
+  onReset?: () => void;
   onChange: (values: string[]) => void;
 }
 
@@ -32,7 +34,14 @@ export function ActorRefListField(props: ActorRefListFieldProps) {
   };
 
   return (
-    <InspectorFieldRow label={props.label} description={props.description}>
+    <InspectorFieldRow
+      label={props.label}
+      description={props.description}
+      showReset={props.showReset}
+      onReset={props.onReset}
+      resetDisabled={props.disabled}
+      resetAlign="start"
+    >
       <div
         className={`widget-actor-ref-list${canDrop ? " droppable" : ""}${!hasValues ? " empty" : ""}`}
         onDragOver={(event) => {

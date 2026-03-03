@@ -49,7 +49,8 @@ const sessionSchema = z.object({
     enabled: z.boolean(),
     kind: z.literal("scene"),
     actorIds: z.array(z.string()),
-    sceneComponentIds: z.array(z.string())
+    sceneComponentIds: z.array(z.string()),
+    backgroundColor: z.string().default("#070b12")
   }),
   actors: z.record(actorSchema),
   components: z.record(componentSchema),
@@ -87,6 +88,7 @@ const sessionSchema = z.object({
     z.object({
       id: z.string(),
       kind: z.enum(["hdri", "gaussian-splat", "generic"]),
+      encoding: z.enum(["raw", "ktx2", "splatbin-v1"]).optional(),
       relativePath: z.string(),
       sourceFileName: z.string(),
       byteSize: z.number()

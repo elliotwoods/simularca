@@ -1,19 +1,48 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faCopy, faTrashCan } from "@fortawesome/free-solid-svg-icons";
+import { faArrowsLeftRight, faCircle, faMinus, faRotateLeft, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
-import type { ActorNode, ActorVisibilityMode, FileParameterDefinition, ParameterDefinition, ParameterValue } from "@/core/types";
+import type {
+  ActorNode,
+  ActorVisibilityMode,
+  FileParameterDefinition,
+  ParameterDefinition,
+  ParameterValue,
+  ParameterValues
+} from "@/core/types";
 import type { ActorStatusEntry, ReloadableDescriptor } from "@/core/hotReload/types";
-import { appendCurvePoint, removeCurvePoint, setCurveAnchorPosition } from "@/features/curves/editing";
+import { appendCurvePoint, removeCurvePoint, setCurveAnchorPosition, setCurvePointMode } from "@/features/curves/editing";
 import { curveDataWithOverrides } from "@/features/curves/model";
 import { importFileForActorParam } from "@/features/imports/fileParameterImport";
-import { ActorRefField, ActorRefListField, DigitScrubInput, FileField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
+import { StatsBlock } from "@/ui/components/StatsBlock";
+import { ActorRefField, ActorRefListField, DigitScrubInput, FileField, NumberField, SegmentedControl, SelectField, TextField, ToggleField } from "@/ui/widgets";
 
 type BindingValue = ParameterValue;
 const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 const VISIBILITY_OPTIONS: ActorVisibilityMode[] = ["visible", "hidden", "selected"];
+const DEFAULT_SCENE_BACKGROUND = "#070b12";
+const CURVE_HANDLE_MODE_OPTIONS = [
+  {
+    value: "mirrored",
+    label: "Mirrored Handles",
+    title: "Mirrored handles (symmetric)",
+    icon: <FontAwesomeIcon icon={faArrowsLeftRight} />
+  },
+  {
+    value: "hard",
+    label: "Hard Vertex",
+    title: "Hard vertex (no handles)",
+    icon: <FontAwesomeIcon icon={faMinus} />
+  },
+  {
+    value: "normal",
+    label: "Normal Handles",
+    title: "Normal handles (independent)",
+    icon: <FontAwesomeIcon icon={faCircle} />
+  }
+] as const;
 
 function resolveActorDescriptor(
   actor: ActorNode,
@@ -40,8 +69,8 @@ function inferParamType(value: BindingValue): "number" | "boolean" | "string" {
   return "string";
 }
 
-function getFallbackDefinitionsFromParams(actor: ActorNode): ParameterDefinition[] {
-  return Object.entries(actor.params).map(([key, value]) => ({
+function getFallbackDefinitionsFromParams(params: ParameterValues): ParameterDefinition[] {
+  return Object.entries(params).map(([key, value]) => ({
     key,
     label: key,
     type: inferParamType(value)
@@ -54,7 +83,7 @@ function getParameterDefinitions(actor: ActorNode, descriptors: ReloadableDescri
   if (schemaParams.length > 0) {
     return schemaParams;
   }
-  return getFallbackDefinitionsFromParams(actor);
+  return getFallbackDefinitionsFromParams(actor.params);
 }
 
 function getDefaultStatusEntries(actor: ActorNode): ActorStatusEntry[] {
@@ -160,6 +189,10 @@ function isMixedNumber(values: number[]): boolean {
   return values.some((value) => Math.abs(value - first) > 1e-9);
 }
 
+function allActorsMatch(actorSelection: ActorNode[], predicate: (actor: ActorNode) => boolean): boolean {
+  return actorSelection.every(predicate);
+}
+
 function buildFileFilters(definition: FileParameterDefinition): { name: string; extensions: string[] }[] {
   const extensions = definition.accept
     .map((extension) => extension.trim().toLowerCase())
@@ -217,6 +250,7 @@ export function InspectorPane() {
   const appState = useAppStore((store) => store.state);
   const selection = appState.selection;
   const actors = appState.actors;
+  const components = appState.components;
   const assets = appState.assets;
   const actorStatusByActorId = appState.actorStatusByActorId;
   const mode = appState.mode;
@@ -233,6 +267,14 @@ export function InspectorPane() {
         .filter((actor): actor is NonNullable<typeof actor> => Boolean(actor)),
     [selection, actors]
   );
+  const componentSelection = useMemo(
+    () =>
+      selection
+        .filter((entry) => entry.kind === "component")
+        .map((entry) => components[entry.id])
+        .filter((component): component is NonNullable<typeof component> => Boolean(component)),
+    [selection, components]
+  );
 
   const definitions = useMemo(() => {
     const first = actorSelection[0];
@@ -244,8 +286,24 @@ export function InspectorPane() {
     }
     return commonDefinitionsForGroup(actorSelection, actorDescriptors);
   }, [actorSelection, actorDescriptors]);
+  const componentDefinitions = useMemo(() => {
+    const first = componentSelection[0];
+    if (!first) {
+      return [];
+    }
+    const firstDefinitions = getFallbackDefinitionsFromParams(first.params);
+    const others = componentSelection.slice(1).map((component) => getFallbackDefinitionsFromParams(component.params));
+    return firstDefinitions.filter((definition) =>
+      others.every((entries) => entries.some((entry) => entry.key === definition.key && entry.type === definition.type))
+    );
+  }, [componentSelection]);
 
   const readOnly = mode === "web-ro";
+  const [sceneBackgroundInput, setSceneBackgroundInput] = useState(appState.scene.backgroundColor);
+
+  useEffect(() => {
+    setSceneBackgroundInput(appState.scene.backgroundColor);
+  }, [appState.scene.backgroundColor]);
 
   useEffect(
     () => () => {
@@ -280,6 +338,14 @@ export function InspectorPane() {
   const updateSelectedActorParams = (key: string, nextValue: BindingValue): void => {
     for (const actor of actorSelection) {
       kernel.store.getState().actions.updateActorParams(actor.id, {
+        [key]: nextValue
+      });
+    }
+    scheduleAutosave();
+  };
+  const updateSelectedComponentParams = (key: string, nextValue: BindingValue): void => {
+    for (const component of componentSelection) {
+      kernel.store.getState().actions.updateComponentParams(component.id, {
         [key]: nextValue
       });
     }
@@ -333,8 +399,192 @@ export function InspectorPane() {
     scheduleAutosave();
   };
 
-  if (actorSelection.length === 0) {
-    return <div className="inspector-empty">Select one or more actors/components</div>;
+  const resetSelectedActorTransform = (key: "position" | "rotation"): void => {
+    const nextValue: [number, number, number] = [0, 0, 0];
+    for (const actor of actorSelection) {
+      kernel.store.getState().actions.setActorTransform(actor.id, key, nextValue);
+    }
+    scheduleAutosave();
+  };
+
+  if (actorSelection.length === 0 && componentSelection.length === 0) {
+    const environmentActor = Object.values(appState.actors).find((actor) => actor.actorType === "environment");
+    const hasEnvironmentBackground = typeof environmentActor?.params.assetId === "string" && environmentActor.params.assetId.length > 0;
+    return (
+      <div className="inspector-pane-root custom-inspector">
+        <section className="inspector-common-card">
+          <header>
+            <h4>Scene</h4>
+          </header>
+          <div className="inspector-common-grid">
+            <div className="inspector-common-row">
+              <span className="inspector-common-label">Name</span>
+              <span className="inspector-scene-value">{appState.scene.name}</span>
+            </div>
+            <div className="inspector-common-row">
+              <span className="inspector-common-label">Background</span>
+              <div className="inspector-common-control-wrap">
+                <div className="inspector-scene-color-row">
+                  <input
+                    type="color"
+                    className="inspector-color-input"
+                    value={appState.scene.backgroundColor}
+                    disabled={readOnly || hasEnvironmentBackground}
+                    onChange={(event) => {
+                      const color = event.target.value;
+                      setSceneBackgroundInput(color);
+                      kernel.store.getState().actions.setSceneBackgroundColor(color);
+                    }}
+                  />
+                  <input
+                    type="text"
+                    className="widget-text"
+                    value={sceneBackgroundInput}
+                    disabled={readOnly || hasEnvironmentBackground}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setSceneBackgroundInput(next);
+                      if (/^#[0-9a-fA-F]{6}$/.test(next) || /^#[0-9a-fA-F]{3}$/.test(next)) {
+                        kernel.store.getState().actions.setSceneBackgroundColor(next);
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className={`widget-reset-button${
+                    appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND ? "" : " is-hidden"
+                  }`}
+                  title="Reset Background"
+                  disabled={
+                    readOnly || hasEnvironmentBackground || appState.scene.backgroundColor.toLowerCase() === DEFAULT_SCENE_BACKGROUND
+                  }
+                  onClick={() => {
+                    setSceneBackgroundInput(DEFAULT_SCENE_BACKGROUND);
+                    kernel.store.getState().actions.setSceneBackgroundColor(DEFAULT_SCENE_BACKGROUND);
+                  }}
+                >
+                  <FontAwesomeIcon icon={faRotateLeft} />
+                </button>
+              </div>
+            </div>
+          </div>
+          {hasEnvironmentBackground ? (
+            <p className="panel-empty">Background color is overridden while an Environment texture is active.</p>
+          ) : null}
+        </section>
+      </div>
+    );
+  }
+
+  if (actorSelection.length === 0 && componentSelection.length > 0) {
+    return (
+      <div className="inspector-pane-root custom-inspector">
+        <section className="inspector-common-card">
+          <header>
+            <h4>Component</h4>
+          </header>
+          <div className="inspector-common-grid">
+            <div className="inspector-common-row">
+              <span className="inspector-common-label">Selection</span>
+              <span className="inspector-scene-value">{componentSelection.length} component(s)</span>
+            </div>
+          </div>
+        </section>
+        {componentDefinitions.length === 0 ? <div className="inspector-empty">No common editable params in current selection</div> : null}
+        {componentDefinitions.map((definition) => {
+          const values = componentSelection.map((component) => {
+            const value = component.params[definition.key];
+            return value !== undefined ? value : defaultValueForDefinition(definition);
+          });
+          const mixed = isMixedValue(values);
+          const current = values[0] ?? defaultValueForDefinition(definition);
+          const defaultValue = defaultValueForDefinition(definition);
+          const canReset = values.some((value) => !bindingValuesEqual(value, defaultValue));
+
+          if (definition.type === "number") {
+            return (
+              <NumberField
+                key={definition.key}
+                label={definition.label}
+                value={typeof current === "number" ? current : 0}
+                mixed={mixed}
+                min={definition.min}
+                max={definition.max}
+                step={definition.step}
+                precision={definition.precision}
+                unit={definition.unit}
+                dragSpeed={definition.dragSpeed}
+                disabled={readOnly}
+                showReset={canReset}
+                onReset={() => {
+                  updateSelectedComponentParams(definition.key, defaultValue);
+                }}
+                onChange={(next) => {
+                  updateSelectedComponentParams(definition.key, next);
+                }}
+              />
+            );
+          }
+
+          if (definition.type === "boolean") {
+            return (
+              <ToggleField
+                key={definition.key}
+                label={definition.label}
+                checked={Boolean(current)}
+                mixed={mixed}
+                disabled={readOnly}
+                showReset={canReset}
+                onReset={() => {
+                  updateSelectedComponentParams(definition.key, Boolean(defaultValue));
+                }}
+                onChange={(next) => {
+                  updateSelectedComponentParams(definition.key, next);
+                }}
+              />
+            );
+          }
+
+          if (definition.type === "select") {
+            return (
+              <SelectField
+                key={definition.key}
+                label={definition.label}
+                value={typeof current === "string" ? current : ""}
+                mixed={mixed}
+                options={definition.options}
+                disabled={readOnly}
+                showReset={canReset}
+                onReset={() => {
+                  updateSelectedComponentParams(definition.key, String(defaultValue));
+                }}
+                onChange={(next) => {
+                  updateSelectedComponentParams(definition.key, next);
+                }}
+              />
+            );
+          }
+
+          return (
+            <TextField
+              key={definition.key}
+              label={definition.label}
+              value={typeof current === "string" ? current : ""}
+              mixed={mixed}
+              disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedComponentParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
+              }}
+              onChange={(next) => {
+                updateSelectedComponentParams(definition.key, next);
+              }}
+            />
+          );
+        })}
+      </div>
+    );
   }
 
   const singleSelection = actorSelection.length === 1 ? actorSelection[0] : null;
@@ -350,18 +600,6 @@ export function InspectorPane() {
   const visibleStatusEntries = statusEntries.filter(
     (entry) => entry.value !== null && entry.value !== undefined && entry.value !== ""
   );
-  const copyText = (value: string, label: string): void => {
-    void navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : "Clipboard write failed";
-        kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
-      });
-  };
-
   const enabledValues = actorSelection.map((actor) => actor.enabled);
   const enabledMixed = enabledValues.some((value) => value !== enabledValues[0]);
   const enabledValue = enabledValues[0] ?? true;
@@ -379,6 +617,22 @@ export function InspectorPane() {
     actorSelection.map((actor) => actor.transform.rotation[1] * RAD_TO_DEG),
     actorSelection.map((actor) => actor.transform.rotation[2] * RAD_TO_DEG)
   ];
+  const canResetEnabled = !allActorsMatch(actorSelection, (actor) => actor.enabled === true);
+  const canResetVisibility = !allActorsMatch(actorSelection, (actor) => (actor.visibilityMode ?? "visible") === "visible");
+  const canResetTranslation = !allActorsMatch(
+    actorSelection,
+    (actor) =>
+      Math.abs(actor.transform.position[0]) <= 1e-9 &&
+      Math.abs(actor.transform.position[1]) <= 1e-9 &&
+      Math.abs(actor.transform.position[2]) <= 1e-9
+  );
+  const canResetRotation = !allActorsMatch(
+    actorSelection,
+    (actor) =>
+      Math.abs(actor.transform.rotation[0]) <= 1e-9 &&
+      Math.abs(actor.transform.rotation[1]) <= 1e-9 &&
+      Math.abs(actor.transform.rotation[2]) <= 1e-9
+  );
 
   const addCurveVertex = (): void => {
     if (!singleSelection || singleSelection.actorType !== "curve" || readOnly) {
@@ -411,75 +665,119 @@ export function InspectorPane() {
         <div className="inspector-common-grid">
           <div className="inspector-common-row">
             <span className="inspector-common-label">Enabled</span>
-            <ToggleField
-              label=""
-              checked={enabledValue}
-              mixed={enabledMixed}
-              disabled={readOnly}
-              embedded
-              onChange={(next) => updateSelectedActorEnabled(next)}
-            />
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                checked={enabledValue}
+                mixed={enabledMixed}
+                disabled={readOnly}
+                embedded
+                onChange={(next) => updateSelectedActorEnabled(next)}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetEnabled ? "" : " is-hidden"}`}
+                title="Reset Enabled"
+                disabled={readOnly || !canResetEnabled}
+                onClick={() => updateSelectedActorEnabled(true)}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
           </div>
           <div className="inspector-common-row">
             <span className="inspector-common-label">Visibility</span>
-            <select
-              className="widget-select"
-              value={visibilityMixed ? "" : visibilityValue}
-              disabled={readOnly}
-              onChange={(event) => {
-                const next = event.target.value as ActorVisibilityMode;
-                if (!next) {
-                  return;
-                }
-                updateSelectedActorVisibility(next);
-              }}
-            >
-              {visibilityMixed ? <option value="">Mixed...</option> : null}
-              {VISIBILITY_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option === "visible" ? "Visible" : option === "hidden" ? "Hidden" : "Visible When Selected"}
-                </option>
-              ))}
-            </select>
+            <div className="inspector-common-control-wrap">
+              <select
+                className="widget-select"
+                value={visibilityMixed ? "" : visibilityValue}
+                disabled={readOnly}
+                onChange={(event) => {
+                  const next = event.target.value as ActorVisibilityMode;
+                  if (!next) {
+                    return;
+                  }
+                  updateSelectedActorVisibility(next);
+                }}
+              >
+                {visibilityMixed ? <option value="">Mixed...</option> : null}
+                {VISIBILITY_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option === "visible" ? "Visible" : option === "hidden" ? "Hidden" : "Visible When Selected"}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={`widget-reset-button${canResetVisibility ? "" : " is-hidden"}`}
+                title="Reset Visibility"
+                disabled={readOnly || !canResetVisibility}
+                onClick={() => updateSelectedActorVisibility("visible")}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
           </div>
           <div className="inspector-common-row">
             <span className="inspector-common-label">Translate</span>
-            <div className="inspector-vector-inputs">
-              {([0, 1, 2] as const).map((axisIndex) => {
-                const values = positionValuesByAxis[axisIndex];
-                return (
-                  <div key={`pos-${axisIndex}`} className="inspector-vector-cell">
-                    <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
-                    <DigitScrubInput
-                      value={values[0] ?? 0}
-                      mixed={isMixedNumber(values)}
-                      precision={3}
-                      disabled={readOnly}
-                      onChange={(next) => updateSelectedActorTransformAxis("position", axisIndex, next)}
-                    />
-                  </div>
-                );
-              })}
+            <div className="inspector-common-control-wrap">
+              <div className="inspector-vector-inputs">
+                {([0, 1, 2] as const).map((axisIndex) => {
+                  const values = positionValuesByAxis[axisIndex];
+                  return (
+                    <div key={`pos-${axisIndex}`} className="inspector-vector-cell">
+                      <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
+                      <DigitScrubInput
+                        value={values[0] ?? 0}
+                        mixed={isMixedNumber(values)}
+                        precision={3}
+                        disabled={readOnly}
+                        onChange={(next) => updateSelectedActorTransformAxis("position", axisIndex, next)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className={`widget-reset-button${canResetTranslation ? "" : " is-hidden"}`}
+                title="Reset Translation"
+                disabled={readOnly || !canResetTranslation}
+                onClick={() => resetSelectedActorTransform("position")}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
             </div>
           </div>
           <div className="inspector-common-row">
             <span className="inspector-common-label">Rotate (deg)</span>
-            <div className="inspector-vector-inputs">
-              {([0, 1, 2] as const).map((axisIndex) => {
-                const values = rotationValuesByAxis[axisIndex];
-                return (
-                  <div key={`rot-${axisIndex}`} className="inspector-vector-cell">
-                    <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
-                    <DigitScrubInput
-                      value={values[0] ?? 0}
-                      mixed={isMixedNumber(values)}
-                      precision={2}
-                      disabled={readOnly}
-                      onChange={(next) => updateSelectedActorTransformAxis("rotation", axisIndex, next * DEG_TO_RAD)}
-                    />
-                  </div>
-                );
-              })}
+            <div className="inspector-common-control-wrap">
+              <div className="inspector-vector-inputs">
+                {([0, 1, 2] as const).map((axisIndex) => {
+                  const values = rotationValuesByAxis[axisIndex];
+                  return (
+                    <div key={`rot-${axisIndex}`} className="inspector-vector-cell">
+                      <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
+                      <DigitScrubInput
+                        value={values[0] ?? 0}
+                        mixed={isMixedNumber(values)}
+                        precision={2}
+                        disabled={readOnly}
+                        onChange={(next) => updateSelectedActorTransformAxis("rotation", axisIndex, next * DEG_TO_RAD)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className={`widget-reset-button${canResetRotation ? "" : " is-hidden"}`}
+                title="Reset Rotation"
+                disabled={readOnly || !canResetRotation}
+                onClick={() => resetSelectedActorTransform("rotation")}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
             </div>
           </div>
         </div>
@@ -509,6 +807,21 @@ export function InspectorPane() {
                 }}
               >
                 <span className="curve-vertex-label">V{pointIndex + 1}</span>
+                <SegmentedControl
+                  compact
+                  value={point.mode}
+                  options={[...CURVE_HANDLE_MODE_OPTIONS]}
+                  disabled={readOnly}
+                  onChange={(nextMode) => {
+                    if (nextMode !== "mirrored" && nextMode !== "hard" && nextMode !== "normal") {
+                      return;
+                    }
+                    updateSingleCurve((actor) => {
+                      const current = curveDataWithOverrides(actor);
+                      return setCurvePointMode(current, pointIndex, nextMode);
+                    });
+                  }}
+                />
                 <div className="curve-vertex-inputs">
                   {([0, 1, 2] as const).map((axisIndex) => (
                     <div key={`curve-point-${pointIndex}-axis-${axisIndex}`} className="curve-vertex-cell">
@@ -554,6 +867,8 @@ export function InspectorPane() {
         const values = actorSelection.map((actor) => bindingValueFor(definition, actor));
         const mixed = isMixedValue(values);
         const current = values[0] ?? defaultValueForDefinition(definition);
+        const defaultValue = defaultValueForDefinition(definition);
+        const canReset = values.some((value) => !bindingValuesEqual(value, defaultValue));
 
         if (definition.type === "number") {
           return (
@@ -569,6 +884,10 @@ export function InspectorPane() {
               unit={definition.unit}
               dragSpeed={definition.dragSpeed}
               disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedActorParams(definition.key, defaultValue);
+              }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);
               }}
@@ -584,6 +903,10 @@ export function InspectorPane() {
               checked={Boolean(current)}
               mixed={mixed}
               disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedActorParams(definition.key, Boolean(defaultValue));
+              }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);
               }}
@@ -600,6 +923,10 @@ export function InspectorPane() {
               mixed={mixed}
               options={definition.options}
               disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedActorParams(definition.key, String(defaultValue));
+              }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);
               }}
@@ -617,6 +944,10 @@ export function InspectorPane() {
               mixed={mixed}
               options={options}
               disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedActorParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
+              }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);
               }}
@@ -634,6 +965,13 @@ export function InspectorPane() {
               mixed={mixed}
               options={options}
               disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                const resetList = Array.isArray(defaultValue)
+                  ? defaultValue.filter((entry): entry is string => typeof entry === "string")
+                  : [];
+                updateSelectedActorParams(definition.key, resetList);
+              }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);
               }}
@@ -652,6 +990,10 @@ export function InspectorPane() {
               mixed={mixed}
               asset={asset}
               disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedActorParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
+              }}
               onBrowse={() => {
                 void (async () => {
                   try {
@@ -699,6 +1041,10 @@ export function InspectorPane() {
             value={typeof current === "string" ? current : ""}
             mixed={mixed}
             disabled={readOnly}
+            showReset={canReset}
+            onReset={() => {
+              updateSelectedActorParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
+            }}
             onChange={(next) => {
               updateSelectedActorParams(definition.key, next);
             }}
@@ -706,44 +1052,23 @@ export function InspectorPane() {
         );
       })}
       {singleSelection ? (
-        <section className="inspector-debug-card">
-          <header className="inspector-card-header">
-            <h4>Status</h4>
-            <button
-              type="button"
-              className="inspector-copy-button"
-              title="Copy panel contents"
-              onClick={() => {
-                const lines = ["Status", ...visibleStatusEntries.map((entry) => `${entry.label}: ${formatStatusValue(entry.value)}`)];
-                copyText(lines.join("\n"), "Status");
-              }}
-            >
-              <FontAwesomeIcon icon={faCopy} />
-            </button>
-          </header>
-          {visibleStatusEntries.length === 0 ? (
-            <p className="panel-empty">No status available.</p>
-          ) : (
-            <dl className="inspector-debug-list">
-              {visibleStatusEntries.map((entry) => (
-                <div key={entry.label}>
-                  <dt>{entry.label}</dt>
-                  <dd
-                    className={
-                      entry.tone === "error"
-                        ? "inspector-debug-error"
-                        : entry.tone === "warning"
-                          ? "inspector-debug-warning"
-                          : undefined
-                    }
-                  >
-                    {formatStatusValue(entry.value)}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          )}
-        </section>
+        <StatsBlock
+          title="Status"
+          className="inspector-debug-card"
+          titleLevel="h4"
+          emptyText="No status available."
+          rows={visibleStatusEntries.map((entry) => ({
+            label: entry.label,
+            value: formatStatusValue(entry.value),
+            tone: entry.tone === "error" ? "error" : entry.tone === "warning" ? "warning" : "default"
+          }))}
+          onCopySuccess={(label) => {
+            kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
+          }}
+          onCopyError={(label, message) => {
+            kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
+          }}
+        />
       ) : null}
     </div>
   );

@@ -7,10 +7,9 @@ export interface SplatImportRequest {
 }
 
 export async function importGaussianSplat(kernel: AppKernel, request: SplatImportRequest): Promise<string> {
-  const asset = await kernel.storage.importAsset({
+  const asset = await kernel.storage.importGaussianSplat({
     sessionName: request.sessionName,
-    sourcePath: request.sourcePath,
-    kind: "gaussian-splat"
+    sourcePath: request.sourcePath
   });
 
   const actorId = createActorFromDescriptor(kernel, "actor.gaussianSplat");
@@ -20,8 +19,8 @@ export async function importGaussianSplat(kernel: AppKernel, request: SplatImpor
   kernel.store.getState().actions.updateActorParams(actorId, {
     assetId: asset.id,
     scaleFactor: 1,
-    opacity: 1,
-    pointSize: 0.02
+    splatSize: 1,
+    opacity: 1
   });
   kernel.store.setState((store) => ({
     ...store,

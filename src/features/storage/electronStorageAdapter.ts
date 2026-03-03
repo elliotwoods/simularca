@@ -15,6 +15,8 @@ export function createElectronStorageAdapter(): StorageAdapter {
     saveSession: (sessionName, payload) => window.electronAPI!.saveSession(sessionName, payload),
     renameSession: (previousName, nextName) => window.electronAPI!.renameSession({ previousName, nextName }),
     importAsset: (args) => window.electronAPI!.importAsset(args),
+    importGaussianSplat: (args) => window.electronAPI!.importGaussianSplat(args),
+    convertGaussianAsset: (args) => window.electronAPI!.convertGaussianAsset(args),
     transcodeHdriToKtx2: (args) => window.electronAPI!.transcodeHdriToKtx2(args),
     deleteAsset: (args) => window.electronAPI!.deleteAsset(args),
     resolveAssetPath: (args) => window.electronAPI!.resolveAssetPath(args),

@@ -8,9 +8,12 @@ import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import type { AppKernel } from "@/app/kernel";
 import type { ActorNode } from "@/core/types";
+import { getEffectiveCurveHandles } from "@/features/curves/handles";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
 import { estimateCurveLength } from "@/features/curves/sampler";
-import { getGaussianFilterMode, getGaussianFilterRegionActorIds, hasActiveGaussianFilter } from "@/render/gaussianFilter";
+import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
+import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
+import type { SplatQueryArgs, VisibleSplatSample } from "@/render/splatQueryRegistry";
 
 const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
 const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
@@ -19,6 +22,7 @@ const CURVE_RENDER_LINE_NAME = "curve-render-line";
 const SPLAT_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ");
 const SPLAT_COORDINATE_CORRECTION_QUATERNION = new THREE.Quaternion().setFromEuler(SPLAT_COORDINATE_CORRECTION_EULER);
 const MATRIX_IDENTITY = new THREE.Matrix4().identity();
+const MAX_GAUSSIAN_BILLBOARD_INSTANCES = 1000000;
 
 interface GaussianFallbackFilterRegion {
   actorId: string;
@@ -31,6 +35,17 @@ interface GaussianFallbackFilterRegion {
 interface GaussianFallbackFilterSpec {
   mode: "inside" | "outside";
   regions: GaussianFallbackFilterRegion[];
+}
+
+interface GaussianSortableBatch {
+  mesh: any;
+  count: number;
+  centersBase: Float32Array;
+  scalesBase: Float32Array;
+  rotationsBase: Float32Array;
+  colorsBase: Float32Array;
+  indices: number[];
+  depths: Float32Array;
 }
 
 function formatLoadError(error: unknown): string {
@@ -55,10 +70,33 @@ function formatLoadError(error: unknown): string {
 }
 
 function getAttribute(geometry: any, names: string[]): any {
+  const normalize = (value: string) => value.trim().toLowerCase();
   for (const name of names) {
     const attribute = geometry.getAttribute?.(name);
     if (attribute) {
       return attribute;
+    }
+  }
+  const attributes = geometry?.attributes as Record<string, unknown> | undefined;
+  if (!attributes) {
+    return null;
+  }
+  const entries = Object.entries(attributes);
+  for (const name of names) {
+    const needle = normalize(name);
+    for (const [key, attribute] of entries) {
+      if (normalize(key) === needle) {
+        return attribute;
+      }
+    }
+  }
+  for (const name of names) {
+    const needle = normalize(name);
+    for (const [key, attribute] of entries) {
+      const normalizedKey = normalize(key);
+      if (normalizedKey.startsWith(`${needle}_`) || normalizedKey.startsWith(`${needle}-`)) {
+        return attribute;
+      }
     }
   }
   return null;
@@ -70,6 +108,59 @@ function sigmoid(value: number): number {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function detectColorDenominator(attribute: any): number {
+  if (!attribute) {
+    return 1;
+  }
+  const array = attribute.array;
+  if (array instanceof Uint16Array) {
+    return 65535;
+  }
+  if (array instanceof Uint8Array || array instanceof Uint8ClampedArray) {
+    return 255;
+  }
+  const sampleCount = Math.min(4096, Math.max(0, Number(attribute.count ?? 0)));
+  let max = 0;
+  for (let i = 0; i < sampleCount; i += 1) {
+    max = Math.max(max, attribute.getX(i), attribute.getY(i), attribute.getZ(i));
+  }
+  if (max > 255.5) {
+    return 65535;
+  }
+  if (max > 1.001) {
+    return 255;
+  }
+  return 1;
+}
+
+function estimateAttributeSpread(attribute: any): number {
+  if (!attribute || typeof attribute.count !== "number" || attribute.count <= 0) {
+    return 0;
+  }
+  const sampleCount = Math.min(4096, attribute.count);
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < sampleCount; i += 1) {
+    min = Math.min(min, attribute.getX(i), attribute.getY(i), attribute.getZ(i));
+    max = Math.max(max, attribute.getX(i), attribute.getY(i), attribute.getZ(i));
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return 0;
+  }
+  return Math.max(0, max - min);
+}
+
+function normalizeBackgroundColor(value: unknown): string {
+  if (typeof value !== "string") {
+    return "#070b12";
+  }
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed) || /^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return "#070b12";
 }
 
 function readAttributeRange(attribute: any): { min: number; max: number } {
@@ -110,6 +201,50 @@ function correctedBoundsForViewport(bounds: any): any {
   return new THREE.Box3().setFromPoints(corners);
 }
 
+function extractPlyVertexPropertyNames(bytes: Uint8Array): Set<string> {
+  const limit = Math.min(bytes.byteLength, 1024 * 1024);
+  const headerText = new TextDecoder().decode(bytes.subarray(0, limit));
+  const endHeaderIndex = headerText.indexOf("end_header");
+  if (endHeaderIndex < 0) {
+    return new Set<string>();
+  }
+  const header = headerText.slice(0, endHeaderIndex);
+  const lines = header.split(/\r\n|\n|\r/);
+  const names = new Set<string>();
+  let inVertexElement = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    if (line.startsWith("element ")) {
+      const parts = line.split(/\s+/);
+      const elementName = parts[1];
+      inVertexElement = elementName === "vertex";
+      continue;
+    }
+    if (!inVertexElement) {
+      continue;
+    }
+    if (!line.startsWith("property ")) {
+      continue;
+    }
+    const parts = line.split(/\s+/);
+    if (parts[1] === "list") {
+      const name = parts[4];
+      if (typeof name === "string" && name.length > 0) {
+        names.add(name);
+      }
+    } else {
+      const name = parts[2];
+      if (typeof name === "string" && name.length > 0) {
+        names.add(name);
+      }
+    }
+  }
+  return names;
+}
+
 export class SceneController {
   public readonly scene = new THREE.Scene();
   private readonly actorObjects = new Map<string, any>();
@@ -122,6 +257,9 @@ export class SceneController {
   private readonly primitiveSignatureByActorId = new Map<string, string>();
   private readonly gaussianGeometryByActorId = new Map<string, any>();
   private readonly gaussianVisualSignatureByActorId = new Map<string, string>();
+  private readonly gaussianVisibleCountByActorId = new Map<string, number>();
+  private readonly gaussianTriangleCountByActorId = new Map<string, number>();
+  private readonly gaussianSortableBatchesByActorId = new Map<string, GaussianSortableBatch>();
   private readonly curveSignatureByActorId = new Map<string, string>();
   private readonly plyLoader = new PLYLoader();
   private readonly gltfLoader = new GLTFLoader();
@@ -130,12 +268,13 @@ export class SceneController {
   private readonly objLoader = new OBJLoader();
   private readonly rgbeLoader = new RGBELoader();
   private readonly ktx2Loader = new KTX2Loader();
+  private gaussianSpriteTexture: any | null = null;
   private currentEnvironmentAssetId: string | null = null;
   private currentEnvironmentReloadToken = 0;
-  private renderGaussianSplatFallback = true;
 
   public constructor(private readonly kernel: AppKernel) {
-    this.scene.background = new THREE.Color("#070b12");
+    const initialBackground = normalizeBackgroundColor(this.kernel.store.getState().state.scene.backgroundColor);
+    this.scene.background = new THREE.Color(initialBackground);
     const grid = new THREE.GridHelper(20, 20, 0x2f8f9d, 0x1f2430);
     (grid.material as any).transparent = true;
     (grid.material as any).opacity = 0.35;
@@ -171,6 +310,9 @@ export class SceneController {
         }
         this.gaussianGeometryByActorId.delete(existing);
         this.gaussianVisualSignatureByActorId.delete(existing);
+        this.gaussianVisibleCountByActorId.delete(existing);
+        this.gaussianTriangleCountByActorId.delete(existing);
+        this.gaussianSortableBatchesByActorId.delete(existing);
         this.curveSignatureByActorId.delete(existing);
         this.kernel.store.getState().actions.setActorStatus(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
@@ -178,23 +320,9 @@ export class SceneController {
     }
 
     for (const actor of Object.values(state.actors)) {
-      if (
-        actor.actorType === "gaussian-splat" &&
-        !this.renderGaussianSplatFallback &&
-        !hasActiveGaussianFilter(actor, state.actors)
-      ) {
-        const existing = this.actorObjects.get(actor.id);
-        if (existing) {
-          existing.parent?.remove(existing);
-          this.actorObjects.delete(actor.id);
-        }
-        this.gaussianGeometryByActorId.delete(actor.id);
-        this.gaussianVisualSignatureByActorId.delete(actor.id);
-        continue;
-      }
       await this.ensureActorObject(actor);
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
-      if (actor.actorType === "gaussian-splat" && this.renderGaussianSplatFallback) {
+      if (actor.actorType === "gaussian-splat") {
         await this.syncGaussianSplatAsset(actor);
       }
       if (actor.actorType === "mesh") {
@@ -212,15 +340,190 @@ export class SceneController {
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
     }
 
+    this.applySceneBackgroundColor();
     await this.updateEnvironmentTexture();
-  }
-
-  public setGaussianSplatFallbackEnabled(enabled: boolean): void {
-    this.renderGaussianSplatFallback = enabled;
   }
 
   public getActorObject(actorId: string): any | null {
     return this.actorObjects.get(actorId) ?? null;
+  }
+
+  public getGaussianRenderStats(): { drawCalls: number; triangles: number; visibleCount: number } {
+    let drawCalls = 0;
+    let triangles = 0;
+    let visibleCount = 0;
+    for (const [actorId, count] of this.gaussianVisibleCountByActorId.entries()) {
+      const object = this.actorObjects.get(actorId);
+      if (!object || object.visible === false) {
+        continue;
+      }
+      if (count > 0) {
+        drawCalls += 1;
+      }
+      visibleCount += Math.max(0, Math.floor(count));
+    }
+    for (const [actorId, tri] of this.gaussianTriangleCountByActorId.entries()) {
+      const object = this.actorObjects.get(actorId);
+      if (!object || object.visible === false) {
+        continue;
+      }
+      triangles += Math.max(0, Math.floor(tri));
+    }
+    return { drawCalls, triangles, visibleCount };
+  }
+
+  public updateGaussianDepthSorting(camera: any): void {
+    if (!camera || !camera.matrixWorldInverse) {
+      return;
+    }
+    const cameraView = camera.matrixWorldInverse as any;
+    const cameraWorldQuaternion = new THREE.Quaternion();
+    camera.getWorldQuaternion(cameraWorldQuaternion);
+    const inverseCameraWorldQuaternion = cameraWorldQuaternion.clone().invert();
+    const parentWorldQuaternion = new THREE.Quaternion();
+    const localBillboardQuaternion = new THREE.Quaternion();
+    const inPlaneQuaternion = new THREE.Quaternion();
+    const combinedQuaternion = new THREE.Quaternion();
+    const splatQuaternion = new THREE.Quaternion();
+    const matrix = new THREE.Matrix4();
+    const parentMatrixWorld = new THREE.Matrix4();
+    const centerWorld = new THREE.Vector3();
+    const centerView = new THREE.Vector3();
+    const localCenter = new THREE.Vector3();
+    const localScale = new THREE.Vector3();
+    const splatAxisWorld = new THREE.Vector3(1, 0, 0);
+    const splatAxisCamera = new THREE.Vector3(1, 0, 0);
+    const zAxis = new THREE.Vector3(0, 0, 1);
+    const tempColor = new THREE.Color(0xffffff);
+
+    for (const batch of this.gaussianSortableBatchesByActorId.values()) {
+      const mesh = batch.mesh;
+      if (!mesh || mesh.visible === false || !mesh.parent) {
+        continue;
+      }
+      parentMatrixWorld.copy(mesh.parent.matrixWorld);
+      mesh.parent.getWorldQuaternion(parentWorldQuaternion);
+      localBillboardQuaternion.copy(parentWorldQuaternion).invert().multiply(cameraWorldQuaternion);
+      const count = Math.max(0, Math.min(batch.count, Math.floor(batch.centersBase.length / 3)));
+      if (count <= 1) {
+        continue;
+      }
+
+      for (let i = 0; i < count; i += 1) {
+        const i3 = i * 3;
+        centerWorld.set(batch.centersBase[i3] ?? 0, batch.centersBase[i3 + 1] ?? 0, batch.centersBase[i3 + 2] ?? 0);
+        centerWorld.applyMatrix4(parentMatrixWorld);
+        centerView.copy(centerWorld).applyMatrix4(cameraView);
+        batch.depths[i] = centerView.z;
+        batch.indices[i] = i;
+      }
+
+      batch.indices.sort((a, b) => {
+        const da = batch.depths[a] ?? 0;
+        const db = batch.depths[b] ?? 0;
+        return da - db;
+      });
+
+      for (let sorted = 0; sorted < count; sorted += 1) {
+        const source = batch.indices[sorted] ?? sorted;
+        const src3 = source * 3;
+        localCenter.set(batch.centersBase[src3] ?? 0, batch.centersBase[src3 + 1] ?? 0, batch.centersBase[src3 + 2] ?? 0);
+        const src2 = source * 2;
+        localScale.set(batch.scalesBase[src2] ?? 1, batch.scalesBase[src2 + 1] ?? 1, 1);
+        const src4 = source * 4;
+        splatQuaternion.set(
+          batch.rotationsBase[src4] ?? 0,
+          batch.rotationsBase[src4 + 1] ?? 0,
+          batch.rotationsBase[src4 + 2] ?? 0,
+          batch.rotationsBase[src4 + 3] ?? 1
+        );
+        if (splatQuaternion.lengthSq() < 1e-10) {
+          splatQuaternion.set(0, 0, 0, 1);
+        } else {
+          splatQuaternion.normalize();
+        }
+        splatAxisWorld.set(1, 0, 0).applyQuaternion(splatQuaternion).applyQuaternion(parentWorldQuaternion);
+        splatAxisCamera.copy(splatAxisWorld).applyQuaternion(inverseCameraWorldQuaternion);
+        const angle = Math.atan2(splatAxisCamera.y, splatAxisCamera.x);
+        inPlaneQuaternion.setFromAxisAngle(zAxis, angle);
+        combinedQuaternion.copy(localBillboardQuaternion).multiply(inPlaneQuaternion);
+        matrix.compose(localCenter, combinedQuaternion, localScale);
+        mesh.setMatrixAt(sorted, matrix);
+        tempColor.setRGB(
+          batch.colorsBase[src3] ?? 1,
+          batch.colorsBase[src3 + 1] ?? 1,
+          batch.colorsBase[src3 + 2] ?? 1
+        );
+        mesh.setColorAt(sorted, tempColor);
+      }
+
+      mesh.count = count;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) {
+        mesh.instanceColor.needsUpdate = true;
+      }
+    }
+  }
+
+  public queryVisibleSplats(args?: SplatQueryArgs): VisibleSplatSample[] {
+    const state = this.kernel.store.getState().state;
+    const maxResults = Math.max(1, Math.min(50000, Math.floor(args?.maxResults ?? 5000)));
+    const actorIdFilter = args?.actorIds ? new Set(args.actorIds) : null;
+    const bounds = args?.bounds
+      ? new THREE.Box3(
+          new THREE.Vector3(args.bounds.min[0], args.bounds.min[1], args.bounds.min[2]),
+          new THREE.Vector3(args.bounds.max[0], args.bounds.max[1], args.bounds.max[2])
+        )
+      : null;
+    const results: VisibleSplatSample[] = [];
+    const sampleLocal = new THREE.Vector3();
+    const sampleWorld = new THREE.Vector3();
+    const sampleInRegion = new THREE.Vector3();
+
+    for (const actor of Object.values(state.actors)) {
+      if (actor.actorType !== "gaussian-splat" || !actor.enabled) {
+        continue;
+      }
+      if (actorIdFilter && !actorIdFilter.has(actor.id)) {
+        continue;
+      }
+      const geometry = this.gaussianGeometryByActorId.get(actor.id);
+      const actorObject = this.actorObjects.get(actor.id);
+      if (!geometry || !(actorObject instanceof THREE.Group) || actorObject.visible === false) {
+        continue;
+      }
+      const correctedRoot = actorObject.getObjectByName(GAUSSIAN_RENDER_ROOT_NAME);
+      if (!(correctedRoot instanceof THREE.Group)) {
+        continue;
+      }
+      const position = geometry.getAttribute("position");
+      if (!position || typeof position.count !== "number") {
+        continue;
+      }
+      const filterSpec = this.buildGaussianFilterSpec(actor);
+      const opacity = Number(actor.params.opacity ?? 1);
+      for (let index = 0; index < position.count; index += 1) {
+        sampleLocal.set(position.getX(index), position.getY(index), position.getZ(index));
+        if (filterSpec && !this.isGaussianPointVisible(sampleLocal, filterSpec, sampleInRegion)) {
+          continue;
+        }
+        sampleWorld.copy(sampleLocal);
+        correctedRoot.localToWorld(sampleWorld);
+        if (bounds && !bounds.containsPoint(sampleWorld)) {
+          continue;
+        }
+        results.push({
+          actorId: actor.id,
+          splatIndex: index,
+          position: [sampleWorld.x, sampleWorld.y, sampleWorld.z],
+          opacity
+        });
+        if (results.length >= maxResults) {
+          return results;
+        }
+      }
+    }
+    return results;
   }
 
   private async ensureActorObject(actor: ActorNode): Promise<void> {
@@ -409,16 +712,18 @@ export class SceneController {
         if (!current || !next) {
           continue;
         }
+        const currentHandles = getEffectiveCurveHandles(current);
+        const nextHandles = getEffectiveCurveHandles(next);
         const p0 = new THREE.Vector3(...current.position);
         const p1 = new THREE.Vector3(
-          current.position[0] + current.handleOut[0],
-          current.position[1] + current.handleOut[1],
-          current.position[2] + current.handleOut[2]
+          current.position[0] + currentHandles.handleOut[0],
+          current.position[1] + currentHandles.handleOut[1],
+          current.position[2] + currentHandles.handleOut[2]
         );
         const p2 = new THREE.Vector3(
-          next.position[0] + next.handleIn[0],
-          next.position[1] + next.handleIn[1],
-          next.position[2] + next.handleIn[2]
+          next.position[0] + nextHandles.handleIn[0],
+          next.position[1] + nextHandles.handleIn[1],
+          next.position[2] + nextHandles.handleIn[2]
         );
         const p3 = new THREE.Vector3(...next.position);
         const curve = new THREE.CubicBezierCurve3(p0, p1, p2, p3);
@@ -521,6 +826,9 @@ export class SceneController {
       }
       this.gaussianGeometryByActorId.delete(actor.id);
       this.gaussianVisualSignatureByActorId.delete(actor.id);
+      this.gaussianVisibleCountByActorId.delete(actor.id);
+      this.gaussianTriangleCountByActorId.delete(actor.id);
+      this.gaussianSortableBatchesByActorId.delete(actor.id);
       return;
     }
 
@@ -529,8 +837,8 @@ export class SceneController {
     if (!asset) {
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
-          backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-          loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+          backend: "native-in-scene",
+          loader: "splatbin-v1",
           loaderVersion: THREE.REVISION
         },
         error: "Asset reference not found in session state.",
@@ -540,98 +848,173 @@ export class SceneController {
     }
     this.kernel.store.getState().actions.setActorStatus(actor.id, {
       values: {
-        backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-        loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+        backend: "native-in-scene",
+        loader: "splatbin-v1",
         loaderVersion: THREE.REVISION,
+        encoding: asset.encoding ?? "raw",
         assetFileName: asset.sourceFileName,
         loadState: "loading"
       },
       updatedAtIso: new Date().toISOString()
     });
-    const url = await this.kernel.storage.resolveAssetPath({
-      sessionName: state.activeSessionName,
-      relativePath: asset.relativePath
-    });
-    this.plyLoader.load(
-      url,
-      (geometry) => {
-        geometry.computeBoundingBox();
-        geometry.computeBoundingSphere();
-        const position = geometry.getAttribute("position");
-        const pointCount = position?.count ?? 0;
-        const bounds = geometry.boundingBox;
-        this.gaussianGeometryByActorId.set(actor.id, geometry);
-        this.gaussianVisualSignatureByActorId.delete(actor.id);
-        this.syncGaussianFallbackVisual(actor, correctedRoot, geometry);
-
-        if (bounds) {
-          const correctedBounds = correctedBoundsForViewport(bounds);
-          const min = `${correctedBounds.min.x.toFixed(3)}, ${correctedBounds.min.y.toFixed(3)}, ${correctedBounds.min.z.toFixed(3)}`;
-          const max = `${correctedBounds.max.x.toFixed(3)}, ${correctedBounds.max.y.toFixed(3)}, ${correctedBounds.max.z.toFixed(3)}`;
-          let helper = this.gaussianBoundsHelpers.get(actor.id);
-          if (!helper) {
-            helper = new THREE.Box3Helper(correctedBounds.clone(), 0xff5bd6);
-            this.gaussianBoundsHelpers.set(actor.id, helper);
-            correctedRoot.add(helper);
-          } else {
-            helper.box.copy(correctedBounds);
-          }
-          this.kernel.store
-            .getState()
-            .actions.setStatus(
-              `Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount} | bounds: [${min}] -> [${max}]`
-            );
-          this.kernel.store.getState().actions.setActorStatus(actor.id, {
-            values: {
-              backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-              loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-              loaderVersion: THREE.REVISION,
-              assetFileName: asset.sourceFileName,
-              loadState: "loaded",
-              pointCount,
-              boundsMin: [correctedBounds.min.x, correctedBounds.min.y, correctedBounds.min.z],
-              boundsMax: [correctedBounds.max.x, correctedBounds.max.y, correctedBounds.max.z]
-            },
-            updatedAtIso: new Date().toISOString()
-          });
-        } else {
-          this.kernel.store
-            .getState()
-            .actions.setStatus(`Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount}`);
-          this.kernel.store.getState().actions.setActorStatus(actor.id, {
-            values: {
-              backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-              loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-              loaderVersion: THREE.REVISION,
-              assetFileName: asset.sourceFileName,
-              loadState: "loaded",
-              pointCount
-            },
-            updatedAtIso: new Date().toISOString()
-          });
+    try {
+      const rawBytes = await this.kernel.storage.readAssetBytes({
+        sessionName: state.activeSessionName,
+        relativePath: asset.relativePath
+      });
+      const parsed = tryParseSplatBinary(rawBytes);
+      const geometryBytes = parsed?.payload ?? rawBytes;
+      const parseInput = geometryBytes.buffer.slice(
+        geometryBytes.byteOffset,
+        geometryBytes.byteOffset + geometryBytes.byteLength
+      );
+      const vertexPropertyNames = extractPlyVertexPropertyNames(geometryBytes);
+      const gaussianPropertyCandidates = [
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+        "dc_0",
+        "dc_1",
+        "dc_2",
+        "opacity",
+        "alpha",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "sx",
+        "sy",
+        "sz",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3"
+      ];
+      const customPropertyMapping: Record<string, string[]> = {};
+      for (const name of gaussianPropertyCandidates) {
+        if (vertexPropertyNames.has(name)) {
+          customPropertyMapping[name] = [name];
         }
-      },
-      undefined,
-      (error) => {
-        const errorMessage = formatLoadError(error);
-        this.gaussianGeometryByActorId.delete(actor.id);
-        this.gaussianVisualSignatureByActorId.delete(actor.id);
-        this.kernel.store.getState().actions.setActorStatus(actor.id, {
-          values: {
-            backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
-            loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
-            loaderVersion: THREE.REVISION,
-            assetFileName: asset.sourceFileName,
-            loadState: "failed"
-          },
-          error: errorMessage,
-          updatedAtIso: new Date().toISOString()
-        });
+      }
+      this.plyLoader.setCustomPropertyNameMapping(customPropertyMapping);
+      const geometry = (this.plyLoader as any).parse(parseInput);
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      const position = geometry.getAttribute("position");
+      const pointCount = position?.count ?? 0;
+      const bounds = geometry.boundingBox;
+      const attributeNames = Object.keys((geometry?.attributes as Record<string, unknown> | undefined) ?? {});
+      const fdc0Attr = getAttribute(geometry, ["f_dc_0", "dc_0", "f_dc0"]);
+      const fdc1Attr = getAttribute(geometry, ["f_dc_1", "dc_1", "f_dc1"]);
+      const fdc2Attr = getAttribute(geometry, ["f_dc_2", "dc_2", "f_dc2"]);
+      const scale0Attr = getAttribute(geometry, ["scale_0", "sx"]);
+      const scale1Attr = getAttribute(geometry, ["scale_1", "sy"]);
+      const scale2Attr = getAttribute(geometry, ["scale_2", "sz"]);
+      const rot0Attr = getAttribute(geometry, ["rot_0", "r_0"]);
+      const rot1Attr = getAttribute(geometry, ["rot_1", "r_1"]);
+      const rot2Attr = getAttribute(geometry, ["rot_2", "r_2"]);
+      const rot3Attr = getAttribute(geometry, ["rot_3", "r_3"]);
+      const opacityAttr = getAttribute(geometry, ["opacity", "alpha", "a"]);
+      const loaderDebugValues = {
+        hasFdc: Boolean(fdc0Attr && fdc1Attr && fdc2Attr),
+        hasScale: Boolean(scale0Attr && scale1Attr && scale2Attr),
+        hasRotation: Boolean(rot0Attr && rot1Attr && rot2Attr && rot3Attr),
+        hasOpacity: Boolean(opacityAttr),
+        scale0Range: readAttributeRange(scale0Attr),
+        scale1Range: readAttributeRange(scale1Attr),
+        scale2Range: readAttributeRange(scale2Attr),
+        opacityRange: readAttributeRange(opacityAttr)
+      };
+      this.gaussianGeometryByActorId.set(actor.id, geometry);
+      this.gaussianVisualSignatureByActorId.delete(actor.id);
+      this.syncGaussianFallbackVisual(actor, correctedRoot, geometry);
+      const renderMesh = correctedRoot.getObjectByName(GAUSSIAN_RENDER_MESH_NAME) as any;
+      const colorDebug = renderMesh?.userData?.colorDebug as
+        | { source?: string; colorSpread?: number; colorDenominator?: number; averageColor?: [number, number, number] }
+        | undefined;
+      const colorDebugValues = colorDebug
+        ? {
+            colorSource: colorDebug.source ?? "unknown",
+            colorSpread: colorDebug.colorSpread ?? 0,
+            colorDenominator: colorDebug.colorDenominator ?? 1,
+            averageColor: colorDebug.averageColor ?? [0, 0, 0],
+            attributes: attributeNames.length > 0 ? attributeNames.join(", ") : "none",
+            ...loaderDebugValues
+          }
+        : {};
+
+      if (bounds) {
+        const correctedBounds = correctedBoundsForViewport(bounds);
+        const min = `${correctedBounds.min.x.toFixed(3)}, ${correctedBounds.min.y.toFixed(3)}, ${correctedBounds.min.z.toFixed(3)}`;
+        const max = `${correctedBounds.max.x.toFixed(3)}, ${correctedBounds.max.y.toFixed(3)}, ${correctedBounds.max.z.toFixed(3)}`;
+        let helper = this.gaussianBoundsHelpers.get(actor.id);
+        if (!helper) {
+          helper = new THREE.Box3Helper(correctedBounds.clone(), 0xff5bd6);
+          this.gaussianBoundsHelpers.set(actor.id, helper);
+          correctedRoot.add(helper);
+        } else {
+          helper.box.copy(correctedBounds);
+        }
         this.kernel.store
           .getState()
-          .actions.setStatus(`Gaussian splat load failed: ${asset.sourceFileName} (${errorMessage})`);
+          .actions.setStatus(
+            `Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount} | bounds: [${min}] -> [${max}]`
+          );
+        this.kernel.store.getState().actions.setActorStatus(actor.id, {
+          values: {
+            backend: "native-in-scene",
+            loader: "splatbin-v1",
+            loaderVersion: THREE.REVISION,
+            encoding: parsed ? "splatbin-v1" : (asset.encoding ?? "raw"),
+            assetFileName: asset.sourceFileName,
+            loadState: "loaded",
+            pointCount,
+            boundsMin: [correctedBounds.min.x, correctedBounds.min.y, correctedBounds.min.z],
+            boundsMax: [correctedBounds.max.x, correctedBounds.max.y, correctedBounds.max.z],
+            ...colorDebugValues
+          },
+          updatedAtIso: new Date().toISOString()
+        });
+      } else {
+        this.kernel.store
+          .getState()
+          .actions.setStatus(`Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount}`);
+        this.kernel.store.getState().actions.setActorStatus(actor.id, {
+          values: {
+            backend: "native-in-scene",
+            loader: "splatbin-v1",
+            loaderVersion: THREE.REVISION,
+            encoding: parsed ? "splatbin-v1" : (asset.encoding ?? "raw"),
+            assetFileName: asset.sourceFileName,
+            loadState: "loaded",
+            pointCount,
+            ...colorDebugValues
+          },
+          updatedAtIso: new Date().toISOString()
+        });
       }
-    );
+    } catch (error) {
+      const errorMessage = formatLoadError(error);
+      this.gaussianGeometryByActorId.delete(actor.id);
+      this.gaussianVisualSignatureByActorId.delete(actor.id);
+      this.gaussianVisibleCountByActorId.delete(actor.id);
+      this.gaussianTriangleCountByActorId.delete(actor.id);
+      this.gaussianSortableBatchesByActorId.delete(actor.id);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {
+          backend: "native-in-scene",
+          loader: "splatbin-v1",
+          loaderVersion: THREE.REVISION,
+          encoding: asset.encoding ?? "raw",
+          assetFileName: asset.sourceFileName,
+          loadState: "failed"
+        },
+        error: errorMessage,
+        updatedAtIso: new Date().toISOString()
+      });
+      this.kernel.store
+        .getState()
+        .actions.setStatus(`Gaussian splat load failed: ${asset.sourceFileName} (${errorMessage})`);
+    }
   }
 
   private async syncMeshAsset(actor: ActorNode): Promise<void> {
@@ -823,11 +1206,14 @@ export class SceneController {
 
   private syncGaussianFallbackVisual(actor: ActorNode, correctedRoot: any, geometry: any): void {
     const opacity = Number(actor.params.opacity ?? 1);
+    const splatSize = Number(actor.params.splatSize ?? 1);
+    const safeSplatSize = Number.isFinite(splatSize) && splatSize > 0 ? splatSize : 1;
     const pointSize = this.suggestGaussianPointSize(geometry);
     const filterSpec = this.buildGaussianFilterSpec(actor);
     const visualSignature = JSON.stringify({
       opacity: Number.isFinite(opacity) ? opacity : 1,
       pointSize,
+      splatSize: safeSplatSize,
       filterSpec
     });
     const previous = this.gaussianVisualSignatureByActorId.get(actor.id);
@@ -839,9 +1225,17 @@ export class SceneController {
     if (existing) {
       correctedRoot.remove(existing);
     }
-    const renderMesh = this.buildGaussianFallbackMesh(geometry, pointSize, opacity, filterSpec);
+    const renderMesh = this.buildGaussianFallbackMesh(geometry, pointSize, safeSplatSize, opacity, filterSpec);
     renderMesh.name = GAUSSIAN_RENDER_MESH_NAME;
     correctedRoot.add(renderMesh);
+    this.gaussianVisibleCountByActorId.set(actor.id, Number(renderMesh.userData?.visibleCount ?? 0));
+    this.gaussianTriangleCountByActorId.set(actor.id, Number(renderMesh.userData?.triangleCount ?? 0));
+    const sortableBatch = renderMesh.userData?.sortableBatch as GaussianSortableBatch | undefined;
+    if (sortableBatch) {
+      this.gaussianSortableBatchesByActorId.set(actor.id, sortableBatch);
+    } else {
+      this.gaussianSortableBatchesByActorId.delete(actor.id);
+    }
   }
 
   private suggestGaussianPointSize(geometry: any): number {
@@ -974,9 +1368,34 @@ export class SceneController {
     return matrix;
   }
 
+  private getGaussianSpriteTexture(): any {
+    if (this.gaussianSpriteTexture) {
+      return this.gaussianSpriteTexture;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+    const gradient = context.createRadialGradient(32, 32, 1, 32, 32, 32);
+    gradient.addColorStop(0, "rgba(255,255,255,1)");
+    gradient.addColorStop(0.4, "rgba(255,255,255,0.8)");
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    context.clearRect(0, 0, 64, 64);
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 64, 64);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    this.gaussianSpriteTexture = texture;
+    return texture;
+  }
+
   private buildGaussianFallbackMesh(
     geometry: any,
-    pointSize: number,
+    _pointSize: number,
+    splatSize: number,
     opacity: number,
     filterSpec: GaussianFallbackFilterSpec | null
   ): any {
@@ -984,22 +1403,21 @@ export class SceneController {
     if (!position) {
       return new THREE.Group();
     }
-    const color = getAttribute(geometry, ["color", "rgb", "diffuse"]);
+    const color = getAttribute(geometry, ["color", "rgba", "rgb", "diffuse", "albedo"]);
     const red = getAttribute(geometry, ["red"]);
     const green = getAttribute(geometry, ["green"]);
     const blue = getAttribute(geometry, ["blue"]);
-    const fdc0 = getAttribute(geometry, ["f_dc_0"]);
-    const fdc1 = getAttribute(geometry, ["f_dc_1"]);
-    const fdc2 = getAttribute(geometry, ["f_dc_2"]);
-    const opacityAttr = getAttribute(geometry, ["opacity", "alpha"]);
+    const fdc0 = getAttribute(geometry, ["f_dc_0", "dc_0", "f_dc0"]);
+    const fdc1 = getAttribute(geometry, ["f_dc_1", "dc_1", "f_dc1"]);
+    const fdc2 = getAttribute(geometry, ["f_dc_2", "dc_2", "f_dc2"]);
+    const opacityAttr = getAttribute(geometry, ["opacity", "alpha", "a"]);
     const scale0 = getAttribute(geometry, ["scale_0", "sx"]);
     const scale1 = getAttribute(geometry, ["scale_1", "sy"]);
     const scale2 = getAttribute(geometry, ["scale_2", "sz"]);
-    const rot0 = getAttribute(geometry, ["rot_0", "qw"]);
-    const rot1 = getAttribute(geometry, ["rot_1", "qx"]);
-    const rot2 = getAttribute(geometry, ["rot_2", "qy"]);
-    const rot3 = getAttribute(geometry, ["rot_3", "qz"]);
-
+    const rot0 = getAttribute(geometry, ["rot_0", "r_0"]);
+    const rot1 = getAttribute(geometry, ["rot_1", "r_1"]);
+    const rot2 = getAttribute(geometry, ["rot_2", "r_2"]);
+    const rot3 = getAttribute(geometry, ["rot_3", "r_3"]);
     const scale0Range = readAttributeRange(scale0);
     const scale1Range = readAttributeRange(scale1);
     const scale2Range = readAttributeRange(scale2);
@@ -1008,30 +1426,41 @@ export class SceneController {
       (scale0Range.min < 0 || scale1Range.min < 0 || scale2Range.min < 0);
     const opacityRange = readAttributeRange(opacityAttr);
     const opacityIsLogit = opacityRange.min < 0 || opacityRange.max > 1;
+    const colorDenominator = detectColorDenominator(color);
+    const colorSpread = estimateAttributeSpread(color);
+    const hasShColor = Boolean(fdc0 && fdc1 && fdc2);
+    const preferShColor = Boolean(color) && hasShColor && colorSpread < 0.002;
+    const usePackedColor = Boolean(color) && !preferShColor;
 
-    const maxInstances = 50000;
+    const maxInstances = MAX_GAUSSIAN_BILLBOARD_INSTANCES;
     const stride = Math.max(1, Math.ceil(position.count / maxInstances));
     const instanceCount = Math.ceil(position.count / stride);
-    const baseRadius = Math.max(0.002, pointSize * 0.08);
-    const baseGeometry = new THREE.SphereGeometry(baseRadius, 6, 5);
+    const centers = new Float32Array(instanceCount * 3);
+    const scales = new Float32Array(instanceCount * 2);
+    const rotations = new Float32Array(instanceCount * 4);
+    const colors = new Float32Array(instanceCount * 3);
+    const baseGeometry = new THREE.PlaneGeometry(1, 1, 1, 1);
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
+      map: this.getGaussianSpriteTexture(),
+      alphaTest: 0.01,
+      vertexColors: true,
       transparent: true,
-      depthWrite: false,
       opacity: Math.min(1, Math.max(0, opacity)),
-      blending: THREE.NormalBlending,
-      vertexColors: Boolean(color || red || fdc0)
+      depthTest: true,
+      depthWrite: false
     });
     const mesh = new THREE.InstancedMesh(baseGeometry, material, instanceCount);
     mesh.frustumCulled = false;
-    const matrix = new THREE.Matrix4();
     const translation = new THREE.Vector3();
-    const scale = new THREE.Vector3(1, 1, 1);
-    const rotation = new THREE.Quaternion();
     const tempColor = new THREE.Color(0xffffff);
     const SH_C0 = 0.28209479177387814;
 
     let cursor = 0;
+    let colorAccumR = 0;
+    let colorAccumG = 0;
+    let colorAccumB = 0;
+    let colorAccumCount = 0;
     const samplePosition = new THREE.Vector3();
     const localSampleInRegion = new THREE.Vector3();
     for (let index = 0; index < position.count; index += stride) {
@@ -1044,38 +1473,60 @@ export class SceneController {
         }
       }
 
+      let scaleXFactor = 1;
+      let scaleYFactor = 1;
+      const baseScale = Math.max(0.2, splatSize);
       if (scale0 && scale1 && scale2) {
-        // Some exports store log-scales, others store linear dimensions.
         const rawScaleX = scale0.getX(index);
         const rawScaleY = scale1.getX(index);
         const rawScaleZ = scale2.getX(index);
         const sx = useLogScale ? Math.exp(rawScaleX) : Math.max(0.0001, rawScaleX);
         const sy = useLogScale ? Math.exp(rawScaleY) : Math.max(0.0001, rawScaleY);
         const sz = useLogScale ? Math.exp(rawScaleZ) : Math.max(0.0001, rawScaleZ);
-        const scaleFactor = useLogScale ? Math.max(0.001, pointSize) : Math.max(0.002, pointSize * 0.02);
-        scale.set(
-          Math.max(0.0005, sx * scaleFactor),
-          Math.max(0.0005, sy * scaleFactor),
-          Math.max(0.0005, sz * scaleFactor)
-        );
-      } else {
-        const fallback = Math.max(0.002, pointSize * 0.1);
-        scale.set(fallback, fallback, fallback);
+        scaleXFactor = Math.max(0.05, sx);
+        scaleYFactor = Math.max(0.05, sy);
+        // Prevent extreme axis collapse when one covariance axis is near zero.
+        if (scaleXFactor < 0.06 && scaleYFactor > 0.5) {
+          scaleXFactor = Math.max(scaleXFactor, sz * 0.25);
+        }
+        if (scaleYFactor < 0.06 && scaleXFactor > 0.5) {
+          scaleYFactor = Math.max(scaleYFactor, sz * 0.25);
+        }
       }
-
+      const instanceScaleX = Math.max(0.01, baseScale * scaleXFactor);
+      const instanceScaleY = Math.max(0.01, baseScale * scaleYFactor);
+      const i3 = cursor * 3;
+      centers[i3] = translation.x;
+      centers[i3 + 1] = translation.y;
+      centers[i3 + 2] = translation.z;
+      const i2 = cursor * 2;
+      scales[i2] = instanceScaleX;
+      scales[i2 + 1] = instanceScaleY;
+      const i4 = cursor * 4;
       if (rot0 && rot1 && rot2 && rot3) {
-        rotation.set(rot1.getX(index), rot2.getX(index), rot3.getX(index), rot0.getX(index)).normalize();
+        // Common gaussian splat export layout: rot_0..3 = w,x,y,z
+        rotations[i4] = rot1.getX(index);
+        rotations[i4 + 1] = rot2.getX(index);
+        rotations[i4 + 2] = rot3.getX(index);
+        rotations[i4 + 3] = rot0.getX(index);
       } else {
-        rotation.identity();
+        rotations[i4] = 0;
+        rotations[i4 + 1] = 0;
+        rotations[i4 + 2] = 0;
+        rotations[i4 + 3] = 1;
       }
-
-      matrix.compose(translation, rotation, scale);
-      mesh.setMatrixAt(cursor, matrix);
-      if (color) {
-        tempColor.setRGB(color.getX(index), color.getY(index), color.getZ(index));
+      if (usePackedColor) {
+        const rawR = color.getX(index);
+        const rawG = color.getY(index);
+        const rawB = color.getZ(index);
+        if (colorDenominator > 1) {
+          tempColor.setRGB(clamp01(rawR / colorDenominator), clamp01(rawG / colorDenominator), clamp01(rawB / colorDenominator));
+        } else {
+          tempColor.setRGB(clamp01(rawR), clamp01(rawG), clamp01(rawB));
+        }
       } else if (red && green && blue) {
         tempColor.setRGB(clamp01(red.getX(index) / 255), clamp01(green.getX(index) / 255), clamp01(blue.getX(index) / 255));
-      } else if (fdc0 && fdc1 && fdc2) {
+      } else if (hasShColor) {
         tempColor.setRGB(
           clamp01(0.5 + SH_C0 * fdc0.getX(index)),
           clamp01(0.5 + SH_C0 * fdc1.getX(index)),
@@ -1085,22 +1536,48 @@ export class SceneController {
         tempColor.setRGB(1, 1, 1);
       }
 
+      let alpha = 1;
       if (opacityAttr) {
         const rawOpacity = opacityAttr.getX(index);
-        const alpha = opacityIsLogit ? sigmoid(rawOpacity) : clamp01(rawOpacity);
-        tempColor.multiplyScalar(Math.max(0.08, alpha));
+        alpha = opacityIsLogit ? sigmoid(rawOpacity) : clamp01(rawOpacity);
       }
-
-      if (mesh.instanceColor) {
-        mesh.setColorAt(cursor, tempColor);
-      }
+      tempColor.multiplyScalar(Math.max(0.15, alpha));
+      colorAccumR += tempColor.r;
+      colorAccumG += tempColor.g;
+      colorAccumB += tempColor.b;
+      colorAccumCount += 1;
+      colors[i3] = tempColor.r;
+      colors[i3 + 1] = tempColor.g;
+      colors[i3 + 2] = tempColor.b;
       cursor += 1;
     }
+    const usedCenters = centers.slice(0, cursor * 3);
+    const usedScales = scales.slice(0, cursor * 2);
+    const usedRotations = rotations.slice(0, cursor * 4);
+    const usedColors = colors.slice(0, cursor * 3);
+
     mesh.count = cursor;
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) {
-      mesh.instanceColor.needsUpdate = true;
-    }
+    mesh.userData.visibleCount = cursor;
+    mesh.userData.triangleCount = Math.max(0, cursor * (Number(baseGeometry.index?.count ?? 0) / 3));
+    mesh.userData.sortableBatch = {
+      mesh,
+      count: cursor,
+      centersBase: usedCenters,
+      scalesBase: usedScales,
+      rotationsBase: usedRotations,
+      colorsBase: usedColors,
+      indices: Array.from({ length: cursor }, (_, i) => i),
+      depths: new Float32Array(cursor)
+    } as GaussianSortableBatch;
+    mesh.userData.colorDebug = {
+      source: usePackedColor ? "color/rgb/diffuse" : hasShColor ? "f_dc_0..2" : red && green && blue ? "red/green/blue" : "white",
+      colorSpread,
+      colorDenominator,
+      averageColor:
+        colorAccumCount > 0
+          ? [colorAccumR / colorAccumCount, colorAccumG / colorAccumCount, colorAccumB / colorAccumCount]
+          : [0, 0, 0]
+    };
     return mesh;
   }
 
@@ -1110,7 +1587,7 @@ export class SceneController {
     if (!environmentActor) {
       if (this.currentEnvironmentAssetId) {
         this.scene.environment = null;
-        this.scene.background = new THREE.Color("#070b12");
+        this.applySceneBackgroundColor();
         this.currentEnvironmentAssetId = null;
       }
       return;
@@ -1119,15 +1596,20 @@ export class SceneController {
     const assetId = typeof environmentActor.params.assetId === "string" ? environmentActor.params.assetId : null;
     const reloadToken =
       typeof environmentActor.params.assetIdReloadToken === "number" ? environmentActor.params.assetIdReloadToken : 0;
-    if (!assetId || (assetId === this.currentEnvironmentAssetId && reloadToken === this.currentEnvironmentReloadToken)) {
-      if (!assetId) {
-        this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
-          values: {
-            loadState: "idle"
-          },
-          updatedAtIso: new Date().toISOString()
-        });
-      }
+    if (!assetId) {
+      this.scene.environment = null;
+      this.currentEnvironmentAssetId = null;
+      this.currentEnvironmentReloadToken = 0;
+      this.applySceneBackgroundColor();
+      this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+        values: {
+          loadState: "idle"
+        },
+        updatedAtIso: new Date().toISOString()
+      });
+      return;
+    }
+    if (assetId === this.currentEnvironmentAssetId && reloadToken === this.currentEnvironmentReloadToken) {
       return;
     }
 
@@ -1222,5 +1704,14 @@ export class SceneController {
         this.kernel.store.getState().actions.setStatus("Environment texture load failed.");
       }
     );
+  }
+
+  private applySceneBackgroundColor(): void {
+    const state = this.kernel.store.getState().state;
+    const sceneColor = normalizeBackgroundColor(state.scene.backgroundColor);
+    if (this.currentEnvironmentAssetId) {
+      return;
+    }
+    this.scene.background = new THREE.Color(sceneColor);
   }
 }

@@ -21,6 +21,9 @@ declare module "three/examples/jsm/controls/OrbitControls.js" {
 
 declare module "three/examples/jsm/loaders/PLYLoader.js" {
   export class PLYLoader {
+    public setPropertyNameMapping(mapping: Record<string, string>): void;
+    public setCustomPropertyNameMapping(mapping: Record<string, string[]>): void;
+    public parse(data: ArrayBuffer | string): any;
     public load(
       url: string,
       onLoad: (geometry: any) => void,
@@ -112,6 +115,40 @@ declare module "three/webgpu" {
     public render(scene: any, camera: any): void;
     public dispose(): void;
   }
+  export class MeshBasicNodeMaterial {
+    public color: any;
+    public map: any;
+    public alphaTest: number;
+    public vertexColors: boolean;
+    public transparent: boolean;
+    public opacity: number;
+    public depthTest: boolean;
+    public depthWrite: boolean;
+    public vertexNode: any;
+    public needsUpdate: boolean;
+    public constructor(parameters?: Record<string, unknown>);
+  }
+  export class SpriteNodeMaterial {
+    public color: any;
+    public map: any;
+    public alphaTest: number;
+    public vertexColors: boolean;
+    public transparent: boolean;
+    public opacity: number;
+    public depthTest: boolean;
+    public depthWrite: boolean;
+    public positionNode: any;
+    public scaleNode: any;
+    public colorNode: any;
+    public needsUpdate: boolean;
+    public constructor(parameters?: Record<string, unknown>);
+  }
+}
+
+declare module "three/tsl" {
+  export function instancedBufferAttribute(attribute: any, type?: string): any;
+  export function texture(value: any, uvNode?: any, levelNode?: any): any;
+  export function vec4(x?: any, y?: any, z?: any, w?: any): any;
 }
 
 declare module "@mkkellogg/gaussian-splats-3d" {

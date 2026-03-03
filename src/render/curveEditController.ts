@@ -1,14 +1,15 @@
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
 import type { AppKernel } from "@/app/kernel";
 import type { ActorNode } from "@/core/types";
+import { getEffectiveCurveHandles } from "@/features/curves/handles";
 import { setCurveAnchorPosition, setCurveHandlePosition, appendCurvePoint } from "@/features/curves/editing";
 import { curveDataWithOverrides } from "@/features/curves/model";
 import type { SceneController } from "@/render/sceneController";
 
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
-const BEFORE_DELETE_SELECTION_EVENT = "simularca:before-delete-selection";
 const CURVE_VERTEX_HOVER_EVENT = "simularca:curve-vertex-hover";
 
 interface CurveControlMeta {
@@ -52,6 +53,7 @@ export class CurveEditController {
   private hoverObject: any | null = null;
   private hoveredPointActorId: string | null = null;
   private hoveredPointIndex: number | null = null;
+  private readonly unregisterDeleteCommandHandler: () => void;
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -89,16 +91,16 @@ export class CurveEditController {
     this.domElement.addEventListener("pointerdown", this.onPointerDown, true);
     this.domElement.addEventListener("pointermove", this.onPointerMove, true);
     this.domElement.addEventListener("dblclick", this.onDoubleClick, true);
-    window.addEventListener(BEFORE_DELETE_SELECTION_EVENT, this.onBeforeDeleteSelection as EventListener);
     window.addEventListener(CURVE_VERTEX_HOVER_EVENT, this.onCurveVertexHover as EventListener);
+    this.unregisterDeleteCommandHandler = keyboardCommandRouter.register("delete-selection", this.onDeleteCommand, 100);
   }
 
   public dispose(): void {
     this.domElement.removeEventListener("pointerdown", this.onPointerDown, true);
     this.domElement.removeEventListener("pointermove", this.onPointerMove, true);
     this.domElement.removeEventListener("dblclick", this.onDoubleClick, true);
-    window.removeEventListener(BEFORE_DELETE_SELECTION_EVENT, this.onBeforeDeleteSelection as EventListener);
     window.removeEventListener(CURVE_VERTEX_HOVER_EVENT, this.onCurveVertexHover as EventListener);
+    this.unregisterDeleteCommandHandler();
     this.transformControls.detach();
     this.transformControls.dispose();
     this.transformHelper?.parent?.remove(this.transformHelper);
@@ -191,16 +193,18 @@ export class CurveEditController {
         continue;
       }
       const anchor = new THREE.Vector3(...point.position);
+      const handles = getEffectiveCurveHandles(point);
       const inPos = new THREE.Vector3(
-        point.position[0] + point.handleIn[0],
-        point.position[1] + point.handleIn[1],
-        point.position[2] + point.handleIn[2]
+        point.position[0] + handles.handleIn[0],
+        point.position[1] + handles.handleIn[1],
+        point.position[2] + handles.handleIn[2]
       );
       const outPos = new THREE.Vector3(
-        point.position[0] + point.handleOut[0],
-        point.position[1] + point.handleOut[1],
-        point.position[2] + point.handleOut[2]
+        point.position[0] + handles.handleOut[0],
+        point.position[1] + handles.handleOut[1],
+        point.position[2] + handles.handleOut[2]
       );
+      const showHandles = point.mode !== "hard";
 
       const lineIn = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([anchor.clone(), inPos.clone()]),
@@ -210,6 +214,8 @@ export class CurveEditController {
         new THREE.BufferGeometry().setFromPoints([anchor.clone(), outPos.clone()]),
         new THREE.LineBasicMaterial({ color: 0x2f7db8, transparent: true, opacity: 0.8 })
       );
+      lineIn.visible = showHandles;
+      lineOut.visible = showHandles;
       this.controlRoot.add(lineIn, lineOut);
 
       const anchorMesh = new THREE.Mesh(
@@ -245,8 +251,12 @@ export class CurveEditController {
         controlType: "handleOut"
       } satisfies CurveControlMeta;
 
-      this.controlRoot.add(anchorMesh, handleInMesh, handleOutMesh);
-      this.controlObjects.push(anchorMesh, handleInMesh, handleOutMesh);
+      this.controlRoot.add(anchorMesh);
+      this.controlObjects.push(anchorMesh);
+      if (showHandles) {
+        this.controlRoot.add(handleInMesh, handleOutMesh);
+        this.controlObjects.push(handleInMesh, handleOutMesh);
+      }
       this.pointVisualByIndex.set(pointIndex, {
         anchor: anchorMesh,
         handleIn: handleInMesh,
@@ -438,45 +448,46 @@ export class CurveEditController {
         continue;
       }
       const anchor = new THREE.Vector3(...point.position);
+      const handles = getEffectiveCurveHandles(point);
       const inPos = new THREE.Vector3(
-        point.position[0] + point.handleIn[0],
-        point.position[1] + point.handleIn[1],
-        point.position[2] + point.handleIn[2]
+        point.position[0] + handles.handleIn[0],
+        point.position[1] + handles.handleIn[1],
+        point.position[2] + handles.handleIn[2]
       );
       const outPos = new THREE.Vector3(
-        point.position[0] + point.handleOut[0],
-        point.position[1] + point.handleOut[1],
-        point.position[2] + point.handleOut[2]
+        point.position[0] + handles.handleOut[0],
+        point.position[1] + handles.handleOut[1],
+        point.position[2] + handles.handleOut[2]
       );
+      const showHandles = point.mode !== "hard";
       visuals.anchor.position.copy(anchor);
       visuals.handleIn.position.copy(inPos);
       visuals.handleOut.position.copy(outPos);
+      visuals.handleIn.visible = showHandles;
+      visuals.handleOut.visible = showHandles;
+      visuals.lineIn.visible = showHandles;
+      visuals.lineOut.visible = showHandles;
       visuals.lineIn.geometry = new THREE.BufferGeometry().setFromPoints([anchor.clone(), inPos.clone()]);
       visuals.lineOut.geometry = new THREE.BufferGeometry().setFromPoints([anchor.clone(), outPos.clone()]);
     }
   }
 
-  private onBeforeDeleteSelection = (event: Event): void => {
-    const target = event as CustomEvent<{ key?: string }>;
-    if (target.detail?.key !== "Delete") {
-      return;
-    }
+  private onDeleteCommand = (): boolean => {
     if (!this.activeControlMeta || !this.activeActorId) {
-      return;
+      return false;
     }
     const state = this.kernel.store.getState().state;
     if (state.mode === "web-ro") {
-      return;
+      return false;
     }
     const actor = state.actors[this.activeActorId];
     if (!actor || actor.actorType !== "curve") {
-      return;
+      return false;
     }
     const curve = curveDataWithOverrides(actor);
     if (curve.points.length <= 2) {
       this.kernel.store.getState().actions.setStatus("Cannot delete vertex: curve requires at least two vertices.");
-      event.preventDefault();
-      return;
+      return true;
     }
     const nextPoints = curve.points.filter((_, index) => index !== this.activeControlMeta?.pointIndex);
     this.kernel.store.getState().actions.updateActorParams(actor.id, {
@@ -489,7 +500,7 @@ export class CurveEditController {
     this.activeControlMeta = null;
     this.activeSignature = "";
     this.kernel.store.getState().actions.setStatus("Curve vertex deleted.");
-    event.preventDefault();
+    return true;
   };
 
   private onCurveVertexHover = (event: Event): void => {

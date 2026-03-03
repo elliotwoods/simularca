@@ -14,6 +14,16 @@ export interface StorageAdapter {
     sourcePath: string;
     kind: SessionAssetRef["kind"];
   }): Promise<SessionAssetRef>;
+  importGaussianSplat(args: {
+    sessionName: string;
+    sourcePath: string;
+  }): Promise<SessionAssetRef>;
+  convertGaussianAsset(args: {
+    sessionName: string;
+    assetId: string;
+    relativePath: string;
+    sourceFileName: string;
+  }): Promise<SessionAssetRef>;
   transcodeHdriToKtx2(args: {
     sessionName: string;
     sourcePath: string;

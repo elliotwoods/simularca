@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import type { DefaultSessionPointer, FileDialogFilter, HdriTranscodeOptions, SessionAssetRef } from "../src/types/ipc";
+import { createSplatBinaryV1 } from "./splatBinaryFormat.js";
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_DEV = Boolean(DEV_SERVER_URL);
@@ -625,11 +626,81 @@ function registerIpcHandlers(): void {
       const assetRef: SessionAssetRef = {
         id: randomUUID(),
         kind: args.kind,
+        encoding: "raw",
         relativePath,
         sourceFileName,
         byteSize: stat.size
       };
       return assetRef;
+    }
+  );
+
+  ipcMain.handle(
+    "asset:import-gaussian",
+    async (
+      _event,
+      args: {
+        sessionName: string;
+        sourcePath: string;
+      }
+    ) => {
+      await ensureSessionDirectory(args.sessionName);
+      const sourceFileName = path.basename(args.sourcePath);
+      const payload = Uint8Array.from(await fs.readFile(args.sourcePath));
+      const binary = createSplatBinaryV1(payload, "ply");
+      const targetName = `${Date.now()}-${randomUUID()}.splatbin`;
+      const assetDirectory = getAssetDirectory(args.sessionName, "gaussian-splat");
+      await fs.mkdir(assetDirectory, { recursive: true });
+      const targetPath = path.join(assetDirectory, targetName);
+      await fs.writeFile(targetPath, binary);
+      const stat = await fs.stat(targetPath);
+      const relativePath = path.relative(getSessionDirectory(args.sessionName), targetPath).replaceAll("\\", "/");
+      const assetRef: SessionAssetRef = {
+        id: randomUUID(),
+        kind: "gaussian-splat",
+        encoding: "splatbin-v1",
+        relativePath,
+        sourceFileName,
+        byteSize: stat.size
+      };
+      return assetRef;
+    }
+  );
+
+  ipcMain.handle(
+    "asset:convert-gaussian",
+    async (
+      _event,
+      args: {
+        sessionName: string;
+        assetId: string;
+        relativePath: string;
+        sourceFileName: string;
+      }
+    ) => {
+      await ensureSessionDirectory(args.sessionName);
+      const sessionRoot = path.resolve(getSessionDirectory(args.sessionName));
+      const sourcePath = path.resolve(sessionRoot, args.relativePath);
+      if (!sourcePath.startsWith(sessionRoot)) {
+        throw new Error("Invalid asset path");
+      }
+      const payload = Uint8Array.from(await fs.readFile(sourcePath));
+      const binary = createSplatBinaryV1(payload, "ply");
+      const targetName = `${Date.now()}-${randomUUID()}.splatbin`;
+      const assetDirectory = getAssetDirectory(args.sessionName, "gaussian-splat");
+      await fs.mkdir(assetDirectory, { recursive: true });
+      const targetPath = path.join(assetDirectory, targetName);
+      await fs.writeFile(targetPath, binary);
+      const stat = await fs.stat(targetPath);
+      const relativePath = path.relative(getSessionDirectory(args.sessionName), targetPath).replaceAll("\\", "/");
+      return {
+        id: args.assetId,
+        kind: "gaussian-splat",
+        encoding: "splatbin-v1",
+        relativePath,
+        sourceFileName: args.sourceFileName,
+        byteSize: stat.size
+      } satisfies SessionAssetRef;
     }
   );
 
@@ -659,6 +730,7 @@ function registerIpcHandlers(): void {
       const assetRef: SessionAssetRef = {
         id: randomUUID(),
         kind: "hdri",
+        encoding: "ktx2",
         relativePath,
         sourceFileName,
         byteSize: stat.size

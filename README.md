@@ -5,7 +5,7 @@ Desktop-first simulation environment for kinetic art pre-visualization.
 ## Stack
 - Electron + Vite + React + TypeScript
 - Three.js WebGPU renderer
-- Optional dedicated Gaussian splat renderer overlay (`@mkkellogg/gaussian-splats-3d`) with fallback path
+- Native in-scene Gaussian splat renderer (single path)
 - GoldenLayout paneling
 - Tweakpane inspector
 - Zustand + Immer state model with undo/redo
@@ -54,13 +54,9 @@ For runtime KTX2 decode, place basis transcoder files in `public/basis/` (e.g. `
 
 ## Notes
 - Web mode (`public/sessions/...`) is read-only and intended for future Vercel deploys.
-- Gaussian splat actor now supports a dedicated overlay path (when module is installed) and falls back to `.ply` point cloud rendering otherwise.
+- Gaussian splat actor renders in-scene from `splatbin-v1` session assets.
 - Plugin sample package: `plugins/example-wave-plugin`.
 - Plugin handshake contract and loader expectations: `docs/plugin-handshake.md`.
 
-## Optional Dedicated Splat Renderer
-To enable dedicated Gaussian splat rendering:
-1. `npm install @mkkellogg/gaussian-splats-3d`
-2. Restart dev server.
-
-If the module is unavailable, the app auto-falls back to the built-in PLY point cloud path.
+## Gaussian Asset Migration
+- Legacy sessions referencing raw `.ply` Gaussian assets are auto-converted to `splatbin-v1` when loaded in Electron mode.
