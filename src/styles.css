@@ -673,6 +673,7 @@ select {
 .scene-tree-item-row {
   display: flex;
   align-items: center;
+  gap: 6px;
 }
 
 .scene-tree-expand {
@@ -690,6 +691,34 @@ select {
 .scene-tree-label.selected {
   border-color: var(--accent-2);
   background: #12293b;
+}
+
+.scene-tree-load-state {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+
+.scene-tree-load-state.loading {
+  border: 2px solid #2f4865;
+  border-top-color: var(--accent);
+  animation: scene-tree-spin 0.8s linear infinite;
+}
+
+.scene-tree-load-state.error {
+  background: var(--danger);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35) inset;
+}
+
+@keyframes scene-tree-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .stats-list {

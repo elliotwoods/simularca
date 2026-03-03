@@ -381,6 +381,16 @@ export class SceneController {
       });
       return;
     }
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
+        loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
+        loaderVersion: THREE.REVISION,
+        assetFileName: asset.sourceFileName,
+        loadState: "loading"
+      },
+      updatedAtIso: new Date().toISOString()
+    });
     const url = await this.kernel.storage.resolveAssetPath({
       sessionName: state.activeSessionName,
       relativePath: asset.relativePath
@@ -397,7 +407,18 @@ export class SceneController {
         if (existing) {
           correctedRoot.remove(existing);
         }
-        const pointSize = Number(actor.params.pointSize ?? 0.02);
+        let pointSize = 0.02;
+        let suggestedPointSize = 0.02;
+        if (bounds) {
+          const correctedBounds = correctedBoundsForViewport(bounds);
+          const maxExtent = Math.max(
+            correctedBounds.max.x - correctedBounds.min.x,
+            correctedBounds.max.y - correctedBounds.min.y,
+            correctedBounds.max.z - correctedBounds.min.z
+          );
+          suggestedPointSize = Math.max(0.02, Math.min(0.25, maxExtent / 1200));
+          pointSize = suggestedPointSize;
+        }
         const opacity = Number(actor.params.opacity ?? 1);
         const renderMesh = this.buildGaussianFallbackMesh(geometry, pointSize, opacity);
         renderMesh.name = GAUSSIAN_RENDER_MESH_NAME;
@@ -407,18 +428,6 @@ export class SceneController {
           const correctedBounds = correctedBoundsForViewport(bounds);
           const min = `${correctedBounds.min.x.toFixed(3)}, ${correctedBounds.min.y.toFixed(3)}, ${correctedBounds.min.z.toFixed(3)}`;
           const max = `${correctedBounds.max.x.toFixed(3)}, ${correctedBounds.max.y.toFixed(3)}, ${correctedBounds.max.z.toFixed(3)}`;
-          const maxExtent = Math.max(
-            correctedBounds.max.x - correctedBounds.min.x,
-            correctedBounds.max.y - correctedBounds.min.y,
-            correctedBounds.max.z - correctedBounds.min.z
-          );
-          const suggestedPointSize = Math.max(0.02, Math.min(0.25, maxExtent / 1200));
-          const currentPointSize = Number(actor.params.pointSize ?? 0.02);
-          if (Number.isFinite(currentPointSize) && currentPointSize < suggestedPointSize) {
-            this.kernel.store.getState().actions.updateActorParams(actor.id, {
-              pointSize: Number(suggestedPointSize.toFixed(3))
-            });
-          }
           let helper = this.gaussianBoundsHelpers.get(actor.id);
           if (!helper) {
             helper = new THREE.Box3Helper(correctedBounds.clone(), 0xff5bd6);
@@ -430,7 +439,7 @@ export class SceneController {
           this.kernel.store
             .getState()
             .actions.setStatus(
-              `Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount} | bounds: [${min}] -> [${max}] | pointSize: ${Number(suggestedPointSize.toFixed(3))}`
+              `Gaussian splat loaded: ${asset.sourceFileName} | points: ${pointCount} | bounds: [${min}] -> [${max}]`
             );
           this.kernel.store.getState().actions.setActorStatus(actor.id, {
             values: {
@@ -438,6 +447,7 @@ export class SceneController {
               loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
               loaderVersion: THREE.REVISION,
               assetFileName: asset.sourceFileName,
+              loadState: "loaded",
               pointCount,
               boundsMin: [correctedBounds.min.x, correctedBounds.min.y, correctedBounds.min.z],
               boundsMax: [correctedBounds.max.x, correctedBounds.max.y, correctedBounds.max.z]
@@ -454,6 +464,7 @@ export class SceneController {
               loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
               loaderVersion: THREE.REVISION,
               assetFileName: asset.sourceFileName,
+              loadState: "loaded",
               pointCount
             },
             updatedAtIso: new Date().toISOString()
@@ -468,7 +479,8 @@ export class SceneController {
             backend: this.renderGaussianSplatFallback ? "fallback-ply" : "dedicated-overlay",
             loader: this.renderGaussianSplatFallback ? "three/examples/jsm/loaders/PLYLoader" : "gaussian-splats-3d",
             loaderVersion: THREE.REVISION,
-            assetFileName: asset.sourceFileName
+            assetFileName: asset.sourceFileName,
+            loadState: "failed"
           },
           error: errorMessage,
           updatedAtIso: new Date().toISOString()
@@ -524,6 +536,14 @@ export class SceneController {
       sessionName: state.activeSessionName,
       relativePath: asset.relativePath
     });
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        format: extension || "unknown",
+        assetFileName: asset.sourceFileName,
+        loadState: "loading"
+      },
+      updatedAtIso: new Date().toISOString()
+    });
 
     const loadToken = (this.meshLoadTokenByActorId.get(actor.id) ?? 0) + 1;
     this.meshLoadTokenByActorId.set(actor.id, loadToken);
@@ -568,6 +588,7 @@ export class SceneController {
         values: {
           format: extension || "unknown",
           assetFileName: asset.sourceFileName,
+          loadState: "loaded",
           meshCount,
           triangleCount,
           boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
@@ -588,7 +609,8 @@ export class SceneController {
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
           format: extension || "unknown",
-          assetFileName: asset.sourceFileName
+          assetFileName: asset.sourceFileName,
+          loadState: "failed"
         },
         error: message,
         updatedAtIso: new Date().toISOString()
@@ -814,6 +836,14 @@ export class SceneController {
     });
 
     const extension = asset.relativePath.split(".").pop()?.toLowerCase();
+    this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+      values: {
+        format: extension ?? "hdr",
+        assetFileName: asset.sourceFileName,
+        loadState: "loading"
+      },
+      updatedAtIso: new Date().toISOString()
+    });
     if (extension === "ktx2") {
       this.ktx2Loader.load(
         url,

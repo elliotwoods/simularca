@@ -5,7 +5,6 @@ interface GaussianSplatRuntime {
   assetId?: string;
   scaleFactor: number;
   opacity: number;
-  pointSize: number;
 }
 
 export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRuntime> = {
@@ -23,14 +22,12 @@ export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRun
   createRuntime: ({ params }) => ({
     assetId: typeof params.assetId === "string" ? params.assetId : undefined,
     scaleFactor: typeof params.scaleFactor === "number" ? params.scaleFactor : 1,
-    opacity: typeof params.opacity === "number" ? params.opacity : 1,
-    pointSize: typeof params.pointSize === "number" ? params.pointSize : 0.02
+    opacity: typeof params.opacity === "number" ? params.opacity : 1
   }),
   updateRuntime(runtime, { params }) {
     runtime.assetId = typeof params.assetId === "string" ? params.assetId : runtime.assetId;
     runtime.scaleFactor = typeof params.scaleFactor === "number" ? params.scaleFactor : runtime.scaleFactor;
     runtime.opacity = typeof params.opacity === "number" ? params.opacity : runtime.opacity;
-    runtime.pointSize = typeof params.pointSize === "number" ? params.pointSize : runtime.pointSize;
   },
   status: {
     build({ actor, state, runtimeStatus }) {
@@ -46,10 +43,6 @@ export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRun
         {
           label: "Opacity",
           value: typeof actor.params.opacity === "number" ? actor.params.opacity : 1
-        },
-        {
-          label: "Point Size",
-          value: typeof actor.params.pointSize === "number" ? actor.params.pointSize : 0.02
         },
         { label: "Backend", value: runtimeStatus?.values.backend ?? "n/a" },
         { label: "Loader", value: runtimeStatus?.values.loader ?? "n/a" },

@@ -130,6 +130,7 @@ export class WebGpuViewport {
     void this.syncSplatOverlay();
     this.syncCameraState();
     this.controls.update();
+    this.syncCameraToState();
     this.renderInFlight = true;
     const renderPromise =
       typeof (this.renderer as any).renderAsync === "function"
@@ -225,26 +226,6 @@ export class WebGpuViewport {
     this.frameCount = 0;
     this.fpsLastTime = now;
     const info = this.renderer.info;
-    const camera = this.activeCamera;
-    const target = this.controls.target;
-    const cameraUpdate = {
-      position: [camera.position.x, camera.position.y, camera.position.z] as [number, number, number],
-      target: [target.x, target.y, target.z] as [number, number, number],
-      zoom: camera instanceof THREE.OrthographicCamera ? camera.zoom : 1,
-      fov: camera instanceof THREE.PerspectiveCamera ? camera.fov : this.kernel.store.getState().state.camera.fov
-    };
-    const currentCamera = this.kernel.store.getState().state.camera;
-    const moved =
-      distanceSq3(cameraUpdate.position, currentCamera.position) > 1e-8 ||
-      distanceSq3(cameraUpdate.target, currentCamera.target) > 1e-8 ||
-      Math.abs(cameraUpdate.zoom - currentCamera.zoom) > 1e-6;
-    if (moved) {
-      this.kernel.store.getState().actions.setCameraState(cameraUpdate, false);
-      this.lastAppliedCameraSignature = JSON.stringify({
-        ...currentCamera,
-        ...cameraUpdate
-      });
-    }
     this.kernel.store.getState().actions.setStats({
       fps,
       drawCalls: info.render.calls,
@@ -277,7 +258,6 @@ export class WebGpuViewport {
           assetId,
           reloadToken,
           opacity: Number(actor.params.opacity ?? 1),
-          pointSize: Number(actor.params.pointSize ?? 0.02),
           transform: {
             ...actor.transform,
             scale: [
@@ -345,7 +325,6 @@ export class WebGpuViewport {
           assetId: candidate.assetId,
           assetUrl,
           opacity: candidate.opacity,
-          pointSize: candidate.pointSize,
           transform: candidate.transform
         });
       }
@@ -376,6 +355,33 @@ export class WebGpuViewport {
       URL.revokeObjectURL(blobUrl);
     }
     this.blobAssetUrls.clear();
+  }
+
+  private syncCameraToState(): void {
+    const camera = this.activeCamera;
+    const target = this.controls.target;
+    const cameraUpdate = {
+      position: [camera.position.x, camera.position.y, camera.position.z] as [number, number, number],
+      target: [target.x, target.y, target.z] as [number, number, number],
+      zoom: camera instanceof THREE.OrthographicCamera ? camera.zoom : 1,
+      fov: camera instanceof THREE.PerspectiveCamera ? camera.fov : this.kernel.store.getState().state.camera.fov
+    };
+    const currentCamera = this.kernel.store.getState().state.camera;
+    const moved =
+      distanceSq3(cameraUpdate.position, currentCamera.position) > 1e-8 ||
+      distanceSq3(cameraUpdate.target, currentCamera.target) > 1e-8 ||
+      Math.abs(cameraUpdate.zoom - currentCamera.zoom) > 1e-6 ||
+      Math.abs(cameraUpdate.fov - currentCamera.fov) > 1e-6;
+    if (!moved) {
+      return;
+    }
+
+    // Camera navigation should mark the session as stale so Save captures the current viewpoint.
+    this.kernel.store.getState().actions.setCameraState(cameraUpdate, true);
+    this.lastAppliedCameraSignature = JSON.stringify({
+      ...currentCamera,
+      ...cameraUpdate
+    });
   }
 }
 

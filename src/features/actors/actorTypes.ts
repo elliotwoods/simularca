@@ -44,9 +44,8 @@ export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
         kind: "gaussian-splat"
       }
     },
-    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3 },
-    { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01 },
-    { key: "pointSize", label: "Point Size", type: "number", min: 0.001, max: 0.2, step: 0.001 }
+    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 },
+    { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 }
   ]
 };
 
@@ -65,7 +64,7 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
         kind: "generic"
       }
     },
-    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3 }
+    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 }
   ]
 };
 

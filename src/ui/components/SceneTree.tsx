@@ -13,8 +13,13 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
   const kernel = useKernel();
   const selection = useAppStore((store) => store.state.selection);
   const actors = useAppStore((store) => store.state.actors);
+  const actorStatusByActorId = useAppStore((store) => store.state.actorStatusByActorId);
   const [expanded, setExpanded] = useState(true);
   const isActive = isSelected(selection, props.actor.id);
+  const runtimeStatus = actorStatusByActorId[props.actor.id];
+  const loadState = typeof runtimeStatus?.values?.loadState === "string" ? runtimeStatus.values.loadState : undefined;
+  const isLoading = loadState === "loading";
+  const hasError = Boolean(runtimeStatus?.error);
 
   const onClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     const additive = event.metaKey || event.ctrlKey;
@@ -48,6 +53,8 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
         <button className={`scene-tree-label ${isActive ? "selected" : ""}`} type="button" onClick={onClick}>
           {props.actor.name}
         </button>
+        {isLoading ? <span className="scene-tree-load-state loading" title="Loading asset..." /> : null}
+        {hasError ? <span className="scene-tree-load-state error" title={runtimeStatus?.error ?? "Load failed"} /> : null}
       </div>
       {expanded &&
         props.actor.childActorIds.map((childId) => {

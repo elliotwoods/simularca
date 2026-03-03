@@ -80,6 +80,9 @@ function formatStatusValue(value: ActorStatusEntry["value"]): string {
 }
 
 function defaultValueForDefinition(definition: ParameterDefinition): BindingValue {
+  if (definition.defaultValue !== undefined) {
+    return definition.defaultValue;
+  }
   if (definition.type === "number") {
     return 0;
   }

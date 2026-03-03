@@ -5,7 +5,6 @@ export interface SplatOverlayActorState {
   assetId: string;
   assetUrl: string;
   opacity: number;
-  pointSize: number;
   transform: {
     position: [number, number, number];
     rotation: [number, number, number];

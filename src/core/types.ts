@@ -26,6 +26,7 @@ export interface ParameterDefinitionBase {
   key: string;
   label: string;
   description?: string;
+  defaultValue?: number | string | boolean;
 }
 
 export interface NumberParameterDefinition extends ParameterDefinitionBase {
