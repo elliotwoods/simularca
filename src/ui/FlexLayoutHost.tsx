@@ -7,6 +7,8 @@ import { ConsolePanel } from "@/ui/panels/ConsolePanel";
 
 const LAYOUT_STORAGE_KEY = "simularca:flex-layout:v1";
 
+type JsonLike = Record<string, unknown>;
+
 function defaultLayoutConfig(): IJsonModel {
   return {
     global: {
@@ -130,6 +132,44 @@ function withConsoleTabset(config: IJsonModel): IJsonModel {
   };
 }
 
+function stripNodeSizeConstraints(node: unknown): unknown {
+  if (!node || typeof node !== "object") {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map((entry) => stripNodeSizeConstraints(entry));
+  }
+
+  const source = node as JsonLike;
+  const sanitized: JsonLike = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      key === "height" ||
+      key === "width" ||
+      key === "minHeight" ||
+      key === "maxHeight" ||
+      key === "minWidth" ||
+      key === "maxWidth" ||
+      key === "tabMinHeight" ||
+      key === "tabMaxHeight" ||
+      key === "tabMinWidth" ||
+      key === "tabMaxWidth" ||
+      key === "tabSetMinHeight" ||
+      key === "tabSetMaxHeight" ||
+      key === "tabSetMinWidth" ||
+      key === "tabSetMaxWidth"
+    ) {
+      continue;
+    }
+    sanitized[key] = stripNodeSizeConstraints(value);
+  }
+  return sanitized;
+}
+
+function sanitizeLayoutConfig(config: IJsonModel): IJsonModel {
+  return stripNodeSizeConstraints(config) as IJsonModel;
+}
+
 function loadStoredLayoutConfig(): IJsonModel | null {
   try {
     const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
@@ -140,7 +180,7 @@ function loadStoredLayoutConfig(): IJsonModel | null {
     if (!parsed || typeof parsed !== "object") {
       return null;
     }
-    return parsed;
+    return sanitizeLayoutConfig(parsed);
   } catch {
     return null;
   }
@@ -157,7 +197,8 @@ function createLayoutModel(): Model {
 
 function persistLayoutConfig(model: Model): void {
   try {
-    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(model.toJson()));
+    const sanitized = sanitizeLayoutConfig(model.toJson() as IJsonModel);
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(sanitized));
   } catch {
     // Persist is best effort.
   }

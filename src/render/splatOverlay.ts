@@ -79,6 +79,7 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
   private readonly actorOrder: string[] = [];
   private activeCamera: any = null;
   private sceneFormatPly = 2;
+  private readonly fallbackMaxRenderDimension = 4096;
 
   public constructor(
     private readonly rootElement: HTMLElement,
@@ -151,7 +152,10 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
     if (!this.loaded || !this.viewer?.renderer) {
       return;
     }
-    this.viewer.renderer.setSize(Math.max(1, width), Math.max(1, height), false);
+    const safeWidth = Math.max(1, width);
+    const safeHeight = Math.max(1, height);
+    this.applyRenderScale(safeWidth, safeHeight);
+    this.viewer.renderer.setSize(safeWidth, safeHeight, false);
   }
 
   public update(): void {
@@ -269,5 +273,18 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
       }
       this.actorOrder.splice(0, this.actorOrder.length);
     }
+  }
+
+  private applyRenderScale(width: number, height: number): void {
+    if (!this.viewer?.renderer || typeof this.viewer.renderer.setPixelRatio !== "function") {
+      return;
+    }
+    const maxTextureSize = Number(this.viewer.renderer?.capabilities?.maxTextureSize);
+    const maxRenderDimension =
+      Number.isFinite(maxTextureSize) && maxTextureSize > 0 ? maxTextureSize : this.fallbackMaxRenderDimension;
+    const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    const dimensionLimit = Math.max(1, maxRenderDimension / Math.max(width, height));
+    const pixelRatio = Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
+    this.viewer.renderer.setPixelRatio(pixelRatio);
   }
 }

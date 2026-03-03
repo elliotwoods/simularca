@@ -115,6 +115,22 @@ body {
   overflow: hidden;
 }
 
+.flexlayout__tab,
+.flexlayout__tab_moveable {
+  min-width: 0;
+  min-height: 0;
+}
+
+.flexlayout__tab {
+  display: flex;
+  flex: 1 1 auto;
+}
+
+.flexlayout__tab_moveable {
+  display: flex;
+  flex: 1 1 auto;
+}
+
 .top-toolbar {
   width: 100%;
   height: 100%;
@@ -753,6 +769,29 @@ select {
   position: absolute;
   inset: 0;
   overflow: hidden;
+}
+
+.viewport-resolution-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  padding: 4px 7px;
+  border: 1px solid rgba(126, 163, 203, 0.45);
+  background: rgba(7, 17, 30, 0.82);
+  color: #d6e7ff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.viewport-resolution-overlay.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .panel-empty {

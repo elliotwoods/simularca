@@ -30,6 +30,9 @@ export class WebGpuViewport {
   private disposed = false;
   private initialized = false;
   private renderInFlight = false;
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeObservedElements: HTMLElement[] = [];
+  private readonly maxRenderDimension = 4096;
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -42,7 +45,7 @@ export class WebGpuViewport {
 
     this.sceneController = new SceneController(kernel);
     this.renderer = new WebGPURenderer({ antialias: true, alpha: false });
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.applyRenderScale(this.mountEl.clientWidth, this.mountEl.clientHeight);
     this.renderer.setSize(this.mountEl.clientWidth, this.mountEl.clientHeight);
     this.mountEl.appendChild(this.renderer.domElement);
 
@@ -89,6 +92,13 @@ export class WebGpuViewport {
     this.initialized = true;
     this.onResize();
     window.addEventListener("resize", this.onResize);
+    this.resizeObserver = new ResizeObserver(() => {
+      this.onResize();
+    });
+    this.resizeObservedElements = this.collectResizeObservedElements();
+    for (const element of this.resizeObservedElements) {
+      this.resizeObserver.observe(element);
+    }
     this.animate();
   }
 
@@ -98,6 +108,9 @@ export class WebGpuViewport {
     }
     this.disposed = true;
     window.removeEventListener("resize", this.onResize);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.resizeObservedElements = [];
     if (this.frameHandle) {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
@@ -200,8 +213,10 @@ export class WebGpuViewport {
   }
 
   private onResize = (): void => {
-    const width = Math.max(1, this.mountEl.clientWidth);
-    const height = Math.max(1, this.mountEl.clientHeight);
+    const { width, height } = this.getEffectiveViewportSize();
+    this.mountEl.style.width = `${width}px`;
+    this.mountEl.style.height = `${height}px`;
+    this.applyRenderScale(width, height);
     this.renderer.setSize(width, height);
     this.perspectiveCamera.aspect = width / height;
     this.perspectiveCamera.updateProjectionMatrix();
@@ -215,6 +230,54 @@ export class WebGpuViewport {
     this.orthographicCamera.updateProjectionMatrix();
     this.splatOverlay.setSize(width, height);
   };
+
+  private collectResizeObservedElements(): HTMLElement[] {
+    const elements: HTMLElement[] = [];
+    const seen = new Set<HTMLElement>();
+    let node: HTMLElement | null = this.mountEl;
+    for (let depth = 0; node && depth < 8; depth += 1) {
+      if (!seen.has(node)) {
+        seen.add(node);
+        elements.push(node);
+      }
+      if (
+        node.classList.contains("flexlayout__tabset_content") ||
+        node.classList.contains("flexlayout__tabset_container") ||
+        node.classList.contains("flexlayout__layout")
+      ) {
+        break;
+      }
+      node = node.parentElement;
+    }
+    return elements;
+  }
+
+  private getEffectiveViewportSize(): { width: number; height: number } {
+    const elements = this.resizeObservedElements.length > 0 ? this.resizeObservedElements : [this.mountEl];
+    const measurementElements = elements.length > 1 ? elements.slice(1) : elements;
+    let width = Number.POSITIVE_INFINITY;
+    let height = Number.POSITIVE_INFINITY;
+    for (const element of measurementElements) {
+      width = Math.min(width, Math.max(1, Math.round(element.clientWidth)));
+      height = Math.min(height, Math.max(1, Math.round(element.clientHeight)));
+    }
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      return {
+        width: Math.max(1, Math.round(this.mountEl.clientWidth)),
+        height: Math.max(1, Math.round(this.mountEl.clientHeight))
+      };
+    }
+    return { width, height };
+  }
+
+  private applyRenderScale(width: number, height: number): void {
+    const safeWidth = Math.max(1, width);
+    const safeHeight = Math.max(1, height);
+    const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    const dimensionLimit = Math.max(1, this.maxRenderDimension / Math.max(safeWidth, safeHeight));
+    const pixelRatio = Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
+    this.renderer.setPixelRatio(pixelRatio);
+  }
 
   private updateStats(): void {
     const now = performance.now();
