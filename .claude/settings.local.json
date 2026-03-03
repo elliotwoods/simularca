@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add src/app/App.tsx)",
+      "Bash(git commit:*)",
+      "Bash(git push -u origin claude/gifted-wozniak)",
+      "Bash(gh pr:*)"
+    ]
+  }
+}
