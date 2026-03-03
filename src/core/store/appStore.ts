@@ -39,7 +39,14 @@ export interface AppActions {
   redo(): void;
   setSessionName(name: string): void;
   setSceneBackgroundColor(color: string): void;
-  setSceneRenderSettings(settings: Partial<{ renderEngine: RenderEngine; antialiasing: boolean }>): void;
+  setSceneRenderSettings(
+    settings: Partial<{
+      renderEngine: RenderEngine;
+      antialiasing: boolean;
+      cameraKeyboardNavigation: boolean;
+      cameraNavigationSpeed: number;
+    }>
+  ): void;
   createActor(input: {
     actorType: ActorNode["actorType"];
     name?: string;
@@ -307,6 +314,12 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             if (typeof settings.antialiasing === "boolean") {
               draft.scene.antialiasing = settings.antialiasing;
+            }
+            if (typeof settings.cameraKeyboardNavigation === "boolean") {
+              draft.scene.cameraKeyboardNavigation = settings.cameraKeyboardNavigation;
+            }
+            if (typeof settings.cameraNavigationSpeed === "number" && Number.isFinite(settings.cameraNavigationSpeed)) {
+              draft.scene.cameraNavigationSpeed = Math.max(0, settings.cameraNavigationSpeed);
             }
             draft.dirty = true;
           })

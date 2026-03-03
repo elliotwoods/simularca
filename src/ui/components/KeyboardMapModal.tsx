@@ -7,11 +7,14 @@ const SHORTCUTS = [
   { key: "Space", action: "Play / Pause simulation" },
   { key: "Tab", action: "Next camera (1s tween)" },
   { key: "Shift + Tab", action: "Previous camera (1s tween)" },
+  { key: "P", action: "Toggle perspective / orthographic camera mode" },
   { key: "Delete", action: "Delete current selection" },
   { key: "Ctrl/Cmd + S", action: "Save session" },
   { key: "Ctrl/Cmd + Shift + S", action: "Save session as..." },
   { key: "Ctrl/Cmd + Z", action: "Undo" },
   { key: "Ctrl/Cmd + Shift + Z", action: "Redo" },
+  { key: "W / A / S / D", action: "Move camera forward / left / back / right" },
+  { key: "Q / E", action: "Move camera down / up" },
   { key: "F", action: "Frame selected object (planned)" },
   { key: "?", action: "Toggle keyboard map" }
 ];

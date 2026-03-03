@@ -61,7 +61,9 @@ const sessionSchema = z.object({
     sceneComponentIds: z.array(z.string()),
     backgroundColor: z.string().default("#070b12"),
     renderEngine: z.enum(["webgl2", "webgpu"]).default("webgl2"),
-    antialiasing: z.boolean().default(true)
+    antialiasing: z.boolean().default(true),
+    cameraKeyboardNavigation: z.boolean().default(true),
+    cameraNavigationSpeed: z.number().default(6)
   }),
   actors: z.record(actorSchema),
   components: z.record(componentSchema),

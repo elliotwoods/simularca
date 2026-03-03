@@ -11,6 +11,7 @@ interface DigitScrubInputProps {
   mixed?: boolean;
   precision?: number;
   disabled?: boolean;
+  className?: string;
   onChange: (value: number) => void;
 }
 
@@ -333,7 +334,7 @@ export function DigitScrubInput(props: DigitScrubInputProps) {
     return (
       <input
         ref={editInputRef}
-        className="widget-digit-input editing"
+        className={`widget-digit-input editing${props.className ? ` ${props.className}` : ""}`}
         type="text"
         value={draft}
         autoFocus
@@ -363,7 +364,7 @@ export function DigitScrubInput(props: DigitScrubInputProps) {
     <button
       ref={rootRef}
       type="button"
-      className={`widget-digit-input${hoveredPlace !== null ? " scrub-hover" : ""}`}
+      className={`widget-digit-input${hoveredPlace !== null ? " scrub-hover" : ""}${props.className ? ` ${props.className}` : ""}`}
       disabled={props.disabled}
       title={props.mixed ? "Mixed values" : "Drag digits to adjust place values. Click to type."}
       onClick={() => {

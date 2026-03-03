@@ -10,6 +10,18 @@ import { countActorStats, summarizeMemory, type RenderStatsSample } from "@/rend
 
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
+const CAMERA_NAV_KEYS = new Set(["w", "a", "s", "d", "q", "e"]);
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
 
 export class WebGlViewport {
   private readonly renderer: any;
@@ -37,10 +49,8 @@ export class WebGlViewport {
   private readonly maxRenderDimension = 4096;
   private previousMainRenderSample: RenderStatsSample | null = null;
   private readonly wheelZoomSpeed = 0.12;
-  private wheelEventsDetected = 0;
-  private wheelZoomApplied = 0;
-  private wheelLastDelta = 0;
-  private wheelLastAtMs = -1;
+  private readonly navigationKeysDown = new Set<string>();
+  private navigationLastAtMs = performance.now();
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -85,6 +95,9 @@ export class WebGlViewport {
     (this.controls as any).maxZoom = 200;
     this.renderer.domElement.style.touchAction = "none";
     window.addEventListener("wheel", this.onViewportWheel, { passive: false, capture: true });
+    window.addEventListener("keydown", this.onKeyDown, { capture: true });
+    window.addEventListener("keyup", this.onKeyUp, { capture: true });
+    window.addEventListener("blur", this.onWindowBlur);
     this.curveEditController = new CurveEditController(
       kernel,
       this.sceneController,
@@ -118,6 +131,9 @@ export class WebGlViewport {
     }
     this.disposed = true;
     window.removeEventListener("resize", this.onResize);
+    window.removeEventListener("keydown", this.onKeyDown, true);
+    window.removeEventListener("keyup", this.onKeyUp, true);
+    window.removeEventListener("blur", this.onWindowBlur);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.resizeObservedElements = [];
@@ -156,6 +172,7 @@ export class WebGlViewport {
     await this.sparkSplatController.syncFromState();
     this.enforceActorCompatibility("webgl2");
     this.syncCameraState();
+    this.applyKeyboardNavigation(performance.now());
     this.curveEditController.setCamera(this.activeCamera);
     this.curveEditController.update();
     this.controls.update();
@@ -381,10 +398,6 @@ export class WebGlViewport {
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
         cameraZoomEnabled: this.isWheelZoomEnabled(),
-        cameraWheelEventsDetected: this.wheelEventsDetected,
-        cameraWheelZoomApplied: this.wheelZoomApplied,
-        cameraWheelLastDelta: this.wheelLastDelta,
-        cameraWheelLastMsAgo: this.wheelLastAtMs >= 0 ? Math.max(0, now - this.wheelLastAtMs) : -1,
         sessionFileBytes:
           currentStats.sessionFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
             ? currentStats.sessionFileBytesSaved
@@ -531,9 +544,6 @@ export class WebGlViewport {
     if (!this.isWheelEventInsideViewport(event)) {
       return;
     }
-    this.wheelEventsDetected += 1;
-    this.wheelLastDelta = Number.isFinite(event.deltaY) ? event.deltaY : 0;
-    this.wheelLastAtMs = performance.now();
     const current = this.activeCamera;
     if (!current) {
       return;
@@ -544,6 +554,7 @@ export class WebGlViewport {
     }
     const direction = delta > 0 ? 1 : -1;
     const scalar = 1 + this.wheelZoomSpeed * Math.min(4, Math.abs(delta) / 100);
+    this.cancelOrbitDecay();
 
     if (current instanceof THREE.OrthographicCamera) {
       const minZoom = Number((this.controls as any).minZoom ?? 0.05);
@@ -551,9 +562,20 @@ export class WebGlViewport {
       const previousZoom = current.zoom;
       const nextZoom = direction > 0 ? current.zoom / scalar : current.zoom * scalar;
       current.zoom = Math.max(minZoom, Math.min(maxZoom, nextZoom));
-      if (Math.abs(current.zoom - previousZoom) > 1e-10) {
-        this.wheelZoomApplied += 1;
+
+      // Fallback dolly compensation for render paths that don't honor orthographic zoom.
+      const target = this.controls.target;
+      const offset = new THREE.Vector3().copy(current.position).sub(target);
+      const distance = offset.length();
+      if (Number.isFinite(distance) && distance > 0 && previousZoom > 0 && current.zoom > 0) {
+        const minDistance = Number((this.controls as any).minDistance ?? 0.01);
+        const maxDistance = Number((this.controls as any).maxDistance ?? 10000);
+        const nextDistance = distance * (previousZoom / current.zoom);
+        const clampedDistance = Math.max(minDistance, Math.min(maxDistance, nextDistance));
+        offset.setLength(clampedDistance);
+        current.position.copy(target).add(offset);
       }
+
       current.updateProjectionMatrix();
       event.preventDefault();
       return;
@@ -568,17 +590,99 @@ export class WebGlViewport {
       }
       const minDistance = Number((this.controls as any).minDistance ?? 0.01);
       const maxDistance = Number((this.controls as any).maxDistance ?? 10000);
-      const previousDistance = distance;
       const nextDistance = direction > 0 ? distance * scalar : distance / scalar;
       const clampedDistance = Math.max(minDistance, Math.min(maxDistance, nextDistance));
       offset.setLength(clampedDistance);
       current.position.copy(target).add(offset);
-      if (Math.abs(clampedDistance - previousDistance) > 1e-10) {
-        this.wheelZoomApplied += 1;
-      }
       event.preventDefault();
     }
   };
+
+  private onKeyDown = (event: KeyboardEvent): void => {
+    if (isEditableTarget(event.target)) {
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (!CAMERA_NAV_KEYS.has(key)) {
+      return;
+    }
+    this.navigationKeysDown.add(key);
+  };
+
+  private onKeyUp = (event: KeyboardEvent): void => {
+    const key = event.key.toLowerCase();
+    if (!CAMERA_NAV_KEYS.has(key)) {
+      return;
+    }
+    this.navigationKeysDown.delete(key);
+  };
+
+  private onWindowBlur = (): void => {
+    this.navigationKeysDown.clear();
+  };
+
+  private applyKeyboardNavigation(nowMs: number): void {
+    const deltaSeconds = Math.max(0, Math.min(0.1, (nowMs - this.navigationLastAtMs) / 1000));
+    this.navigationLastAtMs = nowMs;
+    if (deltaSeconds <= 0) {
+      return;
+    }
+    const scene = this.kernel.store.getState().state.scene;
+    if (!scene.cameraKeyboardNavigation || this.navigationKeysDown.size === 0) {
+      return;
+    }
+    const speed = Math.max(0, Number(scene.cameraNavigationSpeed ?? 0));
+    if (speed <= 0 || !this.activeCamera) {
+      return;
+    }
+
+    const forwardAxisRaw = Number(this.navigationKeysDown.has("w")) - Number(this.navigationKeysDown.has("s"));
+    const forwardAxis = this.activeCamera instanceof THREE.OrthographicCamera ? 0 : forwardAxisRaw;
+    const rightAxis = Number(this.navigationKeysDown.has("d")) - Number(this.navigationKeysDown.has("a"));
+    const upAxis = Number(this.navigationKeysDown.has("e")) - Number(this.navigationKeysDown.has("q"));
+    if (forwardAxis === 0 && rightAxis === 0 && upAxis === 0) {
+      return;
+    }
+
+    this.cancelOrbitDecay();
+    const forward = new THREE.Vector3();
+    this.activeCamera.getWorldDirection(forward);
+    if (forward.lengthSq() < 1e-8) {
+      forward.set(0, 0, -1);
+    } else {
+      forward.normalize();
+    }
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().crossVectors(forward, worldUp);
+    if (right.lengthSq() < 1e-8) {
+      right.set(1, 0, 0);
+    } else {
+      right.normalize();
+    }
+
+    const movement = new THREE.Vector3()
+      .addScaledVector(forward, forwardAxis)
+      .addScaledVector(right, rightAxis)
+      .addScaledVector(worldUp, upAxis);
+    if (movement.lengthSq() < 1e-8) {
+      return;
+    }
+    movement.normalize().multiplyScalar(speed * deltaSeconds);
+    this.activeCamera.position.add(movement);
+    const target = this.controls.target as { x: number; y: number; z: number; set(x: number, y: number, z: number): void };
+    target.set(target.x + movement.x, target.y + movement.y, target.z + movement.z);
+  }
+
+  private cancelOrbitDecay(): void {
+    const controls = this.controls as any;
+    controls._scale = 1;
+    if (controls._sphericalDelta && typeof controls._sphericalDelta.set === "function") {
+      controls._sphericalDelta.set(0, 0, 0);
+    }
+    if (controls._panOffset && typeof controls._panOffset.set === "function") {
+      controls._panOffset.set(0, 0, 0);
+    }
+  }
 
   private isWheelEventInsideViewport(event: WheelEvent): boolean {
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];

@@ -13,8 +13,9 @@ import {
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
-import { loadPluginFromModule } from "@/features/plugins/pluginLoader";
+import { discoverAndLoadLocalPlugins } from "@/features/plugins/discovery";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
+import { PluginsModal } from "@/ui/components/PluginsModal";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
 const CAMERA_PRESETS: CameraPreset[] = ["perspective", "isometric", "top", "left", "front", "back"];
@@ -41,6 +42,10 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const kernel = useKernel();
   const state = useAppStore((store) => store.state);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
+  const [pluginsModalOpen, setPluginsModalOpen] = useState(false);
+  const [pluginsRefreshLoading, setPluginsRefreshLoading] = useState(false);
+  const [pluginsRefreshSummary, setPluginsRefreshSummary] = useState<string | null>(null);
+  const [pluginsRevision, setPluginsRevision] = useState(0);
 
   const isReadOnly = state.mode === "web-ro";
   const fpsValue = Number.isFinite(state.stats.fps) ? state.stats.fps : 0;
@@ -71,6 +76,34 @@ export function TopBarPanel(props: TopBarPanelProps) {
     });
     return points.join(" ");
   }, [fpsHistory]);
+  const plugins = useMemo(() => {
+    void pluginsRevision;
+    return kernel.pluginApi.listPlugins();
+  }, [kernel, pluginsRevision, state.statusMessage]);
+
+  const refreshPlugins = () => {
+    if (!window.electronAPI) {
+      setPluginsRefreshSummary("Plugin discovery is available in desktop mode only.");
+      setPluginsRevision((value) => value + 1);
+      return;
+    }
+    setPluginsRefreshLoading(true);
+    void discoverAndLoadLocalPlugins(kernel)
+      .then((report) => {
+        const summary = `Discovered ${report.discovered.length}, loaded ${report.loadedCount}, failed ${report.failed.length}.`;
+        setPluginsRefreshSummary(summary);
+        kernel.store.getState().actions.setStatus(`Plugins refreshed. ${summary}`);
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "Unknown plugin refresh error";
+        setPluginsRefreshSummary(`Refresh failed: ${message}`);
+        kernel.store.getState().actions.setStatus(`Plugin refresh failed: ${message}`);
+      })
+      .finally(() => {
+        setPluginsRefreshLoading(false);
+        setPluginsRevision((value) => value + 1);
+      });
+  };
 
   return (
     <div className="top-toolbar">
@@ -172,33 +205,12 @@ export function TopBarPanel(props: TopBarPanelProps) {
       </div>
 
       <div className="toolbar-group">
-        <label title="Plugins">Plugin</label>
+        <label title="Plugins">Plugins</label>
         <button
           type="button"
-          title="Load plugin from module path"
+          title="Open plugins dialog"
           onClick={() => {
-            void props
-              .requestTextInput({
-                title: "Load Plugin",
-                label: "Plugin module path",
-                initialValue: "file:///absolute/path/to/plugin/dist/index.js",
-                confirmLabel: "Load"
-              })
-              .then((modulePath) => {
-                if (!modulePath) {
-                  return;
-                }
-                return loadPluginFromModule(kernel, modulePath)
-                  .then((result) => {
-                    kernel.store
-                      .getState()
-                      .actions.setStatus(`Plugin loaded: ${result.manifest.name} (${result.manifest.version})`);
-                  })
-                  .catch((error) => {
-                    const message = error instanceof Error ? error.message : "Unknown plugin loader error";
-                    kernel.store.getState().actions.setStatus(`Plugin load failed: ${message}`);
-                  });
-              });
+            setPluginsModalOpen(true);
           }}
         >
           <FontAwesomeIcon icon={faCube} />
@@ -217,6 +229,14 @@ export function TopBarPanel(props: TopBarPanelProps) {
           </svg>
         </div>
       </div>
+      <PluginsModal
+        open={pluginsModalOpen}
+        plugins={plugins}
+        loading={pluginsRefreshLoading}
+        lastRefreshSummary={pluginsRefreshSummary}
+        onRefresh={refreshPlugins}
+        onClose={() => setPluginsModalOpen(false)}
+      />
     </div>
   );
 }

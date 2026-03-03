@@ -286,6 +286,24 @@ body {
   padding: 6px;
   display: grid;
   gap: 4px;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.add-actor-group {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+
+.add-actor-group-title {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  border-bottom: 1px solid var(--line);
+  padding: 2px 4px 4px;
 }
 
 .add-actor-option {
@@ -1361,6 +1379,12 @@ select {
   gap: 6px;
 }
 
+.widget-number-input-wrap-fill {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
 .widget-number-input {
   min-width: 110px;
   width: 100%;
@@ -1401,6 +1425,10 @@ select {
   cursor: ew-resize;
   user-select: none;
   padding: 0 0.5px;
+}
+
+.widget-digit-input.widget-digit-input-rangeless .digit {
+  padding: 0 0.75px;
 }
 
 .widget-digit-input .digit:hover {
@@ -2023,6 +2051,66 @@ body.is-scrubbing-number * {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.plugins-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1260;
+  background: rgba(2, 5, 10, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.plugins-modal {
+  width: min(640px, 94vw);
+  max-height: 84vh;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  background: #0a1423;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.plugins-modal h3 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.plugins-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.plugins-modal-summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.plugins-modal-item {
+  display: grid;
+  gap: 4px;
+}
+
+.plugins-modal-item-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.plugins-modal-item small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
 }
 
 @media (max-width: 900px) {

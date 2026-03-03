@@ -10,35 +10,56 @@ export interface ActorCreationOption {
   actorType: ActorType;
   pluginType?: string;
   pluginBacked: boolean;
+  groupKey: string;
+  groupLabel: string;
+  pluginName?: string;
 }
 
 export function listActorCreationOptions(kernel: AppKernel): ActorCreationOption[] {
-  const pluginDescriptorIds = new Set(
-    kernel.pluginApi
-      .listPlugins()
-      .flatMap((entry) => entry.definition.actorDescriptors.map((descriptor) => descriptor.id))
-  );
+  const pluginByDescriptorId = new Map<string, { pluginId: string; pluginName: string }>();
+  for (const entry of kernel.pluginApi.listPlugins()) {
+    const pluginName = entry.manifest?.name ?? entry.definition.name;
+    for (const descriptor of entry.definition.actorDescriptors) {
+      pluginByDescriptorId.set(descriptor.id, {
+        pluginId: entry.definition.id,
+        pluginName
+      });
+    }
+  }
 
   return kernel.descriptorRegistry
     .listByKind("actor")
+    .filter((descriptor) => Boolean(descriptor.spawn))
     .map((descriptor) => {
-      const actorType: ActorType = descriptor.spawn?.actorType ?? "plugin";
-      const pluginType = descriptor.spawn?.pluginType ?? (descriptor.spawn ? undefined : descriptor.id);
+      const actorType: ActorType = descriptor.spawn!.actorType;
+      const pluginType = descriptor.spawn!.pluginType;
+      const pluginEntry = pluginByDescriptorId.get(descriptor.id);
+      const pluginBacked = Boolean(pluginEntry);
+      const groupKey = pluginEntry ? `plugin:${pluginEntry.pluginId}` : "core";
+      const groupLabel = pluginEntry ? pluginEntry.pluginName : "Core";
       return {
         descriptorId: descriptor.id,
-        label: descriptor.spawn?.label ?? descriptor.schema.title,
+        label: descriptor.spawn!.label ?? descriptor.schema.title,
         description:
-          descriptor.spawn?.description ??
-          (pluginDescriptorIds.has(descriptor.id)
+          descriptor.spawn!.description ??
+          (pluginBacked
             ? "Actor supplied by a loaded plugin."
             : "Core actor type."),
-        iconGlyph: descriptor.spawn?.iconGlyph ?? (descriptor.spawn?.label ?? descriptor.schema.title).slice(0, 2).toUpperCase(),
+        iconGlyph: descriptor.spawn!.iconGlyph ?? (descriptor.spawn!.label ?? descriptor.schema.title).slice(0, 2).toUpperCase(),
         actorType,
         pluginType,
-        pluginBacked: pluginDescriptorIds.has(descriptor.id)
+        pluginBacked,
+        groupKey,
+        groupLabel,
+        pluginName: pluginEntry?.pluginName
       };
     })
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => {
+      if (a.groupLabel !== b.groupLabel) {
+        return a.groupLabel.localeCompare(b.groupLabel);
+      }
+      return a.label.localeCompare(b.label);
+    });
 }
 
 export function createActorFromDescriptor(kernel: AppKernel, descriptorId: string): string | null {

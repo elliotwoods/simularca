@@ -10,6 +10,7 @@ import {
 } from "@/features/camera/cycleTween";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
 import { importFileAsActor, listCompatibleActorFileImportOptions, type ActorFileImportOption } from "@/features/imports/actorFileImport";
+import { discoverAndLoadLocalPlugins } from "@/features/plugins/discovery";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
@@ -302,7 +303,22 @@ export function App() {
           .actions.setStatus(`Hot reload fallback: ${event.moduleId} (${event.fallbackReason ?? "unknown reason"})`);
       }
     });
-    void kernel.sessionService.loadDefaultSession();
+    void (async () => {
+      if (window.electronAPI) {
+        try {
+          const report = await discoverAndLoadLocalPlugins(kernel);
+          kernel.store
+            .getState()
+            .actions.setStatus(
+              `Plugins discovered: ${report.discovered.length}, loaded: ${report.loadedCount}, failed: ${report.failed.length}.`
+            );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown plugin discovery error";
+          kernel.store.getState().actions.setStatus(`Plugin auto-load failed: ${message}`);
+        }
+      }
+      await kernel.sessionService.loadDefaultSession();
+    })();
     return () => {
       unsubscribe();
     };
@@ -376,6 +392,14 @@ export function App() {
         cycleCameraByTab(event.shiftKey ? -1 : 1);
         return;
       }
+      if (event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        stopCameraTween();
+        const state = kernel.store.getState().state;
+        const nextMode = state.camera.mode === "orthographic" ? "perspective" : "orthographic";
+        actions.setCameraState({ mode: nextMode }, true);
+        return;
+      }
       if (event.key === "?") {
         event.preventDefault();
         setKeyboardMapOpen((value) => !value);
@@ -413,7 +437,7 @@ export function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [activeSessionName, cycleCameraByTab, kernel, requestTextInput]);
+  }, [activeSessionName, cycleCameraByTab, kernel, requestTextInput, stopCameraTween]);
 
   const topBar = useMemo(
     () => (

@@ -5,7 +5,6 @@ import { environmentActorDescriptor } from "@/features/actors/descriptors/enviro
 import { gaussianSplatActorDescriptor } from "@/features/actors/descriptors/gaussianSplatActor";
 import { gaussianSplatSparkActorDescriptor } from "@/features/actors/descriptors/gaussianSplatSparkActor";
 import { meshActorDescriptor } from "@/features/actors/descriptors/meshActor";
-import { pluginActorDescriptor } from "@/features/actors/descriptors/pluginActor";
 import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
 
@@ -17,8 +16,7 @@ export function registerCoreActorDescriptors(kernel: AppKernel): void {
     gaussianSplatSparkActorDescriptor,
     meshActorDescriptor,
     primitiveActorDescriptor,
-    curveActorDescriptor,
-    pluginActorDescriptor
+    curveActorDescriptor
   ];
   for (const descriptor of descriptors) {
     kernel.descriptorRegistry.register(descriptor);
@@ -33,8 +31,7 @@ export function setupActorHotReload(kernel: AppKernel): void {
     gaussianSplatSparkActorDescriptor,
     meshActorDescriptor,
     primitiveActorDescriptor,
-    curveActorDescriptor,
-    pluginActorDescriptor
+    curveActorDescriptor
   ]);
 }
 

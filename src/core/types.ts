@@ -148,6 +148,8 @@ export interface SceneState extends SceneNodeBase {
   backgroundColor: string;
   renderEngine: RenderEngine;
   antialiasing: boolean;
+  cameraKeyboardNavigation: boolean;
+  cameraNavigationSpeed: number;
 }
 
 export interface CameraState {
@@ -212,10 +214,6 @@ export interface SceneStats {
   cameraDistance: number;
   cameraControlsEnabled: boolean;
   cameraZoomEnabled: boolean;
-  cameraWheelEventsDetected: number;
-  cameraWheelZoomApplied: number;
-  cameraWheelLastDelta: number;
-  cameraWheelLastMsAgo: number;
 }
 
 export type ActorStatusValue = string | number | boolean | [number, number, number];

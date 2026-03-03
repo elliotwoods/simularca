@@ -1,30 +1,57 @@
 export interface ParameterSchema {
   id: string;
   title: string;
-  params: Array<{
-    key: string;
-    label: string;
-    description?: string;
-    type: "number" | "boolean" | "string" | "select" | "file";
-    min?: number;
-    max?: number;
-    step?: number;
-    precision?: number;
-    unit?: string;
-    dragSpeed?: number;
-    options?: string[];
-    accept?: string[];
-    dialogTitle?: string;
-    import?: {
-      mode: "import-asset" | "transcode-hdri";
-      kind?: "hdri" | "gaussian-splat" | "generic";
-      options?: {
-        uastc?: boolean;
-        zstdLevel?: number;
-        generateMipmaps?: boolean;
-      };
-    };
-  }>;
+  params: Array<
+    | {
+        key: string;
+        label: string;
+        description?: string;
+        type: "number";
+        min?: number;
+        max?: number;
+        step?: number;
+        precision?: number;
+        unit?: string;
+        dragSpeed?: number;
+      }
+    | {
+        key: string;
+        label: string;
+        description?: string;
+        type: "boolean" | "string" | "color";
+      }
+    | {
+        key: string;
+        label: string;
+        description?: string;
+        type: "select";
+        options: string[];
+      }
+    | {
+        key: string;
+        label: string;
+        description?: string;
+        type: "actor-ref" | "actor-ref-list";
+        allowedActorTypes?: string[];
+      }
+    | {
+        key: string;
+        label: string;
+        description?: string;
+        type: "file";
+        accept: string[];
+        dialogTitle?: string;
+        import: {
+          mode: "import-asset" | "transcode-hdri";
+          kind?: "hdri" | "gaussian-splat" | "generic";
+          options?: {
+            uastc?: boolean;
+            zstdLevel?: number;
+            generateMipmaps?: boolean;
+          };
+        };
+      }
+  >;
 }
 
 export interface ReloadableDescriptor {
@@ -32,8 +59,31 @@ export interface ReloadableDescriptor {
   kind: "actor" | "component" | "system";
   version: number;
   schema: ParameterSchema;
+  spawn?: {
+    actorType: "plugin" | "empty" | "environment" | "gaussian-splat" | "gaussian-splat-spark" | "mesh" | "primitive" | "curve";
+    pluginType?: string;
+    label?: string;
+    description?: string;
+    iconGlyph?: string;
+    fileExtensions?: string[];
+  };
   createRuntime(args: { params: Record<string, number | string | boolean> }): unknown;
   updateRuntime(runtime: unknown, args: { params: Record<string, number | string | boolean>; dtSeconds: number }): void;
+  sceneHooks?: {
+    createObject?(args: { actor: unknown; state: unknown }): unknown;
+    syncObject?(context: {
+      actor: unknown;
+      state: unknown;
+      object: unknown;
+      simTimeSeconds: number;
+      dtSeconds: number;
+      getActorById(actorId: string): unknown | null;
+      getActorObject(actorId: string): unknown | null;
+      sampleCurveWorldPoint(actorId: string, t: number): { position: [number, number, number]; tangent: [number, number, number] } | null;
+      setActorStatus(status: unknown): void;
+    }): void;
+    disposeObject?(args: { actor: unknown; state: unknown; object: unknown }): void;
+  };
 }
 
 export interface PluginDefinition {

@@ -24,6 +24,11 @@ export interface FileDialogFilter {
   extensions: string[];
 }
 
+export interface LocalPluginCandidate {
+  modulePath: string;
+  sourceGroup: "plugins-local" | "plugins";
+}
+
 export interface ElectronApi {
   mode: AppMode;
   listSessions(): Promise<string[]>;
@@ -57,6 +62,7 @@ export interface ElectronApi {
   resolveAssetPath(args: { sessionName: string; relativePath: string }): Promise<string>;
   readAssetBytes(args: { sessionName: string; relativePath: string }): Promise<Uint8Array>;
   openFileDialog(args: { title?: string; filters?: FileDialogFilter[] }): Promise<string | null>;
+  discoverLocalPlugins(): Promise<LocalPluginCandidate[]>;
   logRuntimeError(payload: Record<string, unknown>): void;
   getWindowState(): Promise<{ isMaximized: boolean }>;
   windowMinimize(): Promise<void>;

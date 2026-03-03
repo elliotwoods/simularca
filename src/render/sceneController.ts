@@ -7,10 +7,11 @@ import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import type { AppKernel } from "@/app/kernel";
-import type { ActorNode } from "@/core/types";
+import type { ActorNode, ActorRuntimeStatus, AppState } from "@/core/types";
+import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import { getEffectiveCurveHandles } from "@/features/curves/handles";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
-import { estimateCurveLength } from "@/features/curves/sampler";
+import { estimateCurveLength, sampleCurvePositionAndTangent } from "@/features/curves/sampler";
 import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
 import type { SplatQueryArgs, VisibleSplatSample } from "@/render/splatQueryRegistry";
@@ -281,6 +282,7 @@ export class SceneController {
   private readonly gaussianTriangleCountByActorId = new Map<string, number>();
   private readonly gaussianSortableBatchesByActorId = new Map<string, GaussianSortableBatch>();
   private readonly curveSignatureByActorId = new Map<string, string>();
+  private readonly lastKnownActorById = new Map<string, ActorNode>();
   private readonly plyLoader = new PLYLoader();
   private readonly gltfLoader = new GLTFLoader();
   private readonly fbxLoader = new FBXLoader();
@@ -296,6 +298,7 @@ export class SceneController {
   private readonly gaussianLastCameraPosition = new THREE.Vector3();
   private readonly gaussianLastCameraQuaternion = new THREE.Quaternion();
   private gaussianSortDirty = true;
+  private previousSimTimeSeconds = 0;
 
   public constructor(private readonly kernel: AppKernel) {
     const initialBackground = normalizeBackgroundColor(this.kernel.store.getState().state.scene.backgroundColor);
@@ -315,10 +318,15 @@ export class SceneController {
   public async syncFromState(): Promise<void> {
     const state = this.kernel.store.getState().state;
     const actorIds = new Set(Object.keys(state.actors));
+    const simTimeSeconds = Number.isFinite(state.time.elapsedSimSeconds) ? state.time.elapsedSimSeconds : 0;
+    const dtSeconds = Math.max(0, simTimeSeconds - this.previousSimTimeSeconds);
+    this.previousSimTimeSeconds = simTimeSeconds;
 
     for (const existing of [...this.actorObjects.keys()]) {
       if (!actorIds.has(existing)) {
         const object = this.actorObjects.get(existing);
+        const removedActor = this.lastKnownActorById.get(existing) ?? null;
+        this.disposePluginSceneObject(removedActor, object);
         if (object) {
           object.parent?.remove(object);
         }
@@ -341,10 +349,12 @@ export class SceneController {
         this.curveSignatureByActorId.delete(existing);
         this.kernel.store.getState().actions.setActorStatus(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
+        this.lastKnownActorById.delete(existing);
       }
     }
 
     for (const actor of Object.values(state.actors)) {
+      this.lastKnownActorById.set(actor.id, structuredClone(actor));
       await this.ensureActorObject(actor);
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
       if (actor.actorType === "gaussian-splat") {
@@ -363,6 +373,9 @@ export class SceneController {
     }
     for (const actor of Object.values(state.actors)) {
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
+    }
+    for (const actor of Object.values(state.actors)) {
+      this.syncPluginSceneActor(actor, state, simTimeSeconds, dtSeconds);
     }
 
     this.applySceneBackgroundColor();
@@ -654,6 +667,10 @@ export class SceneController {
   }
 
   private async createObjectForActor(actor: ActorNode): Promise<any> {
+    const pluginCreated = this.createPluginSceneObject(actor);
+    if (pluginCreated) {
+      return pluginCreated;
+    }
     if (actor.actorType === "gaussian-splat") {
       const container = new THREE.Group();
       container.name = "gaussian-splat-container";
@@ -1527,6 +1544,130 @@ export class SceneController {
       worldMatrix.multiply(this.actorLocalMatrix(actor.transform));
     }
     return worldMatrix;
+  }
+
+  private resolveActorDescriptor(actor: ActorNode): ReloadableDescriptor | null {
+    const descriptors = this.kernel.descriptorRegistry.listByKind("actor");
+    for (const descriptor of descriptors) {
+      if (!descriptor.spawn) {
+        continue;
+      }
+      if (descriptor.spawn.actorType !== actor.actorType) {
+        continue;
+      }
+      if (descriptor.spawn.pluginType !== actor.pluginType) {
+        continue;
+      }
+      return descriptor;
+    }
+    return null;
+  }
+
+  private createPluginSceneObject(actor: ActorNode): any | null {
+    if (actor.actorType !== "plugin") {
+      return null;
+    }
+    const descriptor = this.resolveActorDescriptor(actor);
+    if (!descriptor?.sceneHooks?.createObject) {
+      return null;
+    }
+    try {
+      const created = descriptor.sceneHooks.createObject({
+        actor,
+        state: this.kernel.store.getState().state
+      });
+      if (created) {
+        return created;
+      }
+    } catch (error) {
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {},
+        error: `Plugin createObject failed: ${formatLoadError(error)}`,
+        updatedAtIso: new Date().toISOString()
+      });
+    }
+    return null;
+  }
+
+  private disposePluginSceneObject(actor: ActorNode | null, object: unknown): void {
+    if (!actor || !object) {
+      return;
+    }
+    const descriptor = this.resolveActorDescriptor(actor);
+    if (!descriptor?.sceneHooks?.disposeObject) {
+      return;
+    }
+    try {
+      descriptor.sceneHooks.disposeObject({
+        actor,
+        state: this.kernel.store.getState().state,
+        object
+      });
+    } catch (error) {
+      this.kernel.store.getState().actions.addLog({
+        level: "warn",
+        message: `Plugin disposeObject failed for actor ${actor.name}`,
+        details: formatLoadError(error)
+      });
+    }
+  }
+
+  private syncPluginSceneActor(actor: ActorNode, state: AppState, simTimeSeconds: number, dtSeconds: number): void {
+    if (actor.actorType !== "plugin") {
+      return;
+    }
+    const descriptor = this.resolveActorDescriptor(actor);
+    if (!descriptor?.sceneHooks?.syncObject) {
+      return;
+    }
+    const object = this.actorObjects.get(actor.id);
+    if (!object) {
+      return;
+    }
+    try {
+      descriptor.sceneHooks.syncObject({
+        actor,
+        state,
+        object,
+        simTimeSeconds,
+        dtSeconds,
+        getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
+        getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
+        sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t),
+        setActorStatus: (status: ActorRuntimeStatus | null) => {
+          this.kernel.store.getState().actions.setActorStatus(actor.id, status);
+        }
+      });
+    } catch (error) {
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {},
+        error: `Plugin syncObject failed: ${formatLoadError(error)}`,
+        updatedAtIso: new Date().toISOString()
+      });
+    }
+  }
+
+  private sampleCurveWorldPoint(
+    actorId: string,
+    t: number
+  ): {
+    position: [number, number, number];
+    tangent: [number, number, number];
+  } | null {
+    const state = this.kernel.store.getState().state;
+    const actor = state.actors[actorId];
+    if (!actor || actor.actorType !== "curve") {
+      return null;
+    }
+    const sampled = sampleCurvePositionAndTangent(curveDataWithOverrides(actor), t);
+    const worldMatrix = this.resolveActorWorldMatrix(actor.id, state.actors);
+    const worldPosition = new THREE.Vector3(...sampled.position).applyMatrix4(worldMatrix);
+    const normalMatrix = new THREE.Matrix3().setFromMatrix4(worldMatrix);
+    const worldTangent = new THREE.Vector3(...sampled.tangent).applyMatrix3(normalMatrix).normalize();
+    return {
+      position: [worldPosition.x, worldPosition.y, worldPosition.z],
+      tangent: [worldTangent.x, worldTangent.y, worldTangent.z]
+    };
   }
 
   private actorLocalMatrix(transform: ActorNode["transform"]): any {

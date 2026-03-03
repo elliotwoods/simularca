@@ -174,6 +174,38 @@ function getAssetDirectory(sessionName: string, kind: SessionAssetRef["kind"]): 
   return path.join(getSessionDirectory(sessionName), "assets", kind);
 }
 
+async function discoverLocalPlugins(): Promise<Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins" }>> {
+  const roots: Array<{ sourceGroup: "plugins-local" | "plugins"; directory: string }> = [
+    { sourceGroup: "plugins-local", directory: path.join(getRepoRoot(), "plugins-local") },
+    { sourceGroup: "plugins", directory: path.join(getRepoRoot(), "plugins") }
+  ];
+  const discovered: Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins" }> = [];
+  for (const root of roots) {
+    try {
+      const entries = await fs.readdir(root.directory, { withFileTypes: true });
+      const directories = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b));
+      for (const childName of directories) {
+        const builtEntry = path.join(root.directory, childName, "dist", "index.js");
+        try {
+          await fs.access(builtEntry);
+          discovered.push({
+            modulePath: `file:///${builtEntry.replaceAll("\\", "/")}`,
+            sourceGroup: root.sourceGroup
+          });
+        } catch {
+          // Ignore entries without built output.
+        }
+      }
+    } catch {
+      // Directory missing or inaccessible; ignore.
+    }
+  }
+  return discovered;
+}
+
 function mimeTypeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
@@ -500,6 +532,10 @@ function registerIpcHandlers(): void {
       return result.filePaths[0] ?? null;
     }
   );
+
+  ipcMain.handle("plugins:discover-local", async () => {
+    return await discoverLocalPlugins();
+  });
 
   ipcMain.handle("sessions:list", async () => {
     await fs.mkdir(getSaveDataRoot(), { recursive: true });

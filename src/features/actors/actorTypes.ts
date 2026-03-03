@@ -46,7 +46,7 @@ export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
     },
     {
       key: "scaleFactor",
-      label: "Import Scale (src->m)",
+      label: "Scale",
       type: "number",
       step: 0.001,
       precision: 3,
@@ -124,15 +124,6 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
   ]
 };
 
-export const PLUGIN_ACTOR_SCHEMA: ParameterSchema = {
-  id: "actor.plugin",
-  title: "Plugin Actor",
-  params: [
-    { key: "pluginId", label: "Plugin Id", type: "string" },
-    { key: "entry", label: "Entry", type: "string" }
-  ]
-};
-
 export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
   id: "actor.primitive",
   title: "Primitive",
@@ -186,12 +177,7 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       min: 1,
       max: 64,
       step: 1,
-      defaultValue: 24,
-      visibleWhen: [
-        { key: "shape", equals: "cube" },
-        { key: "shape", equals: "sphere" },
-        { key: "shape", equals: "cylinder" }
-      ]
+      defaultValue: 24
     },
     {
       key: "color",

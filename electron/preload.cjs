@@ -51,6 +51,7 @@ const api = {
   resolveAssetPath: (args) => ipcRenderer.invoke("asset:resolve-path", args),
   readAssetBytes: (args) => ipcRenderer.invoke("asset:read-bytes", args),
   openFileDialog: (args) => ipcRenderer.invoke("dialog:open-file", args),
+  discoverLocalPlugins: () => ipcRenderer.invoke("plugins:discover-local"),
   logRuntimeError: (payload) => ipcRenderer.send("renderer:runtime-error", payload),
   getWindowState: () => ipcRenderer.invoke("window:get-state"),
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),

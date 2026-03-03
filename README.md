@@ -56,7 +56,15 @@ For runtime KTX2 decode, place basis transcoder files in `public/basis/` (e.g. `
 - Web mode (`public/sessions/...`) is read-only and intended for future Vercel deploys.
 - Gaussian splat actor renders in-scene from `splatbin-v1` session assets.
 - Plugin sample package: `plugins/example-wave-plugin`.
+- Plugin template package: `plugins/template-artwork-actor-plugin`.
+- Local external plugin workspace (gitignored): `plugins-local/`.
 - Plugin handshake contract and loader expectations: `docs/plugin-handshake.md`.
+- Desktop mode auto-discovers local plugins from:
+  - `plugins-local/*/dist/index.js`
+  - `plugins/*/dist/index.js`
+- Top toolbar `Plugins` button opens plugin status dialog (installed plugins + refresh).
+- Load built plugin modules from console, for example:
+  - `plugin.load("file:///C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js")`
 
 ## Gaussian Asset Migration
 - Legacy sessions referencing raw `.ply` Gaussian assets are auto-converted to `splatbin-v1` when loaded in Electron mode.

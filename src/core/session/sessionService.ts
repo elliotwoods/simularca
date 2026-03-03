@@ -29,12 +29,14 @@ export class SessionService {
       return;
     }
     const parsed = parseSession(raw);
-    const migrated = await this.migrateLegacyGaussianAssets(parsed);
+    const canonicalizedManifest: SessionManifest =
+      parsed.sessionName === sessionName ? parsed : { ...parsed, sessionName };
+    const migrated = await this.migrateLegacyGaussianAssets(canonicalizedManifest);
     const manifest = migrated.manifest;
     const sessionBytes = new Blob([raw]).size;
     this.store.getState().actions.hydrate({
       ...createInitialState(this.storage.mode, sessionName),
-      activeSessionName: manifest.sessionName,
+      activeSessionName: sessionName,
       scene: manifest.scene,
       actors: manifest.actors,
       components: manifest.components,
@@ -48,9 +50,11 @@ export class SessionService {
       sessionFileBytes: sessionBytes,
       sessionFileBytesSaved: sessionBytes
     });
-    if (migrated.changed && !this.storage.isReadOnly) {
+    if ((migrated.changed || parsed.sessionName !== sessionName) && !this.storage.isReadOnly) {
       await this.saveSession();
-      this.store.getState().actions.setStatus("Converted legacy Gaussian assets to native splat binary.");
+      if (migrated.changed) {
+        this.store.getState().actions.setStatus("Converted legacy Gaussian assets to native splat binary.");
+      }
     }
   }
 
@@ -106,13 +110,20 @@ export class SessionService {
     if (previousName === nextName) {
       return;
     }
+    const stateBeforeRename = this.store.getState().state;
+    const renamingActiveSession = stateBeforeRename.activeSessionName === previousName;
+    if (renamingActiveSession) {
+      await this.saveSession();
+    }
     await this.storage.renameSession(previousName, nextName);
     const state = this.store.getState().state;
-    if (state.activeSessionName === previousName) {
+    if (renamingActiveSession || state.activeSessionName === previousName) {
       this.store.getState().actions.setSessionName(nextName);
-      this.store.getState().actions.setDirty(false);
     }
     await this.storage.saveDefaults({ defaultSessionName: nextName });
+    if (renamingActiveSession) {
+      await this.saveSession();
+    }
   }
 
   public queueAutosave(delayMs = 1000): void {

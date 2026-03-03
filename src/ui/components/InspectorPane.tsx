@@ -53,6 +53,9 @@ const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 const VISIBILITY_OPTIONS: ActorVisibilityMode[] = ["visible", "hidden", "selected"];
 const DEFAULT_SCENE_BACKGROUND = "#070b12";
+const DEFAULT_CAMERA_KEYBOARD_NAVIGATION = true;
+const DEFAULT_CAMERA_NAVIGATION_SPEED = 6;
+const DEFAULT_CAMERA_FOV_DEGREES = 50;
 const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
 const CURVE_HANDLE_MODE_OPTIONS = [
@@ -567,6 +570,10 @@ export function InspectorPane() {
     const canResetBackground = appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND;
     const canResetEngine = appState.scene.renderEngine !== "webgl2";
     const canResetAntialiasing = appState.scene.antialiasing !== true;
+    const canResetKeyboardNavigation = appState.scene.cameraKeyboardNavigation !== DEFAULT_CAMERA_KEYBOARD_NAVIGATION;
+    const canResetNavigationSpeed =
+      Math.abs(appState.scene.cameraNavigationSpeed - DEFAULT_CAMERA_NAVIGATION_SPEED) > 1e-9;
+    const canResetCameraFov = Math.abs(appState.camera.fov - DEFAULT_CAMERA_FOV_DEGREES) > 1e-9;
     const sceneStatsRows = [
       { label: "FPS", value: Number.isFinite(appState.stats.fps) ? appState.stats.fps.toFixed(1) : "0.0" },
       { label: "Frame (ms)", value: Number.isFinite(appState.stats.frameMs) ? appState.stats.frameMs.toFixed(2) : "0.00" },
@@ -592,25 +599,6 @@ export function InspectorPane() {
       },
       { label: "Controls Enabled", value: appState.stats.cameraControlsEnabled ? "Yes" : "No" },
       { label: "Zoom Enabled", value: appState.stats.cameraZoomEnabled ? "Yes" : "No" },
-      {
-        label: "Wheel Events",
-        value: Math.max(0, Math.floor(appState.stats.cameraWheelEventsDetected)).toLocaleString()
-      },
-      {
-        label: "Wheel Zoom Applied",
-        value: Math.max(0, Math.floor(appState.stats.cameraWheelZoomApplied)).toLocaleString()
-      },
-      {
-        label: "Wheel Last Delta",
-        value: Number.isFinite(appState.stats.cameraWheelLastDelta) ? appState.stats.cameraWheelLastDelta.toFixed(1) : "0.0"
-      },
-      {
-        label: "Wheel Last (ms ago)",
-        value:
-          appState.stats.cameraWheelLastMsAgo >= 0 && Number.isFinite(appState.stats.cameraWheelLastMsAgo)
-            ? appState.stats.cameraWheelLastMsAgo.toFixed(0)
-            : "n/a"
-      },
       { label: "Draw Calls", value: Math.max(0, Math.floor(appState.stats.drawCalls)).toLocaleString() },
       { label: "Triangles", value: Math.max(0, Math.floor(appState.stats.triangles)).toLocaleString() },
       { label: "Splat Draw Calls", value: Math.max(0, Math.floor(appState.stats.splatDrawCalls)).toLocaleString() },
@@ -740,6 +728,98 @@ export function InspectorPane() {
                   onClick={() => {
                     kernel.store.getState().actions.setSceneRenderSettings({
                       antialiasing: true
+                    });
+                  }}
+                >
+                  <FontAwesomeIcon icon={faRotateLeft} />
+                </button>
+              </div>
+            </div>
+            <div className="inspector-common-row">
+              <span className="inspector-common-label">Keyboard Camera Nav</span>
+              <div className="inspector-common-control-wrap">
+                <ToggleField
+                  label=""
+                  checked={appState.scene.cameraKeyboardNavigation}
+                  disabled={readOnly}
+                  embedded
+                  onChange={(next) => {
+                    kernel.store.getState().actions.setSceneRenderSettings({
+                      cameraKeyboardNavigation: next
+                    });
+                  }}
+                />
+                <button
+                  type="button"
+                  className={`widget-reset-button${canResetKeyboardNavigation ? "" : " is-hidden"}`}
+                  title="Reset Keyboard Navigation"
+                  disabled={readOnly || !canResetKeyboardNavigation}
+                  onClick={() => {
+                    kernel.store.getState().actions.setSceneRenderSettings({
+                      cameraKeyboardNavigation: DEFAULT_CAMERA_KEYBOARD_NAVIGATION
+                    });
+                  }}
+                >
+                  <FontAwesomeIcon icon={faRotateLeft} />
+                </button>
+              </div>
+            </div>
+            <div className="inspector-common-row">
+              <span className="inspector-common-label">Camera Nav Speed (m/s)</span>
+              <div className="inspector-common-control-wrap">
+                <NumberField
+                  label=""
+                  value={appState.scene.cameraNavigationSpeed}
+                  min={0}
+                  step={0.1}
+                  precision={2}
+                  disabled={readOnly}
+                  onChange={(next) => {
+                    kernel.store.getState().actions.setSceneRenderSettings({
+                      cameraNavigationSpeed: next
+                    });
+                  }}
+                />
+                <button
+                  type="button"
+                  className={`widget-reset-button${canResetNavigationSpeed ? "" : " is-hidden"}`}
+                  title="Reset Camera Navigation Speed"
+                  disabled={readOnly || !canResetNavigationSpeed}
+                  onClick={() => {
+                    kernel.store.getState().actions.setSceneRenderSettings({
+                      cameraNavigationSpeed: DEFAULT_CAMERA_NAVIGATION_SPEED
+                    });
+                  }}
+                >
+                  <FontAwesomeIcon icon={faRotateLeft} />
+                </button>
+              </div>
+            </div>
+            <div className="inspector-common-row">
+              <span className="inspector-common-label">Camera FOV (deg)</span>
+              <div className="inspector-common-control-wrap">
+                <NumberField
+                  label=""
+                  value={appState.camera.fov}
+                  min={5}
+                  max={170}
+                  step={0.1}
+                  precision={1}
+                  disabled={readOnly}
+                  onChange={(next) => {
+                    kernel.store.getState().actions.setCameraState({
+                      fov: next
+                    });
+                  }}
+                />
+                <button
+                  type="button"
+                  className={`widget-reset-button${canResetCameraFov ? "" : " is-hidden"}`}
+                  title="Reset Camera FOV"
+                  disabled={readOnly || !canResetCameraFov}
+                  onClick={() => {
+                    kernel.store.getState().actions.setCameraState({
+                      fov: DEFAULT_CAMERA_FOV_DEGREES
                     });
                   }}
                 >

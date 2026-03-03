@@ -20,6 +20,30 @@ export interface ActorStatusContext {
   runtimeStatus?: ActorRuntimeStatus;
 }
 
+export interface SceneHookContext {
+  actor: ActorNode;
+  state: AppState;
+  object: unknown;
+  simTimeSeconds: number;
+  dtSeconds: number;
+  getActorById(actorId: string): ActorNode | null;
+  getActorObject(actorId: string): unknown | null;
+  sampleCurveWorldPoint(
+    actorId: string,
+    t: number
+  ): {
+    position: [number, number, number];
+    tangent: [number, number, number];
+  } | null;
+  setActorStatus(status: ActorRuntimeStatus | null): void;
+}
+
+export interface DescriptorSceneHooks {
+  createObject?(args: { actor: ActorNode; state: AppState }): unknown;
+  syncObject?(context: SceneHookContext): void;
+  disposeObject?(args: { actor: ActorNode; state: AppState; object: unknown }): void;
+}
+
 export interface ReloadableDescriptor<TRuntime = unknown> {
   id: string;
   kind: DescriptorKind;
@@ -36,6 +60,7 @@ export interface ReloadableDescriptor<TRuntime = unknown> {
   createRuntime(args: { params: ParameterValues }): TRuntime;
   updateRuntime(runtime: TRuntime, args: { params: ParameterValues; dtSeconds: number }): void;
   disposeRuntime?(runtime: TRuntime): void;
+  sceneHooks?: DescriptorSceneHooks;
   status?: {
     build(context: ActorStatusContext): ActorStatusEntry[];
   };

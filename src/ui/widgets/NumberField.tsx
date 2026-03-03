@@ -53,17 +53,42 @@ function formatValue(value: number, precision?: number): string {
   return Number(value.toFixed(6)).toString();
 }
 
+function inferDisplayPrecision(precision?: number, step?: number): number | undefined {
+  if (precision !== undefined && precision >= 0) {
+    return precision;
+  }
+  if (!step || !Number.isFinite(step)) {
+    return undefined;
+  }
+  const normalized = Math.abs(step);
+  if (normalized >= 1) {
+    return undefined;
+  }
+  const asText = normalized.toString();
+  const scientificMatch = asText.match(/e-(\d+)$/i);
+  if (scientificMatch) {
+    const exponent = Number.parseInt(scientificMatch[1] ?? "0", 10);
+    return Number.isFinite(exponent) ? exponent : undefined;
+  }
+  const decimalIndex = asText.indexOf(".");
+  if (decimalIndex === -1) {
+    return undefined;
+  }
+  return asText.length - decimalIndex - 1;
+}
+
 export function NumberField(props: NumberFieldProps) {
-  const [draft, setDraft] = useState(() => formatValue(props.value, props.precision));
+  const displayPrecision = inferDisplayPrecision(props.precision, props.step);
+  const [draft, setDraft] = useState(() => formatValue(props.value, displayPrecision));
   const [editing, setEditing] = useState(false);
   const suppressClickRef = useRef(false);
   const draggingRef = useRef(false);
 
   useEffect(() => {
     if (!editing && !draggingRef.current) {
-      setDraft(formatValue(props.value, props.precision));
+      setDraft(formatValue(props.value, displayPrecision));
     }
-  }, [props.value, props.precision, editing]);
+  }, [displayPrecision, props.value, editing]);
 
   const hasRange = props.min !== undefined && props.max !== undefined;
 
@@ -90,8 +115,8 @@ export function NumberField(props: NumberFieldProps) {
       step: props.step
     });
     props.onChange(next);
-    setDraft(formatValue(next, props.precision));
-  }, [draft, props]);
+    setDraft(formatValue(next, displayPrecision));
+  }, [displayPrecision, draft, props]);
 
   const handleDragStart = useCallback(
     (event: React.PointerEvent<HTMLInputElement>) => {
@@ -216,7 +241,7 @@ export function NumberField(props: NumberFieldProps) {
                 }
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  setDraft(formatValue(props.value, props.precision));
+                  setDraft(formatValue(props.value, displayPrecision));
                   (event.target as HTMLInputElement).blur();
                 }
                 if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -237,8 +262,9 @@ export function NumberField(props: NumberFieldProps) {
           </div>
         </div>
       ) : (
-        <div className="widget-number-input-wrap">
+        <div className="widget-number-input-wrap widget-number-input-wrap-fill">
           <DigitScrubInput
+            className="widget-digit-input-rangeless"
             value={props.value}
             mixed={props.mixed}
             precision={props.precision ?? (props.step && props.step < 1 ? 3 : 2)}

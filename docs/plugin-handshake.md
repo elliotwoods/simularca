@@ -54,9 +54,24 @@ interface PluginDefinition {
 Descriptors are registered into the host registry and participate in hot-reload behavior.
 
 ### Parameter Schema Notes
-- Descriptor schemas support parameter types: `number`, `boolean`, `string`, `select`, and `file`.
+- Descriptor schemas support parameter types: `number`, `boolean`, `string`, `color`, `select`, `actor-ref`, `actor-ref-list`, and `file`.
 - `file` parameters can provide `accept`, `dialogTitle`, and `import` metadata to use host file-import widgets.
 - Optional UI hints are supported on parameters: `description`; and for numbers: `precision`, `unit`, `dragSpeed`.
+- Actor reference parameters can constrain targets with `allowedActorTypes`.
+
+### Plugin Scene Hooks (Optional)
+Actor descriptors may provide `sceneHooks` for in-scene visualization and simulation:
+1. `createObject({ actor, state })` -> returns a Three.js object to attach to scene graph.
+2. `syncObject(context)` -> called each frame after core actor transforms are applied.
+3. `disposeObject({ actor, state, object })` -> called when actor object is removed.
+
+`syncObject` context includes:
+- `actor`, `state`, `object`
+- `simTimeSeconds`, `dtSeconds`
+- `getActorById(actorId)`
+- `getActorObject(actorId)`
+- `sampleCurveWorldPoint(actorId, t)`
+- `setActorStatus(status | null)`
 
 ## Loader Behavior
 1. Host imports module path dynamically.

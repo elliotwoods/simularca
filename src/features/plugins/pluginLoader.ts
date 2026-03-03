@@ -1,6 +1,10 @@
 import { PLUGIN_HANDSHAKE_VERSION, isPluginHandshakeModule, type PluginLoaderResult } from "./contracts";
 import type { AppKernel } from "@/app/kernel";
 
+export interface PluginLoadSource {
+  sourceGroup?: "plugins-local" | "plugins" | "manual";
+}
+
 function assertCompatibleHandshake(handshakeVersion: number, modulePath: string): void {
   if (handshakeVersion !== PLUGIN_HANDSHAKE_VERSION) {
     throw new Error(
@@ -24,7 +28,11 @@ function assertCompatibleEngine(
   }
 }
 
-export async function loadPluginFromModule(kernel: AppKernel, modulePath: string): Promise<PluginLoaderResult> {
+export async function loadPluginFromModule(
+  kernel: AppKernel,
+  modulePath: string,
+  source?: PluginLoadSource
+): Promise<PluginLoaderResult> {
   const module = (await import(/* @vite-ignore */ modulePath)) as {
     default?: unknown;
     handshake?: unknown;
@@ -46,7 +54,11 @@ export async function loadPluginFromModule(kernel: AppKernel, modulePath: string
   assertCompatibleEngine(candidate.manifest.engine, modulePath);
 
   const plugin = candidate.createPlugin();
-  kernel.pluginApi.registerPlugin(plugin, candidate.manifest);
+  kernel.pluginApi.registerPlugin(plugin, candidate.manifest, {
+    modulePath,
+    sourceGroup: source?.sourceGroup ?? "manual",
+    loadedAtIso: new Date().toISOString()
+  });
   return {
     manifest: candidate.manifest,
     plugin

@@ -37,7 +37,7 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
         { label: "Type", value: "Gaussian Splat (Spark)" },
         { label: "Asset", value: asset?.sourceFileName ?? (assetId ? "Missing asset reference" : "Not set") },
         {
-          label: "Import Scale (src->m)",
+          label: "Scale",
           value: typeof actor.params.scaleFactor === "number" ? actor.params.scaleFactor : 1
         },
         {

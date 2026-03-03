@@ -4,6 +4,14 @@ This folder contains reference plugin package layouts that can be moved into ind
 
 ## Included
 - `example-wave-plugin`
+- `template-artwork-actor-plugin`
+
+## Local Plugin Workspace (Gitignored)
+- Use `plugins-local/` for plugin repos developed alongside the app but not tracked in this repository.
+- Each plugin in `plugins-local/` should be its own Git repository with its own `.gitignore`.
+- Desktop app auto-discovers built plugin entries at startup:
+  - `plugins-local/*/dist/index.js`
+  - `plugins/*/dist/index.js`
 
 ## Suggested Separate-Repo Structure
 1. `package.json`
@@ -14,4 +22,3 @@ This folder contains reference plugin package layouts that can be moved into ind
 ## Host Compatibility
 - Must implement handshake contract described in `docs/plugin-handshake.md`.
 - Built output should provide a module path loadable by the host plugin loader.
-

@@ -13,7 +13,8 @@ interface AddActorMenuProps {
 export function AddActorMenu(props: AddActorMenuProps) {
   const kernel = useKernel();
   const mode = useAppStore((store) => store.state.mode);
-  const options = useMemo(() => listActorCreationOptions(kernel), [kernel]);
+  const statusMessage = useAppStore((store) => store.state.statusMessage);
+  const options = useMemo(() => listActorCreationOptions(kernel), [kernel, statusMessage]);
   const [open, setOpen] = useState(false);
   const [activeDescriptorId, setActiveDescriptorId] = useState<string | null>(options[0]?.descriptorId ?? null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -72,6 +73,28 @@ export function AddActorMenu(props: AddActorMenuProps) {
   }, [activeDescriptorId, options]);
 
   const activeOption = options.find((option) => option.descriptorId === activeDescriptorId) ?? options[0];
+  const groupedOptions = useMemo(() => {
+    const order: string[] = [];
+    const groups = new Map<string, { label: string; entries: typeof options }>();
+    for (const option of options) {
+      const existing = groups.get(option.groupKey);
+      if (existing) {
+        existing.entries.push(option);
+        continue;
+      }
+      order.push(option.groupKey);
+      groups.set(option.groupKey, {
+        label: option.groupLabel,
+        entries: [option]
+      });
+    }
+    return order
+      .map((key) => {
+        const group = groups.get(key);
+        return group ? { key, ...group } : null;
+      })
+      .filter((group): group is NonNullable<typeof group> => Boolean(group));
+  }, [options]);
   const readOnly = mode === "web-ro";
 
   const handleCreateFromOption = async (descriptorId: string): Promise<void> => {
@@ -108,31 +131,36 @@ export function AddActorMenu(props: AddActorMenuProps) {
             style={{ left: `${popupPosition.x}px`, top: `${popupPosition.y}px` }}
           >
           <div className="add-actor-popup-list">
-            {options.map((option) => (
-              <button
-                key={option.descriptorId}
-                type="button"
-                className={`add-actor-option${activeOption?.descriptorId === option.descriptorId ? " active" : ""}`}
-                onMouseEnter={() => {
-                  setActiveDescriptorId(option.descriptorId);
-                }}
-                onFocus={() => {
-                  setActiveDescriptorId(option.descriptorId);
-                }}
-                onClick={() => {
-                  setOpen(false);
-                  if (readOnly) {
-                    return;
-                  }
-                  void handleCreateFromOption(option.descriptorId).catch((error) => {
-                    const message = error instanceof Error ? error.message : "Unknown add actor error";
-                    kernel.store.getState().actions.setStatus(`Unable to add actor: ${message}`);
-                  });
-                }}
-              >
-                <span className="add-actor-option-icon">{option.iconGlyph}</span>
-                <span className="add-actor-option-label">{option.label}</span>
-              </button>
+            {groupedOptions.map((group) => (
+              <div key={group.key} className="add-actor-group">
+                <div className="add-actor-group-title">{group.label}</div>
+                {group.entries.map((option) => (
+                  <button
+                    key={option.descriptorId}
+                    type="button"
+                    className={`add-actor-option${activeOption?.descriptorId === option.descriptorId ? " active" : ""}`}
+                    onMouseEnter={() => {
+                      setActiveDescriptorId(option.descriptorId);
+                    }}
+                    onFocus={() => {
+                      setActiveDescriptorId(option.descriptorId);
+                    }}
+                    onClick={() => {
+                      setOpen(false);
+                      if (readOnly) {
+                        return;
+                      }
+                      void handleCreateFromOption(option.descriptorId).catch((error) => {
+                        const message = error instanceof Error ? error.message : "Unknown add actor error";
+                        kernel.store.getState().actions.setStatus(`Unable to add actor: ${message}`);
+                      });
+                    }}
+                  >
+                    <span className="add-actor-option-icon">{option.iconGlyph}</span>
+                    <span className="add-actor-option-label">{option.label}</span>
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
           {activeOption ? (
@@ -142,7 +170,7 @@ export function AddActorMenu(props: AddActorMenuProps) {
                 <span>{activeOption.label}</span>
               </div>
               <p>{activeOption.description}</p>
-              <small>{activeOption.pluginBacked ? "Plugin-provided actor type" : "Core actor type"}</small>
+              <small>{activeOption.pluginBacked ? `Plugin: ${activeOption.pluginName ?? activeOption.groupLabel}` : "Core actor type"}</small>
             </div>
           ) : null}
           </div>,
