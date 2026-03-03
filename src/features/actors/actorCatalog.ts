@@ -1,5 +1,6 @@
 import type { AppKernel } from "@/app/kernel";
 import type { ActorType } from "@/core/types";
+import { createDefaultCurveData } from "@/features/curves/types";
 
 export interface ActorCreationOption {
   descriptorId: string;
@@ -54,7 +55,9 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
   if (descriptorId === "actor.gaussianSplat") {
     kernel.store.getState().actions.updateActorParams(actorId, {
       scaleFactor: 1,
-      opacity: 1
+      opacity: 1,
+      filterMode: "off",
+      filterRegionActorIds: []
     });
   }
   if (descriptorId === "actor.mesh") {
@@ -74,6 +77,15 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
       segments: 24,
       color: "#4fb3ff",
       wireframe: false
+    });
+  }
+  if (descriptorId === "actor.curve") {
+    const curveData = createDefaultCurveData();
+    kernel.store.getState().actions.updateActorParams(actorId, {
+      closed: false,
+      samplesPerSegment: 24,
+      handleSize: 0.5,
+      curveData
     });
   }
   return actorId;

@@ -258,6 +258,14 @@ export function App() {
       }
       if (event.key === "Delete") {
         event.preventDefault();
+        const deleteEvent = new CustomEvent<{ key: string }>("simularca:before-delete-selection", {
+          cancelable: true,
+          detail: { key: "Delete" }
+        });
+        window.dispatchEvent(deleteEvent);
+        if (deleteEvent.defaultPrevented) {
+          return;
+        }
         actions.deleteSelection();
         return;
       }

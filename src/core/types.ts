@@ -97,13 +97,7 @@ export interface ParameterSchema {
   params: ParameterDefinition[];
 }
 
-export type ParameterValue =
-  | number
-  | string
-  | boolean
-  | null
-  | ParameterValue[]
-  | { [key: string]: ParameterValue };
+export type ParameterValue = number | string | boolean | string[] | object | null;
 
 export type ParameterValues = Record<string, ParameterValue>;
 

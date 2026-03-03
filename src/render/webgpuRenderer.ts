@@ -6,7 +6,9 @@ import { estimateSessionPayloadBytes } from "@/core/session/sessionSize";
 import { SceneController } from "./sceneController";
 import type { SplatOverlayActorState, SplatOverlayHandle } from "./splatOverlay";
 import { DedicatedGaussianSplatOverlay, NoopSplatOverlay } from "./splatOverlay";
+import { hasActiveGaussianFilter } from "./gaussianFilter";
 import { combineRenderStats, countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
+import { CurveEditController } from "./curveEditController";
 
 const ENABLE_DEDICATED_SPLAT_OVERLAY = true;
 const FAST_STATS_INTERVAL_MS = 500;
@@ -19,6 +21,7 @@ export class WebGpuViewport {
   private activeCamera: any;
   private readonly controls: OrbitControls;
   private readonly sceneController: SceneController;
+  private readonly curveEditController: CurveEditController;
   private splatOverlay: SplatOverlayHandle;
   private frameHandle = 0;
   private frameCount = 0;
@@ -83,6 +86,13 @@ export class WebGpuViewport {
     this.activeCamera = this.perspectiveCamera;
     this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.curveEditController = new CurveEditController(
+      kernel,
+      this.sceneController,
+      this.controls,
+      this.renderer.domElement,
+      this.activeCamera
+    );
     this.splatOverlay = overlay ?? new NoopSplatOverlay();
     this.sceneController.setGaussianSplatFallbackEnabled(true);
 
@@ -127,6 +137,7 @@ export class WebGpuViewport {
       this.frameHandle = 0;
     }
     this.controls.dispose();
+    this.curveEditController.dispose();
     this.splatOverlay.dispose();
     this.revokeBlobAssetUrls();
     if (this.initialized) {
@@ -153,6 +164,8 @@ export class WebGpuViewport {
     void this.sceneController.syncFromState();
     void this.syncSplatOverlay();
     this.syncCameraState();
+    this.curveEditController.setCamera(this.activeCamera);
+    this.curveEditController.update();
     this.controls.update();
     this.syncCameraToState();
     this.renderInFlight = true;
@@ -502,23 +515,29 @@ export class WebGpuViewport {
       this.lastSplatSignature = "";
     }
     const candidates = Object.values(state.actors)
-      .filter((actor) => actor.actorType === "gaussian-splat" && actor.enabled)
+      .filter(
+        (actor) =>
+          actor.actorType === "gaussian-splat" &&
+          actor.enabled &&
+          !hasActiveGaussianFilter(actor, state.actors)
+      )
       .map((actor) => {
         const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
         const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
         const scaleFactor = Number(actor.params.scaleFactor ?? 1);
         const safeScaleFactor = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+        const worldTransform = this.resolveActorWorldTransform(actor.id, state.actors);
         return {
           actorId: actor.id,
           assetId,
           reloadToken,
           opacity: Number(actor.params.opacity ?? 1),
           transform: {
-            ...actor.transform,
+            ...worldTransform,
             scale: [
-              actor.transform.scale[0] * safeScaleFactor,
-              actor.transform.scale[1] * safeScaleFactor,
-              actor.transform.scale[2] * safeScaleFactor
+              worldTransform.scale[0] * safeScaleFactor,
+              worldTransform.scale[1] * safeScaleFactor,
+              worldTransform.scale[2] * safeScaleFactor
             ] as [number, number, number]
           }
         };
@@ -626,6 +645,63 @@ export class WebGpuViewport {
       ...currentCamera,
       ...cameraUpdate
     });
+  }
+
+  private resolveActorWorldTransform(
+    actorId: string,
+    actors: Record<string, { id: string; parentActorId: string | null; transform: { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] } }>
+  ): { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] } {
+    const chain: string[] = [];
+    const visited = new Set<string>();
+    let cursor = actors[actorId];
+    while (cursor) {
+      if (visited.has(cursor.id)) {
+        break;
+      }
+      visited.add(cursor.id);
+      chain.push(cursor.id);
+      cursor = cursor.parentActorId ? actors[cursor.parentActorId] : undefined;
+    }
+
+    const worldMatrix = new THREE.Matrix4().identity();
+    for (let index = chain.length - 1; index >= 0; index -= 1) {
+      const chainId = chain[index];
+      if (!chainId) {
+        continue;
+      }
+      const actor = actors[chainId];
+      if (!actor) {
+        continue;
+      }
+      worldMatrix.multiply(this.actorLocalMatrix(actor.transform));
+    }
+
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    worldMatrix.decompose(position, quaternion, scale);
+    const rotation = new THREE.Euler().setFromQuaternion(quaternion, "XYZ");
+
+    return {
+      position: [position.x, position.y, position.z],
+      rotation: [rotation.x, rotation.y, rotation.z],
+      scale: [scale.x, scale.y, scale.z]
+    };
+  }
+
+  private actorLocalMatrix(transform: {
+    position: [number, number, number];
+    rotation: [number, number, number];
+    scale: [number, number, number];
+  }): any {
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3(transform.position[0], transform.position[1], transform.position[2]);
+    const quaternion = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(transform.rotation[0], transform.rotation[1], transform.rotation[2], "XYZ")
+    );
+    const scale = new THREE.Vector3(transform.scale[0], transform.scale[1], transform.scale[2]);
+    matrix.compose(position, quaternion, scale);
+    return matrix;
   }
 }
 

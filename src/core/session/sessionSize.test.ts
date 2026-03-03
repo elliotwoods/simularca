@@ -13,6 +13,7 @@ describe("session payload size estimator", () => {
       enabled: true,
       kind: "actor",
       actorType: "empty",
+      visibilityMode: "visible",
       parentActorId: null,
       childActorIds: [],
       componentIds: [],

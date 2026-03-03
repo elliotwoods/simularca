@@ -34,6 +34,7 @@ describe("render stats helpers", () => {
       kind: "actor",
       actorType: "empty",
       enabled: true,
+      visibilityMode: "visible",
       parentActorId: null,
       childActorIds: [],
       componentIds: [],

@@ -6,6 +6,7 @@ import { gaussianSplatActorDescriptor } from "@/features/actors/descriptors/gaus
 import { meshActorDescriptor } from "@/features/actors/descriptors/meshActor";
 import { pluginActorDescriptor } from "@/features/actors/descriptors/pluginActor";
 import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
+import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
 
 export function registerCoreActorDescriptors(kernel: AppKernel): void {
   const descriptors = [
@@ -14,6 +15,7 @@ export function registerCoreActorDescriptors(kernel: AppKernel): void {
     gaussianSplatActorDescriptor,
     meshActorDescriptor,
     primitiveActorDescriptor,
+    curveActorDescriptor,
     pluginActorDescriptor
   ];
   for (const descriptor of descriptors) {
@@ -28,6 +30,7 @@ export function setupActorHotReload(kernel: AppKernel): void {
     gaussianSplatActorDescriptor,
     meshActorDescriptor,
     primitiveActorDescriptor,
+    curveActorDescriptor,
     pluginActorDescriptor
   ]);
 }

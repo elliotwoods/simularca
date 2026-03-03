@@ -80,7 +80,7 @@ function cloneState(state: AppState): AppState {
 
 const MAX_CONSOLE_ENTRIES = 500;
 
-function appendConsoleLog(state: AppState, entry: { level: LogLevel; message: string; details?: string }): void {
+function appendConsoleLog(state: any, entry: { level: LogLevel; message: string; details?: string }): void {
   const log: ConsoleLogEntry = {
     kind: "log",
     id: createId("log"),
@@ -99,6 +99,31 @@ function withHistory(get: () => AppStore, set: (partial: Partial<AppStore>) => v
     historyPast: nextPast,
     historyFuture: []
   });
+}
+
+function uniqueActorName(
+  actors: Record<string, ActorNode>,
+  desiredRaw: string,
+  excludeActorId?: string
+): string {
+  const desired = desiredRaw.trim() || "Actor";
+  const used = new Set(
+    Object.values(actors)
+      .filter((actor) => actor.id !== excludeActorId)
+      .map((actor) => actor.name)
+  );
+  if (!used.has(desired)) {
+    return desired;
+  }
+
+  const match = desired.match(/^(.*?)(\d+)$/);
+  const suffixBase = match?.[1] ?? "";
+  const base = suffixBase.length > 0 ? suffixBase : desired;
+  let suffix = match ? Number(match[2]) + 1 : 2;
+  while (used.has(`${base}${String(suffix)}`)) {
+    suffix += 1;
+  }
+  return `${base}${String(suffix)}`;
 }
 
 function removeActorRecursive(state: AppState, actorId: string): void {
@@ -294,9 +319,11 @@ export function createAppStore(mode: AppMode): AppStoreApi {
       },
       createActor({ actorType, name, parentActorId = null, pluginType }) {
         const id = createId("actor");
+        const currentActors = get().state.actors;
+        const uniqueName = uniqueActorName(currentActors, name ?? `${actorType} actor`);
         const newActor: ActorNode = {
           id,
-          name: name ?? `${actorType} actor`,
+          name: uniqueName,
           enabled: true,
           kind: "actor",
           actorType,
@@ -376,7 +403,7 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             if (node.kind === "actor") {
               const actor = draft.actors[node.id];
               if (actor) {
-                actor.name = name;
+                actor.name = uniqueActorName(draft.actors, name, actor.id);
               }
             }
             if (node.kind === "component") {

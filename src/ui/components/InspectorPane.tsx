@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faCopy } from "@fortawesome/free-solid-svg-icons";
+import { faCopy, faTrashCan } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
-import type { ActorNode, ActorVisibilityMode, FileParameterDefinition, ParameterDefinition } from "@/core/types";
+import type { ActorNode, ActorVisibilityMode, FileParameterDefinition, ParameterDefinition, ParameterValue } from "@/core/types";
 import type { ActorStatusEntry, ReloadableDescriptor } from "@/core/hotReload/types";
+import { appendCurvePoint, removeCurvePoint, setCurveAnchorPosition } from "@/features/curves/editing";
+import { curveDataWithOverrides } from "@/features/curves/model";
 import { importFileForActorParam } from "@/features/imports/fileParameterImport";
 import { ActorRefField, ActorRefListField, DigitScrubInput, FileField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
 
-type BindingValue = number | string | boolean | string[];
+type BindingValue = ParameterValue;
 const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 const VISIBILITY_OPTIONS: ActorVisibilityMode[] = ["visible", "hidden", "selected"];
@@ -140,6 +142,13 @@ function bindingValuesEqual(a: BindingValue, b: BindingValue): boolean {
     }
     return a.every((entry, index) => entry === b[index]);
   }
+  if (typeof a === "object" && a !== null && typeof b === "object" && b !== null) {
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  }
   return a === b;
 }
 
@@ -257,6 +266,17 @@ export function InspectorPane() {
     }, 120);
   };
 
+  const publishCurveVertexHover = (actorId: string | null, pointIndex: number | null): void => {
+    window.dispatchEvent(
+      new CustomEvent("simularca:curve-vertex-hover", {
+        detail: {
+          actorId,
+          pointIndex
+        }
+      })
+    );
+  };
+
   const updateSelectedActorParams = (key: string, nextValue: BindingValue): void => {
     for (const actor of actorSelection) {
       kernel.store.getState().actions.updateActorParams(actor.id, {
@@ -360,6 +380,28 @@ export function InspectorPane() {
     actorSelection.map((actor) => actor.transform.rotation[2] * RAD_TO_DEG)
   ];
 
+  const addCurveVertex = (): void => {
+    if (!singleSelection || singleSelection.actorType !== "curve" || readOnly) {
+      return;
+    }
+    const nextCurve = appendCurvePoint(curveDataWithOverrides(singleSelection));
+    kernel.store.getState().actions.updateActorParams(singleSelection.id, {
+      curveData: nextCurve
+    });
+    scheduleAutosave();
+    kernel.store.getState().actions.setStatus("Curve vertex added.");
+  };
+
+  const updateSingleCurve = (mutator: (actor: ActorNode) => ParameterValue): void => {
+    if (!singleSelection || singleSelection.actorType !== "curve" || readOnly) {
+      return;
+    }
+    kernel.store.getState().actions.updateActorParams(singleSelection.id, {
+      curveData: mutator(singleSelection)
+    });
+    scheduleAutosave();
+  };
+
   return (
     <div className="inspector-pane-root custom-inspector">
       <section className="inspector-common-card">
@@ -442,6 +484,71 @@ export function InspectorPane() {
           </div>
         </div>
       </section>
+      {singleSelection?.actorType === "curve" ? (
+        <section
+          className="widget-row"
+          onMouseLeave={() => {
+            publishCurveVertexHover(null, null);
+          }}
+        >
+          <div className="widget-row-header">
+            <span className="widget-label">Curve Editing</span>
+          </div>
+          <div className="widget-row-control">
+            <button type="button" disabled={readOnly} onClick={addCurveVertex}>
+              Add Vertex
+            </button>
+          </div>
+          <div className="curve-vertex-list">
+            {curveDataWithOverrides(singleSelection).points.map((point, pointIndex, allPoints) => (
+              <div
+                key={`curve-point-${pointIndex}`}
+                className="curve-vertex-row"
+                onMouseEnter={() => {
+                  publishCurveVertexHover(singleSelection.id, pointIndex);
+                }}
+              >
+                <span className="curve-vertex-label">V{pointIndex + 1}</span>
+                <div className="curve-vertex-inputs">
+                  {([0, 1, 2] as const).map((axisIndex) => (
+                    <div key={`curve-point-${pointIndex}-axis-${axisIndex}`} className="curve-vertex-cell">
+                      <span className="inspector-axis-label">{axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}</span>
+                      <DigitScrubInput
+                        value={point.position[axisIndex]}
+                        precision={3}
+                        disabled={readOnly}
+                        onChange={(next) => {
+                          updateSingleCurve((actor) => {
+                            const current = curveDataWithOverrides(actor);
+                            const p = current.points[pointIndex];
+                            if (!p) {
+                              return current;
+                            }
+                            const target: [number, number, number] = [...p.position];
+                            target[axisIndex] = next;
+                            return setCurveAnchorPosition(current, pointIndex, target);
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="curve-vertex-delete"
+                  disabled={readOnly || allPoints.length <= 2}
+                  onClick={() => {
+                    updateSingleCurve((actor) => removeCurvePoint(curveDataWithOverrides(actor), pointIndex));
+                  }}
+                  title={allPoints.length <= 2 ? "A curve needs at least two vertices." : "Delete vertex"}
+                >
+                  <FontAwesomeIcon icon={faTrashCan} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
       {definitions.length === 0 ? <div className="inspector-empty">No common editable params in current selection</div> : null}
       {definitions.map((definition) => {
         const values = actorSelection.map((actor) => bindingValueFor(definition, actor));

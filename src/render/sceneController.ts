@@ -8,11 +8,14 @@ import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import type { AppKernel } from "@/app/kernel";
 import type { ActorNode } from "@/core/types";
+import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
+import { estimateCurveLength } from "@/features/curves/sampler";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds, hasActiveGaussianFilter } from "@/render/gaussianFilter";
 
 const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
 const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
 const MESH_RENDER_ROOT_NAME = "mesh-render-root";
+const CURVE_RENDER_LINE_NAME = "curve-render-line";
 const SPLAT_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ");
 const SPLAT_COORDINATE_CORRECTION_QUATERNION = new THREE.Quaternion().setFromEuler(SPLAT_COORDINATE_CORRECTION_EULER);
 const MATRIX_IDENTITY = new THREE.Matrix4().identity();
@@ -119,6 +122,7 @@ export class SceneController {
   private readonly primitiveSignatureByActorId = new Map<string, string>();
   private readonly gaussianGeometryByActorId = new Map<string, any>();
   private readonly gaussianVisualSignatureByActorId = new Map<string, string>();
+  private readonly curveSignatureByActorId = new Map<string, string>();
   private readonly plyLoader = new PLYLoader();
   private readonly gltfLoader = new GLTFLoader();
   private readonly fbxLoader = new FBXLoader();
@@ -167,6 +171,7 @@ export class SceneController {
         }
         this.gaussianGeometryByActorId.delete(existing);
         this.gaussianVisualSignatureByActorId.delete(existing);
+        this.curveSignatureByActorId.delete(existing);
         this.kernel.store.getState().actions.setActorStatus(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
       }
@@ -198,6 +203,9 @@ export class SceneController {
       if (actor.actorType === "primitive") {
         this.syncPrimitiveActor(actor);
       }
+      if (actor.actorType === "curve") {
+        this.syncCurveActor(actor);
+      }
       this.applyActorTransform(actor);
     }
     for (const actor of Object.values(state.actors)) {
@@ -209,6 +217,10 @@ export class SceneController {
 
   public setGaussianSplatFallbackEnabled(enabled: boolean): void {
     this.renderGaussianSplatFallback = enabled;
+  }
+
+  public getActorObject(actorId: string): any | null {
+    return this.actorObjects.get(actorId) ?? null;
   }
 
   private async ensureActorObject(actor: ActorNode): Promise<void> {
@@ -264,6 +276,23 @@ export class SceneController {
 
     if (actor.actorType === "primitive") {
       return this.createPrimitiveMesh(actor);
+    }
+
+    if (actor.actorType === "curve") {
+      const group = new THREE.Group();
+      group.name = "curve-container";
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0)]),
+        new THREE.LineBasicMaterial({
+          color: 0x78ffcb,
+          transparent: true,
+          opacity: 0.95
+        })
+      );
+      line.name = CURVE_RENDER_LINE_NAME;
+      line.frustumCulled = false;
+      group.add(line);
+      return group;
     }
 
     if (actor.actorType === "plugin") {
@@ -347,6 +376,82 @@ export class SceneController {
       material.wireframe = wireframe;
       material.needsUpdate = true;
     }
+  }
+
+  private syncCurveActor(actor: ActorNode): void {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) {
+      return;
+    }
+    const line = object.getObjectByName(CURVE_RENDER_LINE_NAME);
+    if (!(line instanceof THREE.Line)) {
+      return;
+    }
+
+    const curveData = curveDataWithOverrides(actor);
+    const samplesPerSegment = getCurveSamplesPerSegmentFromActor(actor);
+    const pointCount = curveData.points.length;
+    const segmentCount = pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
+    const signature = JSON.stringify({
+      curveData,
+      samplesPerSegment
+    });
+    if (signature === this.curveSignatureByActorId.get(actor.id)) {
+      return;
+    }
+    this.curveSignatureByActorId.set(actor.id, signature);
+
+    const sampled: any[] = [];
+    if (segmentCount > 0) {
+      for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
+        const current = curveData.points[segmentIndex];
+        const next = curveData.points[(segmentIndex + 1) % pointCount];
+        if (!current || !next) {
+          continue;
+        }
+        const p0 = new THREE.Vector3(...current.position);
+        const p1 = new THREE.Vector3(
+          current.position[0] + current.handleOut[0],
+          current.position[1] + current.handleOut[1],
+          current.position[2] + current.handleOut[2]
+        );
+        const p2 = new THREE.Vector3(
+          next.position[0] + next.handleIn[0],
+          next.position[1] + next.handleIn[1],
+          next.position[2] + next.handleIn[2]
+        );
+        const p3 = new THREE.Vector3(...next.position);
+        const curve = new THREE.CubicBezierCurve3(p0, p1, p2, p3);
+        const segmentSamples = Math.max(2, samplesPerSegment);
+        for (let sampleIndex = 0; sampleIndex <= segmentSamples; sampleIndex += 1) {
+          if (segmentIndex > 0 && sampleIndex === 0) {
+            continue;
+          }
+          sampled.push(curve.getPoint(sampleIndex / segmentSamples));
+        }
+      }
+    }
+
+    if (sampled.length < 2) {
+      sampled.push(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.001, 0, 0));
+    }
+
+    line.geometry = new THREE.BufferGeometry().setFromPoints(sampled);
+    const length = estimateCurveLength(curveData, samplesPerSegment);
+    const bounds = new THREE.Box3().setFromPoints(sampled);
+
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        pointCount,
+        segmentCount,
+        closed: curveData.closed,
+        samplesPerSegment,
+        length,
+        boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
+        boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z]
+      },
+      updatedAtIso: new Date().toISOString()
+    });
   }
 
   private applyActorTransform(actor: ActorNode): void {

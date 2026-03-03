@@ -1327,6 +1327,54 @@ body.is-scrubbing-number * {
   gap: 6px;
 }
 
+.curve-vertex-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.curve-vertex-row {
+  border: 1px solid var(--line);
+  background: #0f1b2d;
+  padding: 6px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.curve-vertex-label {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.curve-vertex-inputs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.curve-vertex-cell {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+
+.curve-vertex-delete {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .inspector-debug-card {
   border: 1px solid var(--line);
   background: #0d1828;

@@ -5,6 +5,8 @@ interface GaussianSplatRuntime {
   assetId?: string;
   scaleFactor: number;
   opacity: number;
+  filterMode: "off" | "inside" | "outside";
+  filterRegionActorIds: string[];
 }
 
 export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRuntime> = {
@@ -22,17 +24,32 @@ export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRun
   createRuntime: ({ params }) => ({
     assetId: typeof params.assetId === "string" ? params.assetId : undefined,
     scaleFactor: typeof params.scaleFactor === "number" ? params.scaleFactor : 1,
-    opacity: typeof params.opacity === "number" ? params.opacity : 1
+    opacity: typeof params.opacity === "number" ? params.opacity : 1,
+    filterMode:
+      params.filterMode === "inside" || params.filterMode === "outside" ? params.filterMode : "off",
+    filterRegionActorIds: Array.isArray(params.filterRegionActorIds)
+      ? params.filterRegionActorIds.filter((entry): entry is string => typeof entry === "string")
+      : []
   }),
   updateRuntime(runtime, { params }) {
     runtime.assetId = typeof params.assetId === "string" ? params.assetId : runtime.assetId;
     runtime.scaleFactor = typeof params.scaleFactor === "number" ? params.scaleFactor : runtime.scaleFactor;
     runtime.opacity = typeof params.opacity === "number" ? params.opacity : runtime.opacity;
+    runtime.filterMode =
+      params.filterMode === "inside" || params.filterMode === "outside" ? params.filterMode : "off";
+    runtime.filterRegionActorIds = Array.isArray(params.filterRegionActorIds)
+      ? params.filterRegionActorIds.filter((entry): entry is string => typeof entry === "string")
+      : runtime.filterRegionActorIds;
   },
   status: {
     build({ actor, state, runtimeStatus }) {
       const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
       const asset = state.assets.find((entry) => entry.id === assetId);
+      const filterMode =
+        actor.params.filterMode === "inside" || actor.params.filterMode === "outside" ? actor.params.filterMode : "off";
+      const filterRegionIds = Array.isArray(actor.params.filterRegionActorIds)
+        ? actor.params.filterRegionActorIds.filter((entry): entry is string => typeof entry === "string")
+        : [];
       return [
         { label: "Type", value: "Gaussian Splat" },
         { label: "Asset", value: asset?.sourceFileName ?? (assetId ? "Missing asset reference" : "Not set") },
@@ -44,6 +61,8 @@ export const gaussianSplatActorDescriptor: ReloadableDescriptor<GaussianSplatRun
           label: "Opacity",
           value: typeof actor.params.opacity === "number" ? actor.params.opacity : 1
         },
+        { label: "Filter Mode", value: filterMode },
+        { label: "Filter Regions", value: filterRegionIds.length },
         { label: "Backend", value: runtimeStatus?.values.backend ?? "n/a" },
         { label: "Loader", value: runtimeStatus?.values.loader ?? "n/a" },
         { label: "Loader Version", value: runtimeStatus?.values.loaderVersion ?? "n/a" },

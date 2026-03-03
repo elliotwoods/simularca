@@ -45,7 +45,21 @@ export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
       }
     },
     { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 },
-    { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 }
+    { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 },
+    {
+      key: "filterMode",
+      label: "Filter Mode",
+      type: "select",
+      options: ["off", "inside", "outside"],
+      defaultValue: "off"
+    },
+    {
+      key: "filterRegionActorIds",
+      label: "Filter Regions",
+      type: "actor-ref-list",
+      allowedActorTypes: ["primitive"],
+      defaultValue: []
+    }
   ]
 };
 
@@ -85,7 +99,7 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "shape",
       label: "Shape",
       type: "select",
-      options: ["cube", "sphere", "torus", "cylinder", "cone", "icosahedron"]
+      options: ["cube", "sphere", "cylinder"]
     },
     {
       key: "size",
@@ -112,6 +126,37 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "wireframe",
       label: "Wireframe",
       type: "boolean"
+    }
+  ]
+};
+
+export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
+  id: "actor.curve",
+  title: "Curve",
+  params: [
+    {
+      key: "closed",
+      label: "Closed",
+      type: "boolean",
+      defaultValue: false
+    },
+    {
+      key: "samplesPerSegment",
+      label: "Samples / Segment",
+      type: "number",
+      min: 2,
+      max: 256,
+      step: 1,
+      defaultValue: 24
+    },
+    {
+      key: "handleSize",
+      label: "Handle Size",
+      type: "number",
+      min: 0.1,
+      max: 4,
+      step: 0.05,
+      defaultValue: 0.5
     }
   ]
 };
