@@ -80,7 +80,7 @@ export class WebGlViewport {
     (this.controls as any).minZoom = 0.05;
     (this.controls as any).maxZoom = 200;
     this.renderer.domElement.style.touchAction = "none";
-    this.renderer.domElement.addEventListener("wheel", this.onCanvasWheel, { passive: false });
+    window.addEventListener("wheel", this.onViewportWheel, { passive: false, capture: true });
     this.curveEditController = new CurveEditController(
       kernel,
       this.sceneController,
@@ -122,7 +122,7 @@ export class WebGlViewport {
       this.frameHandle = 0;
     }
     this.controls.dispose();
-    this.renderer.domElement.removeEventListener("wheel", this.onCanvasWheel);
+    window.removeEventListener("wheel", this.onViewportWheel, true);
     this.curveEditController.dispose();
     this.sparkSplatController.dispose();
     this.clearNativeGaussianConflictStatus();
@@ -271,51 +271,6 @@ export class WebGlViewport {
     this.kernel.store.getState().actions.setCameraState(nextCameraState, false);
   }
 
-  private onCanvasWheel = (event: WheelEvent): void => {
-    if (!(this.controls as any).enabled) {
-      return;
-    }
-    if (event.defaultPrevented) {
-      return;
-    }
-    const current = this.activeCamera;
-    if (!current) {
-      return;
-    }
-    const delta = Number.isFinite(event.deltaY) ? event.deltaY : 0;
-    if (delta === 0) {
-      return;
-    }
-    const direction = delta > 0 ? 1 : -1;
-    const scalar = 1 + this.wheelZoomSpeed * Math.min(4, Math.abs(delta) / 100);
-
-    if (current instanceof THREE.OrthographicCamera) {
-      const minZoom = Number((this.controls as any).minZoom ?? 0.05);
-      const maxZoom = Number((this.controls as any).maxZoom ?? 200);
-      const nextZoom = direction > 0 ? current.zoom / scalar : current.zoom * scalar;
-      current.zoom = Math.max(minZoom, Math.min(maxZoom, nextZoom));
-      current.updateProjectionMatrix();
-      event.preventDefault();
-      return;
-    }
-
-    if (current instanceof THREE.PerspectiveCamera) {
-      const target = this.controls.target;
-      const offset = new THREE.Vector3().copy(current.position).sub(target);
-      const distance = offset.length();
-      if (!Number.isFinite(distance) || distance <= 0) {
-        return;
-      }
-      const minDistance = Number((this.controls as any).minDistance ?? 0.01);
-      const maxDistance = Number((this.controls as any).maxDistance ?? 10000);
-      const nextDistance = direction > 0 ? distance * scalar : distance / scalar;
-      const clampedDistance = Math.max(minDistance, Math.min(maxDistance, nextDistance));
-      offset.setLength(clampedDistance);
-      current.position.copy(target).add(offset);
-      event.preventDefault();
-    }
-  };
-
   private onResize = (): void => {
     const { width, height } = this.getEffectiveViewportSize();
     this.mountEl.style.width = `${width}px`;
@@ -421,7 +376,7 @@ export class WebGlViewport {
         actorCountEnabled: actorCounts.actorCountEnabled,
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
-        cameraZoomEnabled: Boolean((this.controls as any).enableZoom),
+        cameraZoomEnabled: this.isWheelZoomEnabled(),
         sessionFileBytes:
           currentStats.sessionFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
             ? currentStats.sessionFileBytesSaved
@@ -445,6 +400,10 @@ export class WebGlViewport {
         sessionFileBytes: estimatedSessionBytes
       });
     }
+  }
+
+  private isWheelZoomEnabled(): boolean {
+    return Boolean((this.controls as any).enabled);
   }
 
   private readMainRenderStats(): RenderStatsSample {
@@ -559,5 +518,63 @@ export class WebGlViewport {
     }
     this.textureByteCache.set(texture, bytes);
     return bytes;
+  }
+  private onViewportWheel = (event: WheelEvent): void => {
+    if (!this.isWheelEventInsideViewport(event)) {
+      return;
+    }
+    if (!(this.controls as any).enabled) {
+      return;
+    }
+    const current = this.activeCamera;
+    if (!current) {
+      return;
+    }
+    const delta = Number.isFinite(event.deltaY) ? event.deltaY : 0;
+    if (delta === 0) {
+      return;
+    }
+    const direction = delta > 0 ? 1 : -1;
+    const scalar = 1 + this.wheelZoomSpeed * Math.min(4, Math.abs(delta) / 100);
+
+    if (current instanceof THREE.OrthographicCamera) {
+      const minZoom = Number((this.controls as any).minZoom ?? 0.05);
+      const maxZoom = Number((this.controls as any).maxZoom ?? 200);
+      const nextZoom = direction > 0 ? current.zoom / scalar : current.zoom * scalar;
+      current.zoom = Math.max(minZoom, Math.min(maxZoom, nextZoom));
+      current.updateProjectionMatrix();
+      event.preventDefault();
+      return;
+    }
+
+    if (current instanceof THREE.PerspectiveCamera) {
+      const target = this.controls.target;
+      const offset = new THREE.Vector3().copy(current.position).sub(target);
+      const distance = offset.length();
+      if (!Number.isFinite(distance) || distance <= 0) {
+        return;
+      }
+      const minDistance = Number((this.controls as any).minDistance ?? 0.01);
+      const maxDistance = Number((this.controls as any).maxDistance ?? 10000);
+      const nextDistance = direction > 0 ? distance * scalar : distance / scalar;
+      const clampedDistance = Math.max(minDistance, Math.min(maxDistance, nextDistance));
+      offset.setLength(clampedDistance);
+      current.position.copy(target).add(offset);
+      event.preventDefault();
+    }
+  };
+
+  private isWheelEventInsideViewport(event: WheelEvent): boolean {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    if (path.length > 0) {
+      for (const node of path) {
+        if (node === this.mountEl || node === this.renderer.domElement) {
+          return true;
+        }
+      }
+      return false;
+    }
+    const target = event.target;
+    return target instanceof Node ? this.mountEl.contains(target) : false;
   }
 }

@@ -20,7 +20,9 @@ export type SelectionKind = "actor" | "component";
 export type LogLevel = "info" | "warn" | "error";
 
 export interface TransformTRS {
+  // Scene unit policy: linear transform values are meters.
   position: [number, number, number];
+  // Rotation values are stored in radians.
   rotation: [number, number, number];
   scale: [number, number, number];
 }
@@ -145,6 +147,7 @@ export interface SceneState extends SceneNodeBase {
 
 export interface CameraState {
   mode: "perspective" | "orthographic";
+  // Position and target are in meters.
   position: [number, number, number];
   target: [number, number, number];
   fov: number;

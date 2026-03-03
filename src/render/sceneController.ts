@@ -1279,7 +1279,7 @@ export class SceneController {
       this.kernel.store
         .getState()
         .actions.setStatus(
-          `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size: ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}`
+          `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size (m): ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}`
         );
     };
 

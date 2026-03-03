@@ -1665,6 +1665,26 @@ body.is-scrubbing-number * {
   letter-spacing: 0.08em;
 }
 
+.curve-vertex-weight-label-button {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.curve-vertex-weight-label-button:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.curve-vertex-weight-label-button.is-active {
+  color: var(--accent);
+}
+
 .curve-vertex-actions {
   margin-left: auto;
   display: inline-flex;

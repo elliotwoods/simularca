@@ -95,7 +95,7 @@ export class WebGpuViewport {
       this.renderer.domElement,
       this.activeCamera
     );
-    this.renderer.domElement.addEventListener("wheel", this.onCanvasWheel, { passive: false });
+    window.addEventListener("wheel", this.onViewportWheel, { passive: false, capture: true });
     registerSplatQueryProvider(this.queryVisibleSplats);
   }
 
@@ -135,7 +135,7 @@ export class WebGpuViewport {
       this.frameHandle = 0;
     }
     this.controls.dispose();
-    this.renderer.domElement.removeEventListener("wheel", this.onCanvasWheel);
+    window.removeEventListener("wheel", this.onViewportWheel, true);
     this.curveEditController.dispose();
     clearSplatQueryProvider(this.queryVisibleSplats);
     this.clearCompatibilityStatus();
@@ -369,7 +369,7 @@ export class WebGpuViewport {
         actorCountEnabled: actorCounts.actorCountEnabled,
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
-        cameraZoomEnabled: Boolean((this.controls as any).enableZoom),
+        cameraZoomEnabled: this.isWheelZoomEnabled(),
         sessionFileBytes: currentStats.sessionFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
           ? currentStats.sessionFileBytesSaved
           : currentStats.sessionFileBytes
@@ -572,11 +572,11 @@ export class WebGpuViewport {
     this.hasGaussianSortCameraState = true;
   }
 
-  private onCanvasWheel = (event: WheelEvent): void => {
-    if (!(this.controls as any).enabled) {
+  private onViewportWheel = (event: WheelEvent): void => {
+    if (!this.isWheelEventInsideViewport(event)) {
       return;
     }
-    if (event.defaultPrevented) {
+    if (!(this.controls as any).enabled) {
       return;
     }
     const current = this.activeCamera;
@@ -616,6 +616,24 @@ export class WebGpuViewport {
       event.preventDefault();
     }
   };
+
+  private isWheelEventInsideViewport(event: WheelEvent): boolean {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    if (path.length > 0) {
+      for (const node of path) {
+        if (node === this.mountEl || node === this.renderer.domElement) {
+          return true;
+        }
+      }
+      return false;
+    }
+    const target = event.target;
+    return target instanceof Node ? this.mountEl.contains(target) : false;
+  }
+
+  private isWheelZoomEnabled(): boolean {
+    return Boolean((this.controls as any).enabled);
+  }
 
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faArrowsLeftRight,
@@ -43,6 +43,7 @@ const DEG_TO_RAD = Math.PI / 180;
 const VISIBILITY_OPTIONS: ActorVisibilityMode[] = ["visible", "hidden", "selected"];
 const DEFAULT_SCENE_BACKGROUND = "#070b12";
 const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
+type CurveControlType = "anchor" | "handleIn" | "handleOut";
 const CURVE_HANDLE_MODE_OPTIONS = [
   {
     value: "mirrored",
@@ -239,6 +240,19 @@ function isMixedNumber(values: number[]): boolean {
   return values.some((value) => Math.abs(value - first) > 1e-9);
 }
 
+function coerceFiniteNumber(value: BindingValue, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
 function allActorsMatch(actorSelection: ActorNode[], predicate: (actor: ActorNode) => boolean): boolean {
   return actorSelection.every(predicate);
 }
@@ -353,6 +367,7 @@ export function InspectorPane() {
   const readOnly = mode === "web-ro";
   const [sceneBackgroundInput, setSceneBackgroundInput] = useState(appState.scene.backgroundColor);
   const [selectedCurveVertex, setSelectedCurveVertex] = useState<{ actorId: string; pointIndex: number } | null>(null);
+  const [selectedCurveControl, setSelectedCurveControl] = useState<CurveControlType>("anchor");
 
   useEffect(() => {
     setSceneBackgroundInput(appState.scene.backgroundColor);
@@ -377,7 +392,7 @@ export function InspectorPane() {
     }, 120);
   };
 
-  const publishCurveVertexHover = (actorId: string | null, pointIndex: number | null): void => {
+  const publishCurveVertexHover = useCallback((actorId: string | null, pointIndex: number | null): void => {
     window.dispatchEvent(
       new CustomEvent("simularca:curve-vertex-hover", {
         detail: {
@@ -386,27 +401,38 @@ export function InspectorPane() {
         }
       })
     );
-  };
+  }, []);
 
-  const publishCurveVertexSelect = (actorId: string | null, pointIndex: number | null): void => {
-    window.dispatchEvent(
-      new CustomEvent(CURVE_VERTEX_SELECT_EVENT, {
-        detail: {
-          actorId,
-          pointIndex
-        }
-      })
-    );
-  };
+  const publishCurveVertexSelect = useCallback(
+    (actorId: string | null, pointIndex: number | null, controlType: CurveControlType = "anchor"): void => {
+      window.dispatchEvent(
+        new CustomEvent(CURVE_VERTEX_SELECT_EVENT, {
+          detail: {
+            actorId,
+            pointIndex,
+            controlType
+          }
+        })
+      );
+    },
+    []
+  );
 
   useEffect(() => {
     const onCurveVertexSelect = (event: Event) => {
-      const custom = event as CustomEvent<{ actorId?: string | null; pointIndex?: number | null }>;
+      const custom = event as CustomEvent<{ actorId?: string | null; pointIndex?: number | null; controlType?: string }>;
       const actorId = custom.detail?.actorId ?? null;
       const pointIndex = custom.detail?.pointIndex;
       if (!actorId || pointIndex === null || pointIndex === undefined || pointIndex < 0) {
         setSelectedCurveVertex(null);
+        setSelectedCurveControl("anchor");
         return;
+      }
+      const controlType = custom.detail?.controlType;
+      if (controlType === "anchor" || controlType === "handleIn" || controlType === "handleOut") {
+        setSelectedCurveControl(controlType);
+      } else {
+        setSelectedCurveControl("anchor");
       }
       setSelectedCurveVertex({ actorId, pointIndex });
     };
@@ -420,12 +446,34 @@ export function InspectorPane() {
   useEffect(() => {
     if (!singleSelection || singleSelection.actorType !== "curve") {
       setSelectedCurveVertex(null);
+      setSelectedCurveControl("anchor");
       return;
     }
     if (selectedCurveVertex?.actorId !== singleSelection.id) {
       setSelectedCurveVertex(null);
+      setSelectedCurveControl("anchor");
     }
   }, [selectedCurveVertex?.actorId, singleSelection]);
+
+  useEffect(() => {
+    if (!singleSelection || singleSelection.actorType !== "curve" || !selectedCurveVertex) {
+      return;
+    }
+    if (selectedCurveVertex.actorId !== singleSelection.id) {
+      return;
+    }
+    const pointCount = curveDataWithOverrides(singleSelection).points.length;
+    if (pointCount <= 0) {
+      setSelectedCurveVertex(null);
+      setSelectedCurveControl("anchor");
+      return;
+    }
+    if (selectedCurveVertex.pointIndex >= pointCount) {
+      const clampedPointIndex = pointCount - 1;
+      setSelectedCurveVertex({ actorId: singleSelection.id, pointIndex: clampedPointIndex });
+      publishCurveVertexSelect(singleSelection.id, clampedPointIndex, "anchor");
+    }
+  }, [publishCurveVertexSelect, selectedCurveVertex, singleSelection]);
 
   const updateSelectedActorParams = (key: string, nextValue: BindingValue): void => {
     for (const actor of actorSelection) {
@@ -510,11 +558,11 @@ export function InspectorPane() {
       { label: "Frame (ms)", value: Number.isFinite(appState.stats.frameMs) ? appState.stats.frameMs.toFixed(2) : "0.00" },
       { label: "Camera Mode", value: appState.camera.mode === "orthographic" ? "Orthographic" : "Perspective" },
       {
-        label: "Camera Position",
+        label: "Camera Position (m)",
         value: `${appState.camera.position[0].toFixed(3)}, ${appState.camera.position[1].toFixed(3)}, ${appState.camera.position[2].toFixed(3)}`
       },
       {
-        label: "Camera Target",
+        label: "Camera Target (m)",
         value: `${appState.camera.target[0].toFixed(3)}, ${appState.camera.target[1].toFixed(3)}, ${appState.camera.target[2].toFixed(3)}`
       },
       {
@@ -525,7 +573,7 @@ export function InspectorPane() {
             : `${appState.camera.fov.toFixed(2)} deg`
       },
       {
-        label: "Camera Distance",
+        label: "Camera Distance (m)",
         value: Number.isFinite(appState.stats.cameraDistance) ? appState.stats.cameraDistance.toFixed(3) : "0.000"
       },
       { label: "Controls Enabled", value: appState.stats.cameraControlsEnabled ? "Yes" : "No" },
@@ -926,7 +974,7 @@ export function InspectorPane() {
             </div>
           </div>
           <div className="inspector-common-row">
-            <span className="inspector-common-label">Translate</span>
+            <span className="inspector-common-label">Translate (m)</span>
             <div className="inspector-common-control-wrap">
               <div className="inspector-vector-inputs">
                 {([0, 1, 2] as const).map((axisIndex) => {
@@ -1014,7 +1062,7 @@ export function InspectorPane() {
                     : ""
                 }${point.enabled === false ? " disabled" : ""}`}
                 onClick={() => {
-                  publishCurveVertexSelect(singleSelection.id, pointIndex);
+                  publishCurveVertexSelect(singleSelection.id, pointIndex, "anchor");
                 }}
                 onMouseEnter={() => {
                   publishCurveVertexHover(singleSelection.id, pointIndex);
@@ -1035,11 +1083,30 @@ export function InspectorPane() {
                         const current = curveDataWithOverrides(actor);
                         return setCurvePointMode(current, pointIndex, nextMode);
                       });
+                      if (nextMode === "normal") {
+                        publishCurveVertexSelect(singleSelection.id, pointIndex, "anchor");
+                      }
                     }}
                   />
                   <div className="curve-vertex-mode-list">
                     <div className="curve-vertex-weight-control">
-                      <span className="curve-vertex-weight-label">In</span>
+                      <button
+                        type="button"
+                        className={`curve-vertex-weight-label-button${
+                          selectedCurveVertex?.actorId === singleSelection.id &&
+                          selectedCurveVertex.pointIndex === pointIndex &&
+                          selectedCurveControl === "handleIn"
+                            ? " is-active"
+                            : ""
+                        }`}
+                        disabled={readOnly}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          publishCurveVertexSelect(singleSelection.id, pointIndex, "handleIn");
+                        }}
+                      >
+                        In
+                      </button>
                       <SegmentedControl
                         compact
                         value={point.handleInMode ?? "normal"}
@@ -1057,7 +1124,23 @@ export function InspectorPane() {
                       />
                     </div>
                     <div className="curve-vertex-weight-control">
-                      <span className="curve-vertex-weight-label">Out</span>
+                      <button
+                        type="button"
+                        className={`curve-vertex-weight-label-button${
+                          selectedCurveVertex?.actorId === singleSelection.id &&
+                          selectedCurveVertex.pointIndex === pointIndex &&
+                          selectedCurveControl === "handleOut"
+                            ? " is-active"
+                            : ""
+                        }`}
+                        disabled={readOnly}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          publishCurveVertexSelect(singleSelection.id, pointIndex, "handleOut");
+                        }}
+                      >
+                        Out
+                      </button>
                       <SegmentedControl
                         compact
                         value={point.handleOutMode ?? "normal"}
@@ -1083,6 +1166,7 @@ export function InspectorPane() {
                       onClick={(event) => {
                         event.stopPropagation();
                         updateSingleCurve((actor) => duplicateCurvePoint(curveDataWithOverrides(actor), pointIndex));
+                        publishCurveVertexSelect(singleSelection.id, pointIndex + 1, selectedCurveControl);
                       }}
                       title="Duplicate vertex below"
                     >
@@ -1095,6 +1179,8 @@ export function InspectorPane() {
                       onClick={(event) => {
                         event.stopPropagation();
                         updateSingleCurve((actor) => removeCurvePoint(curveDataWithOverrides(actor), pointIndex));
+                        const nextIndex = Math.max(0, Math.min(pointIndex, allPoints.length - 2));
+                        publishCurveVertexSelect(singleSelection.id, nextIndex, "anchor");
                       }}
                       title={allPoints.length <= 2 ? "A curve needs at least two vertices." : "Delete vertex"}
                     >
@@ -1158,11 +1244,13 @@ export function InspectorPane() {
         const canReset = values.some((value) => !bindingValuesEqual(value, defaultValue));
 
         if (definition.type === "number") {
+          const currentNumber = coerceFiniteNumber(current, 0);
+          const defaultNumber = coerceFiniteNumber(defaultValue, 0);
           return (
             <NumberField
               key={definition.key}
               label={definition.label}
-              value={typeof current === "number" ? current : 0}
+              value={currentNumber}
               mixed={mixed}
               min={definition.min}
               max={definition.max}
@@ -1173,7 +1261,7 @@ export function InspectorPane() {
               disabled={readOnly}
               showReset={canReset}
               onReset={() => {
-                updateSelectedActorParams(definition.key, defaultValue);
+                updateSelectedActorParams(definition.key, defaultNumber);
               }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);

@@ -53,17 +53,26 @@ export const primitiveActorDescriptor: ReloadableDescriptor<PrimitiveRuntime> = 
       ];
       if (shape === "sphere") {
         rows.push(
-          { label: "Sphere Radius", value: typeof actor.params.sphereRadius === "number" ? actor.params.sphereRadius : 0.5 },
+          {
+            label: "Sphere Radius (m)",
+            value: typeof actor.params.sphereRadius === "number" ? actor.params.sphereRadius : 0.5
+          },
           { label: "Segments", value: typeof actor.params.segments === "number" ? actor.params.segments : 24 }
         );
       } else if (shape === "cylinder") {
         rows.push(
-          { label: "Cylinder Radius", value: typeof actor.params.cylinderRadius === "number" ? actor.params.cylinderRadius : 0.5 },
-          { label: "Cylinder Height", value: typeof actor.params.cylinderHeight === "number" ? actor.params.cylinderHeight : 1 },
+          {
+            label: "Cylinder Radius (m)",
+            value: typeof actor.params.cylinderRadius === "number" ? actor.params.cylinderRadius : 0.5
+          },
+          {
+            label: "Cylinder Height (m)",
+            value: typeof actor.params.cylinderHeight === "number" ? actor.params.cylinderHeight : 1
+          },
           { label: "Segments", value: typeof actor.params.segments === "number" ? actor.params.segments : 24 }
         );
       } else {
-        rows.push({ label: "Cube Size", value: typeof actor.params.cubeSize === "number" ? actor.params.cubeSize : 1 });
+        rows.push({ label: "Cube Size (m)", value: typeof actor.params.cubeSize === "number" ? actor.params.cubeSize : 1 });
       }
       return [
         ...rows,

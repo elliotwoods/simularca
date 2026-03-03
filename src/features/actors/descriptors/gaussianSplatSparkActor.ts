@@ -37,7 +37,7 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
         { label: "Type", value: "Gaussian Splat (Spark)" },
         { label: "Asset", value: asset?.sourceFileName ?? (assetId ? "Missing asset reference" : "Not set") },
         {
-          label: "Scale Factor",
+          label: "Import Scale (src->m)",
           value: typeof actor.params.scaleFactor === "number" ? actor.params.scaleFactor : 1
         },
         {
@@ -47,8 +47,8 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
         { label: "Backend", value: runtimeStatus?.values.backend ?? "n/a" },
         { label: "Load State", value: runtimeStatus?.values.loadState ?? "n/a" },
         { label: "Point Count", value: runtimeStatus?.values.pointCount ?? "n/a" },
-        { label: "Bounds Min", value: runtimeStatus?.values.boundsMin ?? "n/a" },
-        { label: "Bounds Max", value: runtimeStatus?.values.boundsMax ?? "n/a" },
+        { label: "Bounds Min (m)", value: runtimeStatus?.values.boundsMin ?? "n/a" },
+        { label: "Bounds Max (m)", value: runtimeStatus?.values.boundsMax ?? "n/a" },
         {
           label: "Last Update",
           value: runtimeStatus?.updatedAtIso ? new Date(runtimeStatus.updatedAtIso).toLocaleString() : "n/a"
@@ -58,4 +58,3 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
     }
   }
 };
-

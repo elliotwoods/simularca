@@ -44,7 +44,14 @@ export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
         kind: "gaussian-splat"
       }
     },
-    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 },
+    {
+      key: "scaleFactor",
+      label: "Import Scale (src->m)",
+      type: "number",
+      step: 0.001,
+      precision: 3,
+      defaultValue: 1
+    },
     { key: "splatSize", label: "Splat Size", type: "number", min: 0.05, max: 20, step: 0.05, defaultValue: 1 },
     { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 },
     {
@@ -79,7 +86,14 @@ export const GAUSSIAN_SPLAT_SPARK_SCHEMA: ParameterSchema = {
         kind: "generic"
       }
     },
-    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 },
+    {
+      key: "scaleFactor",
+      label: "Import Scale (src->m)",
+      type: "number",
+      step: 0.001,
+      precision: 3,
+      defaultValue: 1
+    },
     { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 }
   ]
 };
@@ -99,7 +113,14 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
         kind: "generic"
       }
     },
-    { key: "scaleFactor", label: "Scale Factor", type: "number", step: 0.001, precision: 3, defaultValue: 1 }
+    {
+      key: "scaleFactor",
+      label: "Import Scale (src->m)",
+      type: "number",
+      step: 0.001,
+      precision: 3,
+      defaultValue: 1
+    }
   ]
 };
 
@@ -126,6 +147,7 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "cubeSize",
       label: "Cube Size",
       type: "number",
+      unit: "m",
       step: 0.05,
       defaultValue: 1,
       visibleWhen: [{ key: "shape", equals: "cube" }]
@@ -134,6 +156,7 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "sphereRadius",
       label: "Sphere Radius",
       type: "number",
+      unit: "m",
       step: 0.05,
       defaultValue: 0.5,
       visibleWhen: [{ key: "shape", equals: "sphere" }]
@@ -142,6 +165,7 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "cylinderRadius",
       label: "Cylinder Radius",
       type: "number",
+      unit: "m",
       step: 0.05,
       defaultValue: 0.5,
       visibleWhen: [{ key: "shape", equals: "cylinder" }]
@@ -150,6 +174,7 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "cylinderHeight",
       label: "Cylinder Height",
       type: "number",
+      unit: "m",
       step: 0.05,
       defaultValue: 1,
       visibleWhen: [{ key: "shape", equals: "cylinder" }]
@@ -203,6 +228,7 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "handleSize",
       label: "Handle Size",
       type: "number",
+      unit: "m",
       min: 0.1,
       max: 4,
       step: 0.05,

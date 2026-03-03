@@ -56,9 +56,9 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
         { label: "Hard Points", value: hardCount },
         { label: "Segments", value: runtimeStatus?.values.segmentCount ?? defaultSegmentCount },
         { label: "Samples / Segment", value: runtimeStatus?.values.samplesPerSegment ?? samplesPerSegment },
-        { label: "Approx Length", value: runtimeStatus?.values.length ?? fallbackLength },
-        { label: "Bounds Min", value: runtimeStatus?.values.boundsMin ?? "n/a" },
-        { label: "Bounds Max", value: runtimeStatus?.values.boundsMax ?? "n/a" },
+        { label: "Approx Length (m)", value: runtimeStatus?.values.length ?? fallbackLength },
+        { label: "Bounds Min (m)", value: runtimeStatus?.values.boundsMin ?? "n/a" },
+        { label: "Bounds Max (m)", value: runtimeStatus?.values.boundsMax ?? "n/a" },
         {
           label: "Last Update",
           value: runtimeStatus?.updatedAtIso ? new Date(runtimeStatus.updatedAtIso).toLocaleString() : "n/a"

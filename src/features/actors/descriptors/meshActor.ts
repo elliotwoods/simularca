@@ -34,15 +34,15 @@ export const meshActorDescriptor: ReloadableDescriptor<MeshRuntime> = {
         { label: "Type", value: "Mesh" },
         { label: "Asset", value: asset?.sourceFileName ?? (assetId ? "Missing asset reference" : "Not set") },
         {
-          label: "Scale Factor",
+          label: "Import Scale (src->m)",
           value: typeof actor.params.scaleFactor === "number" ? actor.params.scaleFactor : 1
         },
         { label: "Format", value: runtimeStatus?.values.format ?? "n/a" },
         { label: "Meshes", value: runtimeStatus?.values.meshCount ?? "n/a" },
         { label: "Triangles", value: runtimeStatus?.values.triangleCount ?? "n/a" },
-        { label: "Bounds Min", value: runtimeStatus?.values.boundsMin ?? "n/a" },
-        { label: "Bounds Max", value: runtimeStatus?.values.boundsMax ?? "n/a" },
-        { label: "Size", value: runtimeStatus?.values.size ?? "n/a" },
+        { label: "Bounds Min (m)", value: runtimeStatus?.values.boundsMin ?? "n/a" },
+        { label: "Bounds Max (m)", value: runtimeStatus?.values.boundsMax ?? "n/a" },
+        { label: "Size (m)", value: runtimeStatus?.values.size ?? "n/a" },
         {
           label: "Last Update",
           value: runtimeStatus?.updatedAtIso ? new Date(runtimeStatus.updatedAtIso).toLocaleString() : "n/a"
