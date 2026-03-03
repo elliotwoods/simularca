@@ -13,6 +13,21 @@ export type ActorType =
   | "primitive"
   | "curve"
   | "plugin";
+
+export interface Material {
+  id: string;
+  name: string;
+  albedo: string; // Hex color
+  metalness: number; // 0-1
+  roughness: number; // 0-1
+  emissive: string; // Hex color
+  emissiveIntensity: number;
+  opacity: number; // 0-1
+  transparent: boolean;
+  side: "front" | "back" | "double";
+  wireframe: boolean;
+}
+
 export type ActorVisibilityMode = "visible" | "hidden" | "selected";
 export type CameraPreset = "perspective" | "top" | "left" | "front" | "back" | "isometric";
 export type TimeSpeedPreset = 0.125 | 0.25 | 0.5 | 1 | 2 | 4;
@@ -84,6 +99,10 @@ export interface ActorRefListParameterDefinition extends ParameterDefinitionBase
   allowSelf?: boolean;
 }
 
+export interface MaterialRefParameterDefinition extends ParameterDefinitionBase {
+  type: "material-ref";
+}
+
 export interface FileParameterImportAsset {
   mode: "import-asset";
   kind: SessionAssetRef["kind"];
@@ -109,6 +128,7 @@ export type ParameterDefinition =
   | SelectParameterDefinition
   | ActorRefParameterDefinition
   | ActorRefListParameterDefinition
+  | MaterialRefParameterDefinition
   | FileParameterDefinition;
 
 export interface ParameterSchema {
@@ -193,6 +213,7 @@ export interface SessionManifest {
   camera: CameraState;
   cameraBookmarks: CameraBookmark[];
   time: TimeState;
+  materials: Record<string, Material>;
   assets: SessionAssetRef[];
 }
 
@@ -259,6 +280,7 @@ export interface AppState {
   camera: CameraState;
   cameraBookmarks: CameraBookmark[];
   time: TimeState;
+  materials: Record<string, Material>;
   assets: SessionAssetRef[];
   selection: SelectionEntry[];
   stats: SceneStats;

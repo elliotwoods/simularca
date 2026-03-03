@@ -46,7 +46,8 @@ import {
   SegmentedControl,
   SelectField,
   TextField,
-  ToggleField
+  ToggleField,
+  MaterialRefField
 } from "@/ui/widgets";
 
 type BindingValue = ParameterValue;
@@ -1505,6 +1506,19 @@ export function InspectorPane() {
               onReset={() => {
                 updateSelectedActorParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
               }}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "material-ref") {
+          return (
+            <MaterialRefField
+              key={definition.key}
+              label={definition.label}
+              value={typeof current === "string" ? current : ""}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);
               }}

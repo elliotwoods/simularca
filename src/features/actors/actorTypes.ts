@@ -120,6 +120,11 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
       step: 0.001,
       precision: 3,
       defaultValue: 1
+    },
+    {
+      key: "materialId",
+      label: "Material Override",
+      type: "material-ref"
     }
   ]
 };
@@ -184,10 +189,10 @@ export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
       defaultValue: 24
     },
     {
-      key: "color",
-      label: "Color",
-      type: "color",
-      defaultValue: "#4fb3ff"
+      key: "materialId",
+      label: "Material",
+      type: "material-ref",
+      defaultValue: "mat.plastic.white.glossy"
     },
     {
       key: "wireframe",

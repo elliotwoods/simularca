@@ -8,6 +8,7 @@ import {
   faForwardStep,
   faFilm,
   faKeyboard,
+  faPalette,
   faRotateLeft,
   faRotateRight
 } from "@fortawesome/free-solid-svg-icons";
@@ -17,6 +18,7 @@ import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
 import { discoverAndLoadLocalPlugins, formatPluginDiscoverySummary } from "@/features/plugins/discovery";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
 import { PluginsModal } from "@/ui/components/PluginsModal";
+import { MaterialsModal } from "@/ui/components/MaterialsModal";
 import { DigitScrubInput } from "@/ui/widgets";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
@@ -67,6 +69,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const state = useAppStore((store) => store.state);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
   const [pluginsModalOpen, setPluginsModalOpen] = useState(false);
+  const [materialsModalOpen, setMaterialsModalOpen] = useState(false);
   const [pluginsRefreshLoading, setPluginsRefreshLoading] = useState(false);
   const [pluginsRefreshSummary, setPluginsRefreshSummary] = useState<string | null>(null);
   const [pluginsRevision, setPluginsRevision] = useState(0);
@@ -293,6 +296,19 @@ export function TopBarPanel(props: TopBarPanelProps) {
       </div>
 
       <div className="toolbar-group">
+        <label title="Materials">Materials</label>
+        <button
+          type="button"
+          title="Open material library"
+          onClick={() => {
+            setMaterialsModalOpen(true);
+          }}
+        >
+          <FontAwesomeIcon icon={faPalette} />
+        </button>
+      </div>
+
+      <div className="toolbar-group">
         <label title="Plugins">Plugins</label>
         <button
           type="button"
@@ -317,6 +333,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
           </svg>
         </div>
       </div>
+      <MaterialsModal open={materialsModalOpen} onClose={() => setMaterialsModalOpen(false)} />
       <PluginsModal
         open={pluginsModalOpen}
         plugins={plugins}

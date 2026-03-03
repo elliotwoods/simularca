@@ -75,6 +75,9 @@ export interface AppActions {
   removeCameraBookmark(id: string): void;
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
+  createMaterial(input?: Partial<Material>): string;
+  updateMaterial(materialId: string, partial: Partial<Omit<Material, "id">>): void;
+  deleteMaterial(materialId: string): void;
 }
 
 export interface AppStore {
@@ -669,6 +672,68 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               return;
             }
             draft.actorStatusByActorId[actorId] = status;
+          })
+        });
+      },
+      createMaterial(input) {
+        const id = createId("mat");
+        const nameBase = input?.name ?? "New Material";
+        const usedNames = new Set(Object.values(get().state.materials).map((m) => m.name));
+        let name = nameBase;
+        let suffix = 2;
+        while (usedNames.has(name)) {
+          name = `${nameBase} ${suffix}`;
+          suffix += 1;
+        }
+
+        const newMaterial: Material = {
+          id,
+          name,
+          albedo: "#ffffff",
+          metalness: 0,
+          roughness: 0.5,
+          emissive: "#000000",
+          emissiveIntensity: 0,
+          opacity: 1,
+          transparent: false,
+          side: "front",
+          wireframe: false,
+          ...input
+        };
+
+        withHistory(get, set, "Create material");
+        set({
+          state: produce(get().state, (draft) => {
+            draft.materials[id] = newMaterial;
+            draft.dirty = true;
+          })
+        });
+        return id;
+      },
+      updateMaterial(materialId, partial) {
+        withHistory(get, set, "Update material");
+        set({
+          state: produce(get().state, (draft) => {
+            const material = draft.materials[materialId];
+            if (material) {
+              Object.assign(material, partial);
+            }
+            draft.dirty = true;
+          })
+        });
+      },
+      deleteMaterial(materialId) {
+        withHistory(get, set, "Delete material");
+        set({
+          state: produce(get().state, (draft) => {
+            delete draft.materials[materialId];
+            // Clear material references from actors
+            for (const actor of Object.values(draft.actors)) {
+              if (actor.params.materialId === materialId) {
+                delete actor.params.materialId;
+              }
+            }
+            draft.dirty = true;
           })
         });
       }

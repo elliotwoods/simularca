@@ -1,5 +1,133 @@
 import { createId } from "./ids";
-import type { ActorNode, AppState, CameraState, SceneState, TimeState } from "./types";
+import type { ActorNode, AppState, CameraState, SceneState, TimeState, Material } from "./types";
+
+export function createInitialMaterials(): Record<string, Material> {
+  const materials: Material[] = [
+    {
+      id: "mat.mirror",
+      name: "Mirror",
+      albedo: "#ffffff",
+      metalness: 1,
+      roughness: 0,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.steel",
+      name: "Stainless Steel",
+      albedo: "#d1d1d1",
+      metalness: 1,
+      roughness: 0.1,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.wood",
+      name: "Wood (Example)",
+      albedo: "#8b4513",
+      metalness: 0,
+      roughness: 0.8,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.stone",
+      name: "Stone (Example)",
+      albedo: "#808080",
+      metalness: 0,
+      roughness: 0.9,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.plastic.white.glossy",
+      name: "ABS Plastic White (Glossy)",
+      albedo: "#ffffff",
+      metalness: 0,
+      roughness: 0.1,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.plastic.white.matte",
+      name: "ABS Plastic White (Matte)",
+      albedo: "#ffffff",
+      metalness: 0,
+      roughness: 0.6,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.paper",
+      name: "Paper",
+      albedo: "#fcfcfc",
+      metalness: 0,
+      roughness: 0.95,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 1,
+      transparent: false,
+      side: "double",
+      wireframe: false
+    },
+    {
+      id: "mat.glass",
+      name: "Glass",
+      albedo: "#ffffff",
+      metalness: 0,
+      roughness: 0,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 0.2,
+      transparent: true,
+      side: "front",
+      wireframe: false
+    },
+    {
+      id: "mat.glass.matte",
+      name: "Glass (Matte)",
+      albedo: "#ffffff",
+      metalness: 0,
+      roughness: 0.4,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+      opacity: 0.4,
+      transparent: true,
+      side: "front",
+      wireframe: false
+    }
+  ];
+
+  const result: Record<string, Material> = {};
+  for (const mat of materials) {
+    result[mat.id] = mat;
+  }
+  return result;
+}
 
 export const DEFAULT_CAMERA: CameraState = {
   mode: "perspective",
@@ -52,6 +180,7 @@ export function createInitialState(mode: AppState["mode"], sessionName = "demo")
     camera: DEFAULT_CAMERA,
     cameraBookmarks: [],
     time: DEFAULT_TIME,
+    materials: createInitialMaterials(),
     assets: [],
     selection: [],
     stats: {

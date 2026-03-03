@@ -46,6 +46,20 @@ const componentSchema = z.object({
   params: z.record(parameterValueSchema)
 });
 
+const materialSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  albedo: z.string(),
+  metalness: z.number(),
+  roughness: z.number(),
+  emissive: z.string(),
+  emissiveIntensity: z.number(),
+  opacity: z.number(),
+  transparent: z.boolean(),
+  side: z.enum(["front", "back", "double"]),
+  wireframe: z.boolean()
+});
+
 const sessionSchema = z.object({
   schemaVersion: z.number(),
   appMode: z.enum(["electron-rw", "web-ro"]),
@@ -97,6 +111,7 @@ const sessionSchema = z.object({
     fixedStepSeconds: z.number(),
     elapsedSimSeconds: z.number()
   }),
+  materials: z.record(materialSchema),
   assets: z.array(
     z.object({
       id: z.string(),

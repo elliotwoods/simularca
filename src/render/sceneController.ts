@@ -276,6 +276,7 @@ export class SceneController {
   private readonly gaussianBoundsHelpers = new Map<string, any>();
   private readonly meshLoadTokenByActorId = new Map<string, number>();
   private readonly primitiveSignatureByActorId = new Map<string, string>();
+  private readonly materialByMaterialId = new Map<string, THREE.MeshStandardMaterial>();
   private readonly gaussianGeometryByActorId = new Map<string, any>();
   private readonly gaussianVisualSignatureByActorId = new Map<string, string>();
   private readonly gaussianVisibleCountByActorId = new Map<string, number>();
@@ -796,10 +797,86 @@ export class SceneController {
     }
   }
 
+  private resolveEnvironment(actorId: string): { texture: THREE.Texture | null; name: string } {
+    const state = this.kernel.store.getState().state;
+    const actor = state.actors[actorId];
+    if (!actor) {
+      return { texture: null, name: "Default" };
+    }
+
+    const envActors = Object.values(state.actors).filter(
+      (a) => a.actorType === "environment" && a.enabled && a.params.assetId
+    );
+    if (envActors.length === 0) {
+      return { texture: null, name: "Default" };
+    }
+
+    const actorPos = new THREE.Vector3(...actor.transform.position);
+    let closestEnv: (typeof envActors)[0] | null = null;
+    let minDistanceSq = Number.POSITIVE_INFINITY;
+
+    for (const env of envActors) {
+      const envPos = new THREE.Vector3(...env.transform.position);
+      const distSq = actorPos.distanceToSquared(envPos);
+      if (distSq < minDistanceSq) {
+        minDistanceSq = distSq;
+        closestEnv = env;
+      }
+    }
+
+    if (closestEnv) {
+      // Find the texture loaded for this environment actor
+      // For now, if it's the current active environment, use scene.environment
+      const currentEnvActor = Object.values(state.actors).find(
+        (a) => a.actorType === "environment" && a.params.assetId === this.currentEnvironmentAssetId
+      );
+      if (currentEnvActor?.id === closestEnv.id) {
+        return { texture: this.scene.environment, name: closestEnv.name };
+      }
+    }
+
+    return { texture: this.scene.environment, name: closestEnv?.name ?? "Default" };
+  }
+
+  private getMaterial(materialId: string | undefined, actorId: string): THREE.MeshStandardMaterial {
+    const state = this.kernel.store.getState().state;
+    const materialData = materialId ? state.materials[materialId] : null;
+
+    if (!materialData) {
+      return new THREE.MeshStandardMaterial({ color: 0x808080 });
+    }
+
+    let material = this.materialByMaterialId.get(materialData.id);
+    if (!material) {
+      material = new THREE.MeshStandardMaterial();
+      this.materialByMaterialId.set(materialData.id, material);
+    }
+
+    material.color.set(materialData.albedo);
+    material.metalness = materialData.metalness;
+    material.roughness = materialData.roughness;
+    material.emissive.set(materialData.emissive);
+    material.emissiveIntensity = materialData.emissiveIntensity;
+    material.opacity = materialData.opacity;
+    material.transparent = materialData.transparent;
+    material.wireframe = materialData.wireframe;
+    material.side =
+      materialData.side === "double"
+        ? THREE.DoubleSide
+        : materialData.side === "back"
+          ? THREE.BackSide
+          : THREE.FrontSide;
+
+    const env = this.resolveEnvironment(actorId);
+    material.envMap = env.texture;
+    material.needsUpdate = true;
+
+    return material;
+  }
+
   private createPrimitiveMesh(actor: ActorNode): any {
     const dimensions = this.getPrimitiveDimensions(actor);
-    const color = typeof actor.params.color === "string" ? actor.params.color : "#4fb3ff";
-    const wireframe = Boolean(actor.params.wireframe);
+    const materialId = typeof actor.params.materialId === "string" ? actor.params.materialId : undefined;
     const mesh = new THREE.Mesh(
       this.createPrimitiveGeometry(
         dimensions.shape,
@@ -809,15 +886,10 @@ export class SceneController {
         dimensions.cylinderHeight,
         dimensions.segments
       ),
-      new THREE.MeshStandardMaterial({
-        color,
-        wireframe,
-        metalness: 0.08,
-        roughness: 0.72
-      })
+      this.getMaterial(materialId, actor.id)
     );
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     return mesh;
   }
 
@@ -827,12 +899,15 @@ export class SceneController {
       return;
     }
     const dimensions = this.getPrimitiveDimensions(actor);
-    const color = typeof actor.params.color === "string" ? actor.params.color : "#4fb3ff";
+    const materialId = typeof actor.params.materialId === "string" ? actor.params.materialId : undefined;
     const wireframe = Boolean(actor.params.wireframe);
+
+    const env = this.resolveEnvironment(actor.id);
     const signature = JSON.stringify({
       ...dimensions,
-      color,
-      wireframe
+      materialId,
+      wireframe,
+      envName: env.name
     });
     const previous = this.primitiveSignatureByActorId.get(actor.id);
     if (signature === previous) {
@@ -840,7 +915,6 @@ export class SceneController {
     }
     this.primitiveSignatureByActorId.set(actor.id, signature);
 
-    // Avoid disposing geometry here: WebGPU renderer can still reference buffers during async pipeline updates.
     object.geometry = this.createPrimitiveGeometry(
       dimensions.shape,
       dimensions.cubeSize,
@@ -849,12 +923,21 @@ export class SceneController {
       dimensions.cylinderHeight,
       dimensions.segments
     );
-    const material = object.material;
-    if (material instanceof THREE.MeshStandardMaterial) {
-      material.color.set(color);
-      material.wireframe = wireframe;
-      material.needsUpdate = true;
+
+    object.material = this.getMaterial(materialId, actor.id);
+    if (object.material instanceof THREE.MeshStandardMaterial) {
+      object.material.wireframe = wireframe;
     }
+
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        type: "Primitive",
+        shape: dimensions.shape,
+        material: actor.params.materialId ?? "Default",
+        environment: env.name
+      },
+      updatedAtIso: new Date().toISOString()
+    });
   }
 
   private syncCurveActor(actor: ActorNode): void {
@@ -1258,11 +1341,18 @@ export class SceneController {
       }
       renderRoot.clear();
       renderRoot.add(loadedObject);
+
+      const materialId = typeof actor.params.materialId === "string" ? actor.params.materialId : undefined;
+      const env = this.resolveEnvironment(actor.id);
+
       loadedObject.traverse((node: any) => {
         if (node instanceof THREE.Mesh) {
           node.castShadow = true;
           node.receiveShadow = true;
-          if (!Array.isArray(node.material) && node.material) {
+          if (materialId) {
+            node.material = this.getMaterial(materialId, actor.id);
+          } else if (node.material instanceof THREE.MeshStandardMaterial) {
+            node.material.envMap = env.texture;
             node.material.needsUpdate = true;
           }
         }
@@ -1297,7 +1387,9 @@ export class SceneController {
           triangleCount,
           boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
           boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z],
-          size: [size.x, size.y, size.z]
+          size: [size.x, size.y, size.z],
+          material: materialId ?? "Original",
+          environment: env.name
         },
         updatedAtIso: new Date().toISOString()
       });

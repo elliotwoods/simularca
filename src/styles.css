@@ -2336,3 +2336,158 @@ body.is-scrubbing-number * {
     height: 16px;
   }
 }
+
+/* Materials Modal & Library */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(2, 5, 10, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-content {
+  border: 1px solid var(--line-strong);
+  background: #0a1423;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.modal-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.modal-close:hover {
+  color: var(--text);
+}
+
+.materials-modal {
+  width: min(900px, 94vw);
+  height: min(700px, 86vh);
+}
+
+.materials-modal-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.materials-sidebar {
+  width: 260px;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  background: #0c1524;
+}
+
+.materials-sidebar-actions {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.materials-sidebar-actions button {
+  width: 100%;
+}
+
+.materials-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.material-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.material-item:hover {
+  background: rgba(47, 163, 255, 0.06);
+}
+
+.material-item.selected {
+  background: rgba(47, 163, 255, 0.12);
+  border-left: 2px solid var(--accent);
+}
+
+.material-preview-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  margin-right: 10px;
+  flex-shrink: 0;
+}
+
+.material-name {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.material-delete-btn {
+  opacity: 0;
+  background: transparent;
+  border: 0;
+  color: var(--danger);
+  padding: 2px 6px;
+}
+
+.material-item:hover .material-delete-btn {
+  opacity: 1;
+}
+
+.material-editor {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  background: #0d1828;
+}
+
+.material-editor-fields {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.material-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.widget-material-ref {
+  display: grid;
+  gap: 6px;
+}
