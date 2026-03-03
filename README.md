@@ -65,6 +65,8 @@ For runtime KTX2 decode, place basis transcoder files in `public/basis/` (e.g. `
 - Top toolbar `Plugins` button opens plugin status dialog (installed plugins + refresh).
 - Load built plugin modules from console, for example:
   - `plugin.load("file:///C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js")`
+  - In Electron+Vite dev (`http://localhost:5180`), `file:///...` plugin paths are normalized to Vite `@fs` imports by the plugin loader.
+  - If a plugin does not appear in the `+` menu, check the Plugins dialog and status message for the first load failure reason.
 
 ## Gaussian Asset Migration
 - Legacy sessions referencing raw `.ply` Gaussian assets are auto-converted to `splatbin-v1` when loaded in Electron mode.

@@ -8,6 +8,15 @@ export interface PluginDiscoveryReport {
   failed: Array<{ modulePath: string; error: string }>;
 }
 
+export function formatPluginDiscoverySummary(report: PluginDiscoveryReport): string {
+  const base = `Discovered ${report.discovered.length}, loaded ${report.loadedCount}, failed ${report.failed.length}.`;
+  const firstFailure = report.failed[0];
+  if (!firstFailure) {
+    return base;
+  }
+  return `${base} First failure: ${firstFailure.error}`;
+}
+
 function toMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -52,4 +61,3 @@ export async function discoverAndLoadLocalPlugins(kernel: AppKernel): Promise<Pl
     failed
   };
 }
-

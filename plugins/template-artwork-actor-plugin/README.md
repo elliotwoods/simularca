@@ -9,3 +9,5 @@ Starter template for artwork-specific Simularca plugins.
 4. Build with `npm run build`.
 5. Load in Simularca console:
    - `plugin.load("file:///ABSOLUTE_PATH_TO_PLUGIN/dist/index.js")`
+
+In Electron+Vite dev mode (`http://localhost:5180`), local `file:///...` plugin paths are normalized by the host plugin loader.

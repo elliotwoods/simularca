@@ -5,6 +5,41 @@ export interface PluginLoadSource {
   sourceGroup?: "plugins-local" | "plugins" | "manual";
 }
 
+function shouldNormalizeFileUrlForDev(runtimeProtocol?: string): boolean {
+  if (runtimeProtocol) {
+    return runtimeProtocol === "http:" || runtimeProtocol === "https:";
+  }
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const protocol = window.location?.protocol;
+  return protocol === "http:" || protocol === "https:";
+}
+
+function normalizeWindowsDrivePath(pathname: string): string {
+  if (/^\/[A-Za-z]:\//.test(pathname)) {
+    return pathname.slice(1);
+  }
+  return pathname;
+}
+
+export function resolvePluginModuleSpecifier(modulePath: string, runtimeProtocol?: string): string {
+  if (!shouldNormalizeFileUrlForDev(runtimeProtocol)) {
+    return modulePath;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(modulePath);
+  } catch {
+    return modulePath;
+  }
+  if (parsed.protocol !== "file:") {
+    return modulePath;
+  }
+  const pathname = normalizeWindowsDrivePath(decodeURIComponent(parsed.pathname));
+  return `/@fs/${pathname}`;
+}
+
 function assertCompatibleHandshake(handshakeVersion: number, modulePath: string): void {
   if (handshakeVersion !== PLUGIN_HANDSHAKE_VERSION) {
     throw new Error(
@@ -33,7 +68,8 @@ export async function loadPluginFromModule(
   modulePath: string,
   source?: PluginLoadSource
 ): Promise<PluginLoaderResult> {
-  const module = (await import(/* @vite-ignore */ modulePath)) as {
+  const importSpecifier = resolvePluginModuleSpecifier(modulePath);
+  const module = (await import(/* @vite-ignore */ importSpecifier)) as {
     default?: unknown;
     handshake?: unknown;
   };

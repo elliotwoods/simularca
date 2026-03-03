@@ -75,6 +75,7 @@ Actor descriptors may provide `sceneHooks` for in-scene visualization and simula
 
 ## Loader Behavior
 1. Host imports module path dynamically.
+   - In Electron+Vite dev (`http://localhost`), local `file:///...` plugin URLs are normalized to Vite `@fs` specifiers before import.
 2. Host resolves handshake from `default` or `handshake` export.
 3. Host validates handshake + engine compatibility.
 4. Host calls `createPlugin()`.

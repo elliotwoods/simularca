@@ -10,7 +10,7 @@ import {
 } from "@/features/camera/cycleTween";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
 import { importFileAsActor, listCompatibleActorFileImportOptions, type ActorFileImportOption } from "@/features/imports/actorFileImport";
-import { discoverAndLoadLocalPlugins } from "@/features/plugins/discovery";
+import { discoverAndLoadLocalPlugins, formatPluginDiscoverySummary } from "@/features/plugins/discovery";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
@@ -307,11 +307,7 @@ export function App() {
       if (window.electronAPI) {
         try {
           const report = await discoverAndLoadLocalPlugins(kernel);
-          kernel.store
-            .getState()
-            .actions.setStatus(
-              `Plugins discovered: ${report.discovered.length}, loaded: ${report.loadedCount}, failed: ${report.failed.length}.`
-            );
+          kernel.store.getState().actions.setStatus(`Plugins discovered. ${formatPluginDiscoverySummary(report)}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unknown plugin discovery error";
           kernel.store.getState().actions.setStatus(`Plugin auto-load failed: ${message}`);

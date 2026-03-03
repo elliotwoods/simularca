@@ -13,7 +13,7 @@ import {
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
-import { discoverAndLoadLocalPlugins } from "@/features/plugins/discovery";
+import { discoverAndLoadLocalPlugins, formatPluginDiscoverySummary } from "@/features/plugins/discovery";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
 import { PluginsModal } from "@/ui/components/PluginsModal";
 
@@ -90,7 +90,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
     setPluginsRefreshLoading(true);
     void discoverAndLoadLocalPlugins(kernel)
       .then((report) => {
-        const summary = `Discovered ${report.discovered.length}, loaded ${report.loadedCount}, failed ${report.failed.length}.`;
+        const summary = formatPluginDiscoverySummary(report);
         setPluginsRefreshSummary(summary);
         kernel.store.getState().actions.setStatus(`Plugins refreshed. ${summary}`);
       })
