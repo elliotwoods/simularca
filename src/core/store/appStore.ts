@@ -274,6 +274,7 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             draft.selection = [{ kind: "actor", id }];
             draft.stats.actorCount = Object.keys(draft.actors).length;
+            draft.stats.actorCountEnabled = Object.values(draft.actors).filter((entry) => entry.enabled).length;
             draft.dirty = true;
           })
         });
@@ -313,6 +314,7 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             draft.selection = [];
             draft.stats.actorCount = Object.keys(draft.actors).length;
+            draft.stats.actorCountEnabled = Object.values(draft.actors).filter((entry) => entry.enabled).length;
             draft.dirty = true;
           })
         });
@@ -357,6 +359,7 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               const actor = draft.actors[node.id];
               if (actor) {
                 actor.enabled = enabled;
+                draft.stats.actorCountEnabled = Object.values(draft.actors).filter((entry) => entry.enabled).length;
               }
             }
             if (node.kind === "component") {

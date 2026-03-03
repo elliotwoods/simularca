@@ -2,11 +2,15 @@ import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AppKernel } from "@/app/kernel";
+import { estimateSessionPayloadBytes } from "@/core/session/sessionSize";
 import { SceneController } from "./sceneController";
 import type { SplatOverlayActorState, SplatOverlayHandle } from "./splatOverlay";
 import { DedicatedGaussianSplatOverlay, NoopSplatOverlay } from "./splatOverlay";
+import { combineRenderStats, countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 
 const ENABLE_DEDICATED_SPLAT_OVERLAY = true;
+const FAST_STATS_INTERVAL_MS = 500;
+const SLOW_STATS_INTERVAL_MS = 2000;
 
 export class WebGpuViewport {
   private readonly renderer: WebGPURenderer;
@@ -18,11 +22,16 @@ export class WebGpuViewport {
   private splatOverlay: SplatOverlayHandle;
   private frameHandle = 0;
   private frameCount = 0;
-  private fpsLastTime = performance.now();
+  private frameTimeAccumulatorMs = 0;
+  private frameLastAt = performance.now();
+  private fastStatsLastSampleAt = performance.now();
+  private slowStatsLastSampleAt = performance.now();
   private lastAppliedCameraSignature = "";
   private lastSplatSignature = "";
   private readonly assetUrlCache = new Map<string, string>();
   private readonly blobAssetUrls = new Set<string>();
+  private readonly geometryByteCache = new WeakMap<object, number>();
+  private readonly textureByteCache = new WeakMap<object, number>();
   private dedicatedOverlayError: string | null = null;
   private splatSyncInFlight = false;
   private cachedSessionName = "";
@@ -33,6 +42,8 @@ export class WebGpuViewport {
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
+  private previousMainRenderSample: RenderStatsSample | null = null;
+  private previousOverlayRenderSample: RenderStatsSample | null = null;
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -281,20 +292,201 @@ export class WebGpuViewport {
 
   private updateStats(): void {
     const now = performance.now();
+    const frameDelta = Math.max(0, now - this.frameLastAt);
+    this.frameLastAt = now;
     this.frameCount += 1;
-    if (now - this.fpsLastTime < 300) {
-      return;
+    this.frameTimeAccumulatorMs += frameDelta;
+
+    if (now - this.fastStatsLastSampleAt >= FAST_STATS_INTERVAL_MS && this.frameCount > 0) {
+      const framesInWindow = this.frameCount;
+      const elapsedMs = Math.max(1, now - this.fastStatsLastSampleAt);
+      const fps = (framesInWindow * 1000) / elapsedMs;
+      const frameMs = this.frameTimeAccumulatorMs / framesInWindow;
+      this.frameCount = 0;
+      this.frameTimeAccumulatorMs = 0;
+      this.fastStatsLastSampleAt = now;
+
+      const mainRenderStatsCumulative = this.readMainRenderStats();
+      const overlayStats = this.splatOverlay.getStats();
+      const overlayRenderStatsCumulative: RenderStatsSample = {
+        drawCalls: overlayStats.drawCalls,
+        triangles: overlayStats.triangles,
+        points: overlayStats.points
+      };
+      const mainRenderStats = this.renderDeltaPerFrame(
+        mainRenderStatsCumulative,
+        this.previousMainRenderSample,
+        framesInWindow
+      );
+      const overlayRenderStats = this.renderDeltaPerFrame(
+        overlayRenderStatsCumulative,
+        this.previousOverlayRenderSample,
+        framesInWindow
+      );
+      this.previousMainRenderSample = mainRenderStatsCumulative;
+      this.previousOverlayRenderSample = overlayRenderStatsCumulative;
+
+      const combined = combineRenderStats(mainRenderStats, overlayRenderStats);
+      const actorCounts = countActorStats(this.kernel.store.getState().state.actors);
+      const currentStats = this.kernel.store.getState().state.stats;
+
+      this.kernel.store.getState().actions.setStats({
+        fps,
+        frameMs,
+        drawCalls: combined.drawCalls,
+        drawCallsMain: combined.drawCallsMain,
+        drawCallsOverlay: combined.drawCallsOverlay,
+        triangles: combined.triangles,
+        trianglesMain: combined.trianglesMain,
+        trianglesOverlay: combined.trianglesOverlay,
+        overlayPoints: combined.overlayPoints,
+        actorCount: actorCounts.actorCount,
+        actorCountEnabled: actorCounts.actorCountEnabled,
+        sessionFileBytes: currentStats.sessionFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
+          ? currentStats.sessionFileBytesSaved
+          : currentStats.sessionFileBytes
+      });
     }
-    const fps = (this.frameCount * 1000) / (now - this.fpsLastTime);
-    this.frameCount = 0;
-    this.fpsLastTime = now;
-    const info = this.renderer.info;
-    this.kernel.store.getState().actions.setStats({
-      fps,
-      drawCalls: info.render.calls,
-      triangles: info.render.triangles,
-      actorCount: Object.keys(this.kernel.store.getState().state.actors).length
+
+    if (now - this.slowStatsLastSampleAt >= SLOW_STATS_INTERVAL_MS) {
+      this.slowStatsLastSampleAt = now;
+      const state = this.kernel.store.getState().state;
+      const overlayStats = this.splatOverlay.getStats();
+      const resourceBytes = this.estimateResourceBytes() + overlayStats.bufferBytes;
+      const heapBytes = this.getHeapBytes();
+      const memory = summarizeMemory(heapBytes, resourceBytes);
+      const estimatedSessionBytes = state.dirty
+        ? estimateSessionPayloadBytes(state, state.mode)
+        : state.stats.sessionFileBytesSaved;
+      this.kernel.store.getState().actions.setStats({
+        memoryMb: memory.memoryMb,
+        heapMb: memory.heapMb,
+        resourceMb: memory.resourceMb,
+        sessionFileBytes: estimatedSessionBytes
+      });
+    }
+  }
+
+  private readMainRenderStats(): RenderStatsSample {
+    const info = this.renderer.info.render;
+    return {
+      drawCalls: Number(info.calls ?? 0),
+      triangles: Number(info.triangles ?? 0),
+      points: Number((info as { points?: number }).points ?? 0)
+    };
+  }
+
+  private renderDeltaPerFrame(
+    current: RenderStatsSample,
+    previous: RenderStatsSample | null,
+    framesInWindow: number
+  ): RenderStatsSample {
+    const safeFrames = Math.max(1, framesInWindow);
+    const delta = (next: number, prev: number | null): number => {
+      if (prev === null) {
+        return next;
+      }
+      // Some render backends reset counters; treat negative jumps as reset events.
+      return next >= prev ? next - prev : next;
+    };
+    return {
+      drawCalls: delta(current.drawCalls, previous?.drawCalls ?? null) / safeFrames,
+      triangles: delta(current.triangles, previous?.triangles ?? null) / safeFrames,
+      points: delta(current.points, previous?.points ?? null) / safeFrames
+    };
+  }
+
+  private getHeapBytes(): number | null {
+    const perf = performance as Performance & {
+      memory?: {
+        usedJSHeapSize?: number;
+      };
+    };
+    const used = perf.memory?.usedJSHeapSize;
+    if (typeof used !== "number" || !Number.isFinite(used) || used <= 0) {
+      return null;
+    }
+    return used;
+  }
+
+  private estimateResourceBytes(): number {
+    const scene = this.sceneController.scene as any;
+    let total = 0;
+    scene.traverse((node: any) => {
+      const mesh = node as any;
+      const geometry = mesh.geometry as any;
+      if (geometry) {
+        total += this.estimateGeometryBytes(geometry);
+      }
+      const material = mesh.material as any;
+      if (!material) {
+        return;
+      }
+      if (Array.isArray(material)) {
+        for (const entry of material) {
+          total += this.estimateMaterialTextureBytes(entry);
+        }
+        return;
+      }
+      total += this.estimateMaterialTextureBytes(material);
     });
+    return total;
+  }
+
+  private estimateGeometryBytes(geometry: any): number {
+    const cached = this.geometryByteCache.get(geometry);
+    if (cached !== undefined) {
+      return cached;
+    }
+    let total = 0;
+    const attributes = geometry.attributes as Record<string, any>;
+    for (const attribute of Object.values(attributes)) {
+      const array = attribute.array as ArrayLike<number> & { BYTES_PER_ELEMENT?: number; length?: number };
+      const length = typeof array.length === "number" ? array.length : 0;
+      const bytesPerElement = typeof array.BYTES_PER_ELEMENT === "number" ? array.BYTES_PER_ELEMENT : 4;
+      total += length * bytesPerElement;
+    }
+    const indexArray = geometry.index?.array as ArrayLike<number> & { BYTES_PER_ELEMENT?: number; length?: number } | undefined;
+    if (indexArray) {
+      const length = typeof indexArray.length === "number" ? indexArray.length : 0;
+      const bytesPerElement = typeof indexArray.BYTES_PER_ELEMENT === "number" ? indexArray.BYTES_PER_ELEMENT : 4;
+      total += length * bytesPerElement;
+    }
+    this.geometryByteCache.set(geometry, total);
+    return total;
+  }
+
+  private estimateMaterialTextureBytes(material: any): number {
+    let total = 0;
+    for (const value of Object.values(material as Record<string, unknown>)) {
+      if (value && typeof value === "object" && "isTexture" in value) {
+        total += this.estimateTextureBytes(value as any);
+      }
+    }
+    return total;
+  }
+
+  private estimateTextureBytes(texture: any): number {
+    const cached = this.textureByteCache.get(texture);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const image = texture.image as { width?: number; height?: number } | Array<{ width?: number; height?: number }> | undefined;
+    let width = 0;
+    let height = 0;
+    if (Array.isArray(image)) {
+      width = Math.max(...image.map((entry) => Number(entry.width ?? 0)), 0);
+      height = Math.max(...image.map((entry) => Number(entry.height ?? 0)), 0);
+    } else if (image) {
+      width = Number(image.width ?? 0);
+      height = Number(image.height ?? 0);
+    }
+    const safeWidth = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+    const safeHeight = Number.isFinite(height) ? Math.max(0, Math.floor(height)) : 0;
+    // Approximate RGBA8 footprint, includes basic mip overhead factor.
+    const bytes = safeWidth > 0 && safeHeight > 0 ? Math.floor(safeWidth * safeHeight * 4 * 1.33) : 0;
+    this.textureByteCache.set(texture, bytes);
+    return bytes;
   }
 
   private async syncSplatOverlay(): Promise<void> {
@@ -370,17 +562,6 @@ export class WebGpuViewport {
             sessionName: state.activeSessionName,
             relativePath: asset.relativePath
           });
-          if (this.splatOverlay.isDedicatedRenderer && assetUrl.startsWith("simularcaasset://")) {
-            const bytes = await this.kernel.storage.readAssetBytes({
-              sessionName: state.activeSessionName,
-              relativePath: asset.relativePath
-            });
-            const normalizedBytes = new Uint8Array(bytes.byteLength);
-            normalizedBytes.set(bytes);
-            const blobUrl = URL.createObjectURL(new Blob([normalizedBytes.buffer], { type: "application/octet-stream" }));
-            this.blobAssetUrls.add(blobUrl);
-            assetUrl = blobUrl;
-          }
           this.assetUrlCache.set(candidate.assetId, assetUrl);
         }
         actors.push({

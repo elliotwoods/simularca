@@ -51,11 +51,21 @@ export function createInitialState(mode: AppState["mode"], sessionName = "demo")
     selection: [],
     stats: {
       fps: 0,
+      frameMs: 0,
       drawCalls: 0,
+      drawCallsMain: 0,
+      drawCallsOverlay: 0,
       triangles: 0,
+      trianglesMain: 0,
+      trianglesOverlay: 0,
+      overlayPoints: 0,
       memoryMb: 0,
+      heapMb: 0,
+      resourceMb: 0,
       actorCount: 0,
-      sessionFileBytes: 0
+      actorCountEnabled: 0,
+      sessionFileBytes: 0,
+      sessionFileBytesSaved: 0
     },
     dirty: false,
     statusMessage: "Ready",

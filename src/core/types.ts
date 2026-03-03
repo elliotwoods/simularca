@@ -154,11 +154,21 @@ export interface SessionManifest {
 
 export interface SceneStats {
   fps: number;
+  frameMs: number;
   drawCalls: number;
+  drawCallsMain: number;
+  drawCallsOverlay: number;
   triangles: number;
+  trianglesMain: number;
+  trianglesOverlay: number;
+  overlayPoints: number;
   memoryMb: number;
+  heapMb: number;
+  resourceMb: number;
   actorCount: number;
+  actorCountEnabled: number;
   sessionFileBytes: number;
+  sessionFileBytesSaved: number;
 }
 
 export type ActorStatusValue = string | number | boolean | [number, number, number];

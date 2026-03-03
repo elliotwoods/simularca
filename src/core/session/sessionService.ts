@@ -1,26 +1,8 @@
 import { createInitialState } from "@/core/defaults";
+import { buildSessionManifest } from "@/core/session/sessionManifest";
 import { parseSession, serializeSession } from "@/core/session/sessionSchema";
-import { SESSION_SCHEMA_VERSION, type SessionManifest } from "@/core/types";
 import type { StorageAdapter } from "@/features/storage/storageAdapter";
-import type { AppStore, AppStoreApi } from "@/core/store/appStore";
-
-function toManifest(state: AppStore["state"], mode: SessionManifest["appMode"]): SessionManifest {
-  const nowIso = new Date().toISOString();
-  return {
-    schemaVersion: SESSION_SCHEMA_VERSION,
-    appMode: mode,
-    sessionName: state.activeSessionName,
-    createdAtIso: nowIso,
-    updatedAtIso: nowIso,
-    scene: structuredClone(state.scene),
-    actors: structuredClone(state.actors),
-    components: structuredClone(state.components),
-    camera: structuredClone(state.camera),
-    cameraBookmarks: structuredClone(state.cameraBookmarks),
-    time: structuredClone(state.time),
-    assets: structuredClone(state.assets)
-  };
-}
+import type { AppStoreApi } from "@/core/store/appStore";
 
 export class SessionService {
   public constructor(
@@ -38,9 +20,14 @@ export class SessionService {
     if (raw.trim() === "{}") {
       const fresh = createInitialState(this.storage.mode, sessionName);
       this.store.getState().actions.hydrate(fresh);
+      this.store.getState().actions.setStats({
+        sessionFileBytes: 0,
+        sessionFileBytesSaved: 0
+      });
       return;
     }
     const manifest = parseSession(raw);
+    const sessionBytes = new Blob([raw]).size;
     this.store.getState().actions.hydrate({
       ...createInitialState(this.storage.mode, sessionName),
       activeSessionName: manifest.sessionName,
@@ -53,6 +40,10 @@ export class SessionService {
       assets: manifest.assets,
       dirty: false
     });
+    this.store.getState().actions.setStats({
+      sessionFileBytes: sessionBytes,
+      sessionFileBytesSaved: sessionBytes
+    });
   }
 
   public async saveSession(): Promise<void> {
@@ -61,10 +52,14 @@ export class SessionService {
     }
 
     const state = this.store.getState().state;
-    const payload = serializeSession(toManifest(state, this.storage.mode));
+    const payload = serializeSession(buildSessionManifest(state, this.storage.mode));
     await this.storage.saveSession(state.activeSessionName, payload);
     this.store.getState().actions.setDirty(false);
-    this.store.getState().actions.setStats({ sessionFileBytes: new Blob([payload]).size });
+    const savedBytes = new Blob([payload]).size;
+    this.store.getState().actions.setStats({
+      sessionFileBytes: savedBytes,
+      sessionFileBytesSaved: savedBytes
+    });
   }
 
   public async saveAs(sessionName: string): Promise<void> {

@@ -12,11 +12,32 @@ export interface SplatOverlayActorState {
   };
 }
 
+export interface SplatOverlayStats {
+  drawCalls: number;
+  triangles: number;
+  points: number;
+  sceneCount: number;
+  totalSplats: number;
+  renderedSplats: number;
+  bufferBytes: number;
+}
+
+const ZERO_SPLAT_OVERLAY_STATS: SplatOverlayStats = {
+  drawCalls: 0,
+  triangles: 0,
+  points: 0,
+  sceneCount: 0,
+  totalSplats: 0,
+  renderedSplats: 0,
+  bufferBytes: 0
+};
+
 export interface SplatOverlayHandle {
   isDedicatedRenderer: boolean;
   syncActors(actors: SplatOverlayActorState[]): Promise<void>;
   setCamera(camera: any): void;
   setSize(width: number, height: number): void;
+  getStats(): SplatOverlayStats;
   update(): void;
   dispose(): void;
 }
@@ -26,6 +47,9 @@ export class NoopSplatOverlay implements SplatOverlayHandle {
   public async syncActors(_actors: SplatOverlayActorState[]): Promise<void> {}
   public setCamera(_camera: any): void {}
   public setSize(_width: number, _height: number): void {}
+  public getStats(): SplatOverlayStats {
+    return ZERO_SPLAT_OVERLAY_STATS;
+  }
   public update(): void {}
   public dispose(): void {}
 }
@@ -80,6 +104,7 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
   private activeCamera: any = null;
   private sceneFormatPly = 2;
   private readonly fallbackMaxRenderDimension = 4096;
+  private cachedStats: SplatOverlayStats = ZERO_SPLAT_OVERLAY_STATS;
 
   public constructor(
     private readonly rootElement: HTMLElement,
@@ -171,6 +196,11 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
     if (typeof this.viewer?.render === "function") {
       this.viewer.render();
     }
+    this.refreshStats();
+  }
+
+  public getStats(): SplatOverlayStats {
+    return this.cachedStats;
   }
 
   public dispose(): void {
@@ -182,6 +212,7 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
     }
     this.actorOrder.splice(0, this.actorOrder.length);
     this.loaded = false;
+    this.cachedStats = ZERO_SPLAT_OVERLAY_STATS;
   }
 
   private async loadModule(): Promise<SplatModuleCandidate> {
@@ -286,5 +317,43 @@ export class DedicatedGaussianSplatOverlay implements SplatOverlayHandle {
     const dimensionLimit = Math.max(1, maxRenderDimension / Math.max(width, height));
     const pixelRatio = Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
     this.viewer.renderer.setPixelRatio(pixelRatio);
+  }
+
+  private refreshStats(): void {
+    if (!this.viewer) {
+      this.cachedStats = ZERO_SPLAT_OVERLAY_STATS;
+      return;
+    }
+    const renderInfo = this.viewer?.renderer?.info?.render;
+    const sceneCount =
+      typeof this.viewer?.getSceneCount === "function"
+        ? Number(this.viewer.getSceneCount())
+        : Number(this.viewer?.splatMesh?.scenes?.length ?? 0);
+    let totalSplats = 0;
+    let bufferBytes = 0;
+    const scenes = this.viewer?.splatMesh?.scenes;
+    if (Array.isArray(scenes)) {
+      for (const scene of scenes) {
+        const count = Number(scene?.splatBuffer?.getSplatCount?.() ?? 0);
+        const bytes = Number(scene?.splatBuffer?.bufferData?.byteLength ?? 0);
+        if (Number.isFinite(count)) {
+          totalSplats += Math.max(0, Math.floor(count));
+        }
+        if (Number.isFinite(bytes)) {
+          bufferBytes += Math.max(0, Math.floor(bytes));
+        }
+      }
+    }
+    const renderedSplats = Number(this.viewer?.splatRenderCount ?? 0);
+
+    this.cachedStats = {
+      drawCalls: Number(renderInfo?.calls ?? 0),
+      triangles: Number(renderInfo?.triangles ?? 0),
+      points: Number(renderInfo?.points ?? 0),
+      sceneCount: Number.isFinite(sceneCount) ? Math.max(0, Math.floor(sceneCount)) : 0,
+      totalSplats,
+      renderedSplats: Number.isFinite(renderedSplats) ? Math.max(0, Math.floor(renderedSplats)) : 0,
+      bufferBytes
+    };
   }
 }
