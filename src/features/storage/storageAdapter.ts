@@ -1,4 +1,4 @@
-import type { DefaultSessionPointer, SessionAssetRef } from "@/types/ipc";
+import type { DaeImportResult, DefaultSessionPointer, SessionAssetRef } from "@/types/ipc";
 
 export interface StorageAdapter {
   readonly mode: "electron-rw" | "web-ro";
@@ -15,6 +15,7 @@ export interface StorageAdapter {
     sourcePath: string;
     kind: SessionAssetRef["kind"];
   }): Promise<SessionAssetRef>;
+  importDae(args: { sessionName: string; sourcePath: string }): Promise<DaeImportResult>;
   importGaussianSplat(args: {
     sessionName: string;
     sourcePath: string;

@@ -44,6 +44,12 @@ export const meshActorDescriptor: ReloadableDescriptor<MeshRuntime> = {
         { label: "Bounds Max (m)", value: runtimeStatus?.values.boundsMax ?? "n/a" },
         { label: "Size (m)", value: runtimeStatus?.values.size ?? "n/a" },
         {
+          label: "Material Slots",
+          value: runtimeStatus?.values.materialSlotNames
+            ? (runtimeStatus.values.materialSlotNames as string[]).join(", ")
+            : "n/a"
+        },
+        {
           label: "Last Update",
           value: runtimeStatus?.updatedAtIso ? new Date(runtimeStatus.updatedAtIso).toLocaleString() : "n/a"
         },

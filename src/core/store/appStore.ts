@@ -12,13 +12,14 @@ import type {
   ConsoleLogEntry,
   ComponentNode,
   LogLevel,
+  Material,
   ParameterValues,
   RenderEngine,
   SceneStats,
   SelectionEntry,
   TimeSpeedPreset
 } from "@/core/types";
-import type { AppMode } from "@/types/ipc";
+import type { AppMode, SessionAssetRef } from "@/types/ipc";
 
 export interface HistoryEntry {
   label: string;
@@ -76,6 +77,8 @@ export interface AppActions {
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
   createMaterial(input?: Partial<Material>): string;
+  createMaterialFromDef(def: Omit<Material, "id">): string;
+  addAssets(assets: SessionAssetRef[]): void;
   updateMaterial(materialId: string, partial: Partial<Omit<Material, "id">>): void;
   deleteMaterial(materialId: string): void;
 }
@@ -689,10 +692,11 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         const newMaterial: Material = {
           id,
           name,
-          albedo: "#ffffff",
-          metalness: 0,
-          roughness: 0.5,
-          emissive: "#000000",
+          albedo: { mode: "color", color: "#ffffff" },
+          metalness: { mode: "scalar", value: 0 },
+          roughness: { mode: "scalar", value: 0.5 },
+          normalMap: null,
+          emissive: { mode: "color", color: "#000000" },
           emissiveIntensity: 0,
           opacity: 1,
           transparent: false,
@@ -709,6 +713,32 @@ export function createAppStore(mode: AppMode): AppStoreApi {
           })
         });
         return id;
+      },
+      createMaterialFromDef(def) {
+        const id = createId("mat");
+        const newMaterial: Material = { id, ...def };
+        set({
+          state: produce(get().state, (draft) => {
+            draft.materials[id] = newMaterial;
+            draft.dirty = true;
+          })
+        });
+        return id;
+      },
+      addAssets(assets) {
+        if (assets.length === 0) {
+          return;
+        }
+        set({
+          state: produce(get().state, (draft) => {
+            for (const asset of assets) {
+              if (!draft.assets.some((a) => a.id === asset.id)) {
+                draft.assets.push(asset);
+              }
+            }
+            draft.dirty = true;
+          })
+        });
       },
       updateMaterial(materialId, partial) {
         withHistory(get, set, "Update material");

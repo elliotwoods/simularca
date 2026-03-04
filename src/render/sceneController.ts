@@ -284,6 +284,7 @@ export class SceneController {
   private readonly gaussianSortableBatchesByActorId = new Map<string, GaussianSortableBatch>();
   private readonly curveSignatureByActorId = new Map<string, string>();
   private readonly lastKnownActorById = new Map<string, ActorNode>();
+  private readonly meshMaterialSigByActorId = new Map<string, string>();
   private readonly plyLoader = new PLYLoader();
   private readonly gltfLoader = new GLTFLoader();
   private readonly fbxLoader = new FBXLoader();
@@ -291,6 +292,8 @@ export class SceneController {
   private readonly objLoader = new OBJLoader();
   private readonly rgbeLoader = new RGBELoader();
   private readonly ktx2Loader = new KTX2Loader();
+  private readonly textureLoader = new THREE.TextureLoader();
+  private readonly textureByUrl = new Map<string, THREE.Texture>();
   private gaussianSpriteTexture: any | null = null;
   private currentEnvironmentAssetId: string | null = null;
   private currentEnvironmentReloadToken = 0;
@@ -348,6 +351,7 @@ export class SceneController {
         this.gaussianTriangleCountByActorId.delete(existing);
         this.gaussianSortableBatchesByActorId.delete(existing);
         this.curveSignatureByActorId.delete(existing);
+        this.meshMaterialSigByActorId.delete(existing);
         this.kernel.store.getState().actions.setActorStatus(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
         this.lastKnownActorById.delete(existing);
@@ -363,6 +367,7 @@ export class SceneController {
       }
       if (actor.actorType === "mesh") {
         await this.syncMeshAsset(actor);
+        this.syncMeshMaterials(actor, state);
       }
       if (actor.actorType === "primitive") {
         this.syncPrimitiveActor(actor);
@@ -838,6 +843,19 @@ export class SceneController {
     return { texture: this.scene.environment, name: closestEnv?.name ?? "Default" };
   }
 
+  private buildAssetUrl(sessionName: string, relativePath: string): string {
+    return `simularcaasset://${encodeURIComponent(sessionName)}/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
+  private loadCachedTexture(url: string, colorSpace = THREE.LinearSRGBColorSpace): THREE.Texture {
+    if (!this.textureByUrl.has(url)) {
+      const tex = this.textureLoader.load(url);
+      tex.colorSpace = colorSpace;
+      this.textureByUrl.set(url, tex);
+    }
+    return this.textureByUrl.get(url)!;
+  }
+
   private getMaterial(materialId: string | undefined, actorId: string): THREE.MeshStandardMaterial {
     const state = this.kernel.store.getState().state;
     const materialData = materialId ? state.materials[materialId] : null;
@@ -852,10 +870,64 @@ export class SceneController {
       this.materialByMaterialId.set(materialData.id, material);
     }
 
-    material.color.set(materialData.albedo);
-    material.metalness = materialData.metalness;
-    material.roughness = materialData.roughness;
-    material.emissive.set(materialData.emissive);
+    // Albedo channel
+    if (materialData.albedo.mode === "color") {
+      material.color.set(materialData.albedo.color);
+      material.map = null;
+    } else {
+      const asset = state.assets.find((a) => a.id === materialData.albedo.assetId && a.kind === "image");
+      if (asset) {
+        material.map = this.loadCachedTexture(this.buildAssetUrl(state.activeSessionName, asset.relativePath), THREE.SRGBColorSpace);
+        material.color.set(0xffffff);
+      }
+    }
+
+    // Roughness channel
+    if (materialData.roughness.mode === "scalar") {
+      material.roughness = materialData.roughness.value;
+      material.roughnessMap = null;
+    } else {
+      const asset = state.assets.find((a) => a.id === materialData.roughness.assetId && a.kind === "image");
+      if (asset) {
+        material.roughnessMap = this.loadCachedTexture(this.buildAssetUrl(state.activeSessionName, asset.relativePath));
+        material.roughness = 1;
+      }
+    }
+
+    // Metalness channel
+    if (materialData.metalness.mode === "scalar") {
+      material.metalness = materialData.metalness.value;
+      material.metalnessMap = null;
+    } else {
+      const asset = state.assets.find((a) => a.id === materialData.metalness.assetId && a.kind === "image");
+      if (asset) {
+        material.metalnessMap = this.loadCachedTexture(this.buildAssetUrl(state.activeSessionName, asset.relativePath));
+        material.metalness = 1;
+      }
+    }
+
+    // Normal map
+    if (materialData.normalMap) {
+      const asset = state.assets.find((a) => a.id === materialData.normalMap!.assetId && a.kind === "image");
+      if (asset) {
+        material.normalMap = this.loadCachedTexture(this.buildAssetUrl(state.activeSessionName, asset.relativePath));
+        material.normalMapType = THREE.TangentSpaceNormalMap;
+      }
+    } else {
+      material.normalMap = null;
+    }
+
+    // Emissive channel
+    if (materialData.emissive.mode === "color") {
+      material.emissive.set(materialData.emissive.color);
+      material.emissiveMap = null;
+    } else {
+      const asset = state.assets.find((a) => a.id === materialData.emissive.assetId && a.kind === "image");
+      if (asset) {
+        material.emissiveMap = this.loadCachedTexture(this.buildAssetUrl(state.activeSessionName, asset.relativePath), THREE.SRGBColorSpace);
+      }
+    }
+
     material.emissiveIntensity = materialData.emissiveIntensity;
     material.opacity = materialData.opacity;
     material.transparent = materialData.transparent;
@@ -872,6 +944,98 @@ export class SceneController {
     material.needsUpdate = true;
 
     return material;
+  }
+
+  private getMeshSlotNames(object: any): string[] {
+    const slotNames = new Set<string>();
+    object.traverse((node: any) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const m of mats) {
+        if (m?.name) slotNames.add(m.name);
+      }
+    });
+    return Array.from(slotNames);
+  }
+
+  private applyMeshMaterials(actor: ActorNode, object: any, extension: string): void {
+    const DEFAULT_MATERIAL_ID = "mat.plastic.white.glossy";
+    const materialOverrideId = typeof actor.params.materialId === "string" ? actor.params.materialId : undefined;
+    const materialSlots = (typeof actor.params.materialSlots === "object" && actor.params.materialSlots !== null
+      ? actor.params.materialSlots
+      : {}) as Record<string, string>;
+    const isDae = extension === "dae";
+    const env = this.resolveEnvironment(actor.id);
+
+    object.traverse((node: any) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      node.castShadow = true;
+      node.receiveShadow = true;
+
+      if (materialOverrideId) {
+        node.material = Array.isArray(node.material)
+          ? node.material.map(() => this.getMaterial(materialOverrideId, actor.id))
+          : this.getMaterial(materialOverrideId, actor.id);
+      } else if (isDae) {
+        node.material = Array.isArray(node.material)
+          ? node.material.map((m: any) => this.getMaterial(materialSlots[m?.name ?? ""] ?? DEFAULT_MATERIAL_ID, actor.id))
+          : this.getMaterial(materialSlots[(node.material as any)?.name ?? ""] ?? DEFAULT_MATERIAL_ID, actor.id);
+      } else {
+        const applyIfAssigned = (m: any) => {
+          const slotId = materialSlots[m?.name ?? ""];
+          if (slotId) return this.getMaterial(slotId, actor.id);
+          if (m instanceof THREE.MeshStandardMaterial) {
+            m.envMap = env.texture;
+            m.needsUpdate = true;
+          }
+          return m;
+        };
+        node.material = Array.isArray(node.material)
+          ? node.material.map(applyIfAssigned)
+          : applyIfAssigned(node.material);
+      }
+    });
+  }
+
+  private reapplyMeshMaterials(actor: ActorNode): void {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) return;
+    const renderRoot = object.getObjectByName(MESH_RENDER_ROOT_NAME);
+    if (!(renderRoot instanceof THREE.Group) || renderRoot.children.length === 0) return;
+    const loadedObject = renderRoot.children[0];
+    if (!loadedObject) return;
+    const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+    const state = this.kernel.store.getState().state;
+    const asset = state.assets.find((entry) => entry.id === assetId);
+    const extension = asset?.relativePath.split(".").pop()?.toLowerCase() ?? "";
+    this.applyMeshMaterials(actor, loadedObject, extension);
+  }
+
+  private syncMeshMaterials(actor: ActorNode, state: AppState): void {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) return;
+    const renderRoot = object.getObjectByName(MESH_RENDER_ROOT_NAME);
+    if (!(renderRoot instanceof THREE.Group) || renderRoot.children.length === 0) return;
+
+    // Build a signature from material-relevant params and referenced material data
+    const materialSlots = actor.params.materialSlots;
+    const materialId = actor.params.materialId;
+    const referencedMaterialIds = new Set<string>();
+    if (typeof materialId === "string" && materialId) referencedMaterialIds.add(materialId);
+    if (typeof materialSlots === "object" && materialSlots !== null) {
+      for (const v of Object.values(materialSlots as Record<string, unknown>)) {
+        if (typeof v === "string" && v) referencedMaterialIds.add(v);
+      }
+    }
+    const materialHash = Array.from(referencedMaterialIds)
+      .sort()
+      .map((id) => JSON.stringify(state.materials[id]))
+      .join("|");
+    const sig = JSON.stringify({ slots: materialSlots, override: materialId, mats: materialHash });
+
+    if (sig === this.meshMaterialSigByActorId.get(actor.id)) return;
+    this.meshMaterialSigByActorId.set(actor.id, sig);
+    this.reapplyMeshMaterials(actor);
   }
 
   private createPrimitiveMesh(actor: ActorNode): any {
@@ -1342,21 +1506,7 @@ export class SceneController {
       renderRoot.clear();
       renderRoot.add(loadedObject);
 
-      const materialId = typeof actor.params.materialId === "string" ? actor.params.materialId : undefined;
-      const env = this.resolveEnvironment(actor.id);
-
-      loadedObject.traverse((node: any) => {
-        if (node instanceof THREE.Mesh) {
-          node.castShadow = true;
-          node.receiveShadow = true;
-          if (materialId) {
-            node.material = this.getMaterial(materialId, actor.id);
-          } else if (node.material instanceof THREE.MeshStandardMaterial) {
-            node.material.envMap = env.texture;
-            node.material.needsUpdate = true;
-          }
-        }
-      });
+      this.applyMeshMaterials(actor, loadedObject, extension);
       const bounds = new THREE.Box3().setFromObject(loadedObject);
       const size = new THREE.Vector3();
       bounds.getSize(size);
@@ -1378,6 +1528,8 @@ export class SceneController {
           triangleCount += Math.floor(positionCount / 3);
         }
       });
+      const slotNames = this.getMeshSlotNames(loadedObject);
+      const env = this.resolveEnvironment(actor.id);
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
           format: extension || "unknown",
@@ -1388,7 +1540,7 @@ export class SceneController {
           boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
           boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z],
           size: [size.x, size.y, size.z],
-          material: materialId ?? "Original",
+          materialSlotNames: slotNames,
           environment: env.name
         },
         updatedAtIso: new Date().toISOString()

@@ -1,9 +1,87 @@
 import React, { useState } from "react";
 import { useAppStore } from "@/app/useAppStore";
-import { Material } from "@/core/types";
-import { ColorField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
+import type { MaterialColorChannel, MaterialScalarChannel } from "@/core/types";
+import { ColorField, ImageRefField, NumberField, SelectField, TextField, ToggleField } from "@/ui/widgets";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faPlus, faTrash, faXmark } from "@fortawesome/free-solid-svg-icons";
+
+interface MaterialChannelColorProps {
+  label: string;
+  channel: MaterialColorChannel;
+  onChange: (channel: MaterialColorChannel) => void;
+}
+
+const MaterialChannelColor: React.FC<MaterialChannelColorProps> = ({ label, channel, onChange }) => (
+  <div className="material-channel-field">
+    <div className="material-channel-toggle">
+      <span className="widget-label">{label}</span>
+      <div className="segmented-control-mini">
+        <button
+          className={`segmented-btn ${channel.mode === "color" ? "active" : ""}`}
+          onClick={() => onChange({ mode: "color", color: channel.mode === "color" ? channel.color : "#ffffff" })}
+        >Color</button>
+        <button
+          className={`segmented-btn ${channel.mode === "image" ? "active" : ""}`}
+          onClick={() => onChange({ mode: "image", assetId: channel.mode === "image" ? channel.assetId : "" })}
+        >Image</button>
+      </div>
+    </div>
+    {channel.mode === "color" ? (
+      <ColorField
+        label=""
+        value={channel.color}
+        onChange={(val) => onChange({ mode: "color", color: val })}
+      />
+    ) : (
+      <ImageRefField
+        value={channel.assetId || null}
+        onChange={(id) => onChange({ mode: "image", assetId: id ?? "" })}
+      />
+    )}
+  </div>
+);
+
+interface MaterialChannelScalarProps {
+  label: string;
+  channel: MaterialScalarChannel;
+  min?: number;
+  max?: number;
+  step?: number;
+  onChange: (channel: MaterialScalarChannel) => void;
+}
+
+const MaterialChannelScalar: React.FC<MaterialChannelScalarProps> = ({ label, channel, min, max, step, onChange }) => (
+  <div className="material-channel-field">
+    <div className="material-channel-toggle">
+      <span className="widget-label">{label}</span>
+      <div className="segmented-control-mini">
+        <button
+          className={`segmented-btn ${channel.mode === "scalar" ? "active" : ""}`}
+          onClick={() => onChange({ mode: "scalar", value: channel.mode === "scalar" ? channel.value : 0.5 })}
+        >Value</button>
+        <button
+          className={`segmented-btn ${channel.mode === "image" ? "active" : ""}`}
+          onClick={() => onChange({ mode: "image", assetId: channel.mode === "image" ? channel.assetId : "" })}
+        >Image</button>
+      </div>
+    </div>
+    {channel.mode === "scalar" ? (
+      <NumberField
+        label=""
+        value={channel.value}
+        min={min}
+        max={max}
+        step={step ?? 0.01}
+        onChange={(val) => onChange({ mode: "scalar", value: val })}
+      />
+    ) : (
+      <ImageRefField
+        value={channel.assetId || null}
+        onChange={(id) => onChange({ mode: "image", assetId: id ?? "" })}
+      />
+    )}
+  </div>
+);
 
 interface MaterialsModalProps {
   open: boolean;
@@ -61,7 +139,7 @@ export const MaterialsModal: React.FC<MaterialsModalProps> = ({ open, onClose })
                 >
                   <div
                     className="material-preview-swatch"
-                    style={{ backgroundColor: mat.albedo, opacity: mat.opacity }}
+                    style={{ backgroundColor: mat.albedo.mode === "color" ? mat.albedo.color : "transparent", opacity: mat.opacity }}
                   />
                   <span className="material-name">{mat.name}</span>
                   <button className="material-delete-btn" onClick={(e) => handleDelete(mat.id, e)}>
@@ -80,34 +158,35 @@ export const MaterialsModal: React.FC<MaterialsModalProps> = ({ open, onClose })
                   value={selectedMaterial.name}
                   onChange={(val) => actions.updateMaterial(selectedMaterial.id, { name: val })}
                 />
-                <ColorField
+                <MaterialChannelColor
                   label="Albedo"
-                  value={selectedMaterial.albedo}
-                  onChange={(val) => actions.updateMaterial(selectedMaterial.id, { albedo: val })}
+                  channel={selectedMaterial.albedo}
+                  onChange={(ch) => actions.updateMaterial(selectedMaterial.id, { albedo: ch })}
+                />
+                <MaterialChannelScalar
+                  label="Metalness"
+                  channel={selectedMaterial.metalness}
+                  min={0}
+                  max={1}
+                  onChange={(ch) => actions.updateMaterial(selectedMaterial.id, { metalness: ch })}
+                />
+                <MaterialChannelScalar
+                  label="Roughness"
+                  channel={selectedMaterial.roughness}
+                  min={0}
+                  max={1}
+                  onChange={(ch) => actions.updateMaterial(selectedMaterial.id, { roughness: ch })}
+                />
+                <ImageRefField
+                  label="Normal Map"
+                  value={selectedMaterial.normalMap?.assetId ?? null}
+                  onChange={(id) => actions.updateMaterial(selectedMaterial.id, { normalMap: id ? { assetId: id } : null })}
                 />
                 <div className="material-editor-row">
-                  <NumberField
-                    label="Metalness"
-                    value={selectedMaterial.metalness}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    onChange={(val) => actions.updateMaterial(selectedMaterial.id, { metalness: val })}
-                  />
-                  <NumberField
-                    label="Roughness"
-                    value={selectedMaterial.roughness}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    onChange={(val) => actions.updateMaterial(selectedMaterial.id, { roughness: val })}
-                  />
-                </div>
-                <div className="material-editor-row">
-                  <ColorField
+                  <MaterialChannelColor
                     label="Emissive"
-                    value={selectedMaterial.emissive}
-                    onChange={(val) => actions.updateMaterial(selectedMaterial.id, { emissive: val })}
+                    channel={selectedMaterial.emissive}
+                    onChange={(ch) => actions.updateMaterial(selectedMaterial.id, { emissive: ch })}
                   />
                   <NumberField
                     label="Intensity"

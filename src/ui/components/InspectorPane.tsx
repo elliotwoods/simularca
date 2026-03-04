@@ -36,6 +36,7 @@ import {
 import { curveDataWithOverrides } from "@/features/curves/model";
 import { importFileForActorParam } from "@/features/imports/fileParameterImport";
 import { StatsBlock } from "@/ui/components/StatsBlock";
+import type { StatsGroup, StatsRow } from "@/ui/components/StatsBlock";
 import {
   ActorRefField,
   ActorRefListField,
@@ -176,7 +177,11 @@ function getDefaultStatusEntries(actor: ActorNode, runtimeStatus?: ActorRuntimeS
 
 function formatStatusValue(value: ActorStatusEntry["value"]): string {
   if (Array.isArray(value)) {
-    return `${value[0].toFixed(3)}, ${value[1].toFixed(3)}, ${value[2].toFixed(3)}`;
+    if (value.length > 0 && typeof value[0] === "string") {
+      return (value as string[]).join(", ");
+    }
+    const nums = value as [number, number, number];
+    return `${nums[0].toFixed(3)}, ${nums[1].toFixed(3)}, ${nums[2].toFixed(3)}`;
   }
   if (typeof value === "number") {
     return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(3).replace(/\.?0+$/, "");
@@ -188,6 +193,64 @@ function formatStatusValue(value: ActorStatusEntry["value"]): string {
     return "n/a";
   }
   return value;
+}
+
+function groupStatusLabel(label: string): string {
+  if (label === "Type" || label === "Enabled" || label === "Children" || label === "Components" || label === "Load State") {
+    return "Core";
+  }
+  if (label === "Updated" || label === "Error") {
+    return "Meta";
+  }
+  if (
+    label === "Sim Time Seconds" ||
+    label === "Dt Seconds" ||
+    label === "Time Advancing" ||
+    label === "Motion Phase Raw" ||
+    label === "Motion Phase Wrapped" ||
+    label === "Motion Angular" ||
+    label === "Motion Sine" ||
+    label === "Motion Turns Applied" ||
+    label.startsWith("Wheel Motion ")
+  ) {
+    return "Motion";
+  }
+  if (
+    label === "Wheel Rotation Deg" ||
+    label === "Wheel Base Rotation Deg" ||
+    label === "Expected Vs Current Angle Deg" ||
+    label === "Base Reconciled This Frame" ||
+    label === "Pin Radius"
+  ) {
+    return "Wheel";
+  }
+  if (label.startsWith("Thread ") || label.startsWith("First ") || label === "Pulley Lines") {
+    return "Thread";
+  }
+  if (label.startsWith("Pivot ")) {
+    return "Pivot";
+  }
+  if (label.startsWith("Pin ")) {
+    return "Pins";
+  }
+  return "Other";
+}
+
+function buildStatusGroups(rows: StatsRow[]): StatsGroup[] {
+  const order = ["Core", "Motion", "Wheel", "Thread", "Pivot", "Pins", "Meta", "Other"];
+  const grouped = new Map<string, StatsRow[]>();
+  for (const row of rows) {
+    const bucket = groupStatusLabel(row.label);
+    const existing = grouped.get(bucket);
+    if (existing) {
+      existing.push(row);
+    } else {
+      grouped.set(bucket, [row]);
+    }
+  }
+  return order
+    .map((label) => ({ label, rows: grouped.get(label) ?? [] }))
+    .filter((group) => group.rows.length > 0);
 }
 
 function defaultValueForDefinition(definition: ParameterDefinition): BindingValue {
@@ -1019,6 +1082,12 @@ export function InspectorPane() {
   const visibleStatusEntries = statusEntries.filter(
     (entry) => entry.value !== null && entry.value !== undefined && entry.value !== ""
   );
+  const statusRows: StatsRow[] = visibleStatusEntries.map((entry) => ({
+    label: entry.label,
+    value: formatStatusValue(entry.value),
+    tone: entry.tone === "error" ? "error" : entry.tone === "warning" ? "warning" : "default"
+  }));
+  const statusGroups = singleSelection ? buildStatusGroups(statusRows) : [];
   const enabledValues = actorSelection.map((actor) => actor.enabled);
   const enabledMixed = enabledValues.some((value) => value !== enabledValues[0]);
   const enabledValue = enabledValues[0] ?? true;
@@ -1550,6 +1619,33 @@ export function InspectorPane() {
           );
         }
 
+        if (definition.type === "material-slots") {
+          const slotNames = (runtimeStatus?.values.materialSlotNames as string[] | undefined) ?? [];
+          const currentSlots = (typeof current === "object" && current !== null && !Array.isArray(current)
+            ? current
+            : {}) as Record<string, string>;
+          return (
+            <div key={definition.key} className="material-slots-field">
+              <label className="widget-label">{definition.label}</label>
+              {slotNames.length === 0 ? (
+                <div className="panel-empty-inline">No slots detected</div>
+              ) : (
+                slotNames.map((slotName) => (
+                  <MaterialRefField
+                    key={slotName}
+                    label={slotName}
+                    value={currentSlots[slotName] ?? ""}
+                    onChange={(next) => {
+                      const updated = { ...currentSlots, [slotName]: next };
+                      updateSelectedActorParams(definition.key, updated);
+                    }}
+                  />
+                ))
+              )}
+            </div>
+          );
+        }
+
         if (definition.type === "file") {
           const assetId = typeof current === "string" ? current : "";
           const asset = mixed ? undefined : assets.find((entry) => entry.id === assetId);
@@ -1578,16 +1674,21 @@ export function InspectorPane() {
                       return;
                     }
 
-                    const importedAsset = await importFileForActorParam(kernel, {
+                    const imported = await importFileForActorParam(kernel, {
                       sessionName,
                       sourcePath,
                       definition
                     });
 
-                    updateSelectedActorParams(definition.key, importedAsset.id);
+                    updateSelectedActorParams(definition.key, imported.asset.id);
+                    if (imported.extraParams) {
+                      for (const [key, value] of Object.entries(imported.extraParams)) {
+                        updateSelectedActorParams(key, value as ParameterValue);
+                      }
+                    }
                     kernel.store
                       .getState()
-                      .actions.setStatus(`${definition.label} imported: ${importedAsset.sourceFileName}`);
+                      .actions.setStatus(`${definition.label} imported: ${imported.asset.sourceFileName}`);
                   } catch (error) {
                     const message = error instanceof Error ? error.message : "Unknown file import error";
                     kernel.store.getState().actions.setStatus(`Unable to import ${definition.label}: ${message}`);
@@ -1624,11 +1725,8 @@ export function InspectorPane() {
           className="inspector-debug-card"
           titleLevel="h4"
           emptyText="No status available."
-          rows={visibleStatusEntries.map((entry) => ({
-            label: entry.label,
-            value: formatStatusValue(entry.value),
-            tone: entry.tone === "error" ? "error" : entry.tone === "warning" ? "warning" : "default"
-          }))}
+          rows={statusRows}
+          groups={statusGroups}
           onCopySuccess={(label) => {
             kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
           }}

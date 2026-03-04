@@ -4,8 +4,15 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import type { DefaultSessionPointer, FileDialogFilter, HdriTranscodeOptions, SessionAssetRef } from "../src/types/ipc";
+import type { DefaultSessionPointer, DaeImportResult, FileDialogFilter, HdriTranscodeOptions, SessionAssetRef } from "../src/types/ipc";
 import { createSplatBinaryV1 } from "./splatBinaryFormat.js";
+
+const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"]);
+// 1×1 transparent PNG
+const FALLBACK_IMAGE_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=",
+  "base64"
+);
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_DEV = Boolean(DEV_SERVER_URL);
@@ -262,6 +269,19 @@ async function registerAssetProtocol(): Promise<void> {
         }
       });
     } catch (error) {
+      // For missing image files, return transparent PNG fallback instead of 404
+      try {
+        const parsed = new URL(request.url);
+        const ext = path.extname(parsed.pathname).toLowerCase();
+        if (IMAGE_EXTENSIONS.has(ext)) {
+          return new Response(FALLBACK_IMAGE_PNG, {
+            status: 200,
+            headers: { "content-type": "image/png" }
+          });
+        }
+      } catch {
+        // ignore
+      }
       void writeRuntimeLog("asset-protocol", "Failed to resolve request", {
         url: request.url,
         error
@@ -1088,6 +1108,182 @@ function registerIpcHandlers(): void {
         byteSize: stat.size
       };
       return assetRef;
+    }
+  );
+
+  ipcMain.handle(
+    "asset:import-dae",
+    async (
+      _event,
+      args: {
+        sessionName: string;
+        sourcePath: string;
+      }
+    ): Promise<DaeImportResult> => {
+      await ensureSessionDirectory(args.sessionName);
+
+      // 1. Copy the .dae file as a generic asset
+      const sourceFileName = path.basename(args.sourcePath);
+      const extension = path.extname(sourceFileName);
+      const daeTargetName = `${Date.now()}-${randomUUID()}${extension}`;
+      const genericDir = getAssetDirectory(args.sessionName, "generic");
+      await fs.mkdir(genericDir, { recursive: true });
+      const daeTargetPath = path.join(genericDir, daeTargetName);
+      await fs.copyFile(args.sourcePath, daeTargetPath);
+      const daeStat = await fs.stat(daeTargetPath);
+      const daeRelPath = path.relative(getSessionDirectory(args.sessionName), daeTargetPath).replaceAll("\\", "/");
+      const daeAsset: SessionAssetRef = {
+        id: randomUUID(),
+        kind: "generic",
+        encoding: "raw",
+        relativePath: daeRelPath,
+        sourceFileName,
+        byteSize: daeStat.size
+      };
+
+      // 2. Parse DAE XML for texture references and material definitions
+      const daeText = await fs.readFile(args.sourcePath, "utf8");
+      const sourceDir = path.dirname(args.sourcePath);
+      const imageDir = getAssetDirectory(args.sessionName, "image");
+      await fs.mkdir(imageDir, { recursive: true });
+
+      // Extract image paths from <init_from> elements
+      const initFromMatches = [...daeText.matchAll(/<init_from>\s*([^<]+?)\s*<\/init_from>/g)];
+      const imageAssets: SessionAssetRef[] = [];
+      const imageIdBySourceName = new Map<string, string>(); // source filename -> asset id
+
+      for (const match of initFromMatches) {
+        const rawRef = (match[1] ?? "").trim();
+        // Strip file:// prefix and URL-decode
+        const decoded = decodeURIComponent(rawRef.replace(/^file:\/\/\//i, ""));
+        const imgPath = path.isAbsolute(decoded) ? decoded : path.join(sourceDir, decoded);
+        const imgName = path.basename(imgPath);
+        if (imageIdBySourceName.has(imgName)) continue;
+        try {
+          await fs.access(imgPath);
+          const imgTargetName = `${Date.now()}-${randomUUID()}${path.extname(imgName)}`;
+          const imgTargetPath = path.join(imageDir, imgTargetName);
+          await fs.copyFile(imgPath, imgTargetPath);
+          const imgStat = await fs.stat(imgTargetPath);
+          const imgRelPath = path.relative(getSessionDirectory(args.sessionName), imgTargetPath).replaceAll("\\", "/");
+          const imgAsset: SessionAssetRef = {
+            id: randomUUID(),
+            kind: "image",
+            encoding: "raw",
+            relativePath: imgRelPath,
+            sourceFileName: imgName,
+            byteSize: imgStat.size
+          };
+          imageAssets.push(imgAsset);
+          imageIdBySourceName.set(imgName, imgAsset.id);
+        } catch {
+          // File not accessible; skip
+        }
+      }
+
+      // 3. Extract image ID mapping from <library_images>: DAE image id -> asset id
+      const daeImageIdToAssetId = new Map<string, string>();
+      const imageElems = [...daeText.matchAll(/<image\s+id="([^"]+)"[^>]*>[\s\S]*?<init_from>\s*([^<]+?)\s*<\/init_from>/g)];
+      for (const m of imageElems) {
+        const daeImgId = m[1] ?? "";
+        const rawRef = (m[2] ?? "").trim();
+        const decoded = decodeURIComponent(rawRef.replace(/^file:\/\/\//i, ""));
+        const imgName = path.basename(decoded);
+        const assetId = imageIdBySourceName.get(imgName);
+        if (assetId) daeImageIdToAssetId.set(daeImgId, assetId);
+      }
+
+      // 4. Map effect texture sampler -> image id
+      const samplerToImageId = new Map<string, string>();
+      const samplerMatches = [...daeText.matchAll(/<newparam\s+sid="([^"]+)"[\s\S]*?<surface[\s\S]*?<init_from>\s*([^<\s]+)\s*<\/init_from>/g)];
+      for (const m of samplerMatches) {
+        const sid = m[1] ?? "";
+        const imgId = (m[2] ?? "").trim();
+        const assetId = daeImageIdToAssetId.get(imgId);
+        if (assetId) samplerToImageId.set(sid, assetId);
+      }
+
+      // 5. Parse library_effects to get per-effect channel data
+      const effectById = new Map<string, {
+        albedo: { mode: "color"; color: string } | { mode: "image"; assetId: string };
+        roughness: number;
+        metalness: number;
+        normalMapAssetId: string | null;
+        emissive: string;
+      }>();
+
+      const effectMatches = [...daeText.matchAll(/<effect\s+id="([^"]+)"[\s\S]*?(?=<effect\s+id=|<\/library_effects>)/g)];
+      for (const em of effectMatches) {
+        const effectId = em[1] ?? "";
+        const effectBody = em[0];
+
+        // Diffuse color or texture
+        let albedo: { mode: "color"; color: string } | { mode: "image"; assetId: string } = { mode: "color", color: "#ffffff" };
+        const diffuseTexMatch = effectBody.match(/<diffuse>[\s\S]*?<texture\s+texture="([^"]+)"/);
+        if (diffuseTexMatch) {
+          const samplerRef = diffuseTexMatch[1] ?? "";
+          const assetId = samplerToImageId.get(samplerRef);
+          if (assetId) albedo = { mode: "image", assetId };
+        } else {
+          const diffuseColorMatch = effectBody.match(/<diffuse>[\s\S]*?<color[^>]*>\s*([\d.\s-]+)\s*<\/color>/);
+          if (diffuseColorMatch) {
+            const parts = (diffuseColorMatch[1] ?? "").trim().split(/\s+/).map(Number);
+            const r = Math.round((parts[0] ?? 1) * 255).toString(16).padStart(2, "0");
+            const g = Math.round((parts[1] ?? 1) * 255).toString(16).padStart(2, "0");
+            const b = Math.round((parts[2] ?? 1) * 255).toString(16).padStart(2, "0");
+            albedo = { mode: "color", color: `#${r}${g}${b}` };
+          }
+        }
+
+        // Emissive color
+        let emissive = "#000000";
+        const emissiveColorMatch = effectBody.match(/<emission>[\s\S]*?<color[^>]*>\s*([\d.\s-]+)\s*<\/color>/);
+        if (emissiveColorMatch) {
+          const parts = (emissiveColorMatch[1] ?? "").trim().split(/\s+/).map(Number);
+          const r = Math.round(Math.min(1, parts[0] ?? 0) * 255).toString(16).padStart(2, "0");
+          const g = Math.round(Math.min(1, parts[1] ?? 0) * 255).toString(16).padStart(2, "0");
+          const b = Math.round(Math.min(1, parts[2] ?? 0) * 255).toString(16).padStart(2, "0");
+          emissive = `#${r}${g}${b}`;
+        }
+
+        // Shininess → roughness heuristic
+        let roughness = 0.5;
+        const shinyMatch = effectBody.match(/<shininess>[\s\S]*?<float[^>]*>\s*([\d.]+)\s*<\/float>/);
+        if (shinyMatch) {
+          const shininess = Math.max(0, parseFloat(shinyMatch[1] ?? "0"));
+          roughness = Math.max(0, Math.min(1, 1 - Math.sqrt(shininess / 128)));
+        }
+
+        effectById.set(effectId, { albedo, roughness, metalness: 0, normalMapAssetId: null, emissive });
+      }
+
+      // 6. Map material name -> effect id
+      const materialEffectMap = new Map<string, string>();
+      const matEffectMatches = [...daeText.matchAll(/<material\s+id="([^"]+)"[^>]*>[\s\S]*?<instance_effect\s+url="#([^"]+)"/g)];
+      for (const m of matEffectMatches) {
+        materialEffectMap.set(m[1] ?? "", m[2] ?? "");
+      }
+
+      // 7. Build material definitions and slot mapping
+      const materialDefs: DaeImportResult["materialDefs"] = [];
+      const materialSlots: Record<string, string> = {};
+
+      for (const [matName, effectId] of materialEffectMap.entries()) {
+        const effect = effectById.get(effectId);
+        const matId = `mat.${randomUUID()}`;
+        materialDefs.push({
+          id: matId,
+          name: matName,
+          albedo: effect?.albedo ?? { mode: "color", color: "#ffffff" },
+          roughness: effect?.roughness ?? 0.5,
+          metalness: effect?.metalness ?? 0,
+          normalMapAssetId: effect?.normalMapAssetId ?? null,
+          emissive: effect?.emissive ?? "#000000"
+        });
+        materialSlots[matName] = matId;
+      }
+
+      return { asset: daeAsset, imageAssets, materialDefs, materialSlots };
     }
   );
 

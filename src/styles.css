@@ -1118,6 +1118,52 @@ select {
   color: var(--text-muted);
 }
 
+.stats-groups {
+  display: grid;
+  gap: 6px;
+}
+
+.stats-group {
+  border: 0;
+  background: transparent;
+}
+
+.stats-group > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 5px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid transparent;
+}
+
+.stats-group[open] > summary {
+  border-bottom-color: var(--line);
+}
+
+.stats-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stats-list.stats-list-group {
+  padding: 2px 0 4px 0;
+  margin-left: 10px;
+}
+
+.stats-list.stats-list-group div {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.stats-list.stats-list-group dd,
+.stats-list.stats-list-flat dd {
+  margin-right: 0;
+  padding-right: 0;
+}
+
 .stats-value-error {
   color: var(--danger);
 }

@@ -125,6 +125,11 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
       key: "materialId",
       label: "Material Override",
       type: "material-ref"
+    },
+    {
+      key: "materialSlots",
+      label: "Material Slots",
+      type: "material-slots"
     }
   ]
 };

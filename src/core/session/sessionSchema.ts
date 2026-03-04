@@ -46,13 +46,26 @@ const componentSchema = z.object({
   params: z.record(parameterValueSchema)
 });
 
+const materialColorChannelSchema = z.union([
+  z.object({ mode: z.literal("color"), color: z.string() }),
+  z.object({ mode: z.literal("image"), assetId: z.string() }),
+  z.string().transform((color) => ({ mode: "color" as const, color }))
+]);
+
+const materialScalarChannelSchema = z.union([
+  z.object({ mode: z.literal("scalar"), value: z.number() }),
+  z.object({ mode: z.literal("image"), assetId: z.string() }),
+  z.number().transform((value) => ({ mode: "scalar" as const, value }))
+]);
+
 const materialSchema = z.object({
   id: z.string(),
   name: z.string(),
-  albedo: z.string(),
-  metalness: z.number(),
-  roughness: z.number(),
-  emissive: z.string(),
+  albedo: materialColorChannelSchema,
+  metalness: materialScalarChannelSchema,
+  roughness: materialScalarChannelSchema,
+  normalMap: z.object({ assetId: z.string() }).nullable().default(null),
+  emissive: materialColorChannelSchema,
   emissiveIntensity: z.number(),
   opacity: z.number(),
   transparent: z.boolean(),
@@ -115,7 +128,7 @@ const sessionSchema = z.object({
   assets: z.array(
     z.object({
       id: z.string(),
-      kind: z.enum(["hdri", "gaussian-splat", "generic"]),
+      kind: z.enum(["hdri", "gaussian-splat", "generic", "image"]),
       encoding: z.enum(["raw", "ktx2", "splatbin-v1"]).optional(),
       relativePath: z.string(),
       sourceFileName: z.string(),

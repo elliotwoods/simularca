@@ -43,6 +43,9 @@ export function createWebStorageAdapter(): StorageAdapter {
     }) {
       throw new Error("Read-only mode: assets cannot be imported.");
     },
+    async importDae() {
+      throw new Error("Read-only mode: DAE assets cannot be imported.");
+    },
     async importGaussianSplat() {
       throw new Error("Read-only mode: Gaussian splats cannot be imported.");
     },

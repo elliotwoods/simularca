@@ -9,4 +9,5 @@ export { SegmentedControl } from "@/ui/widgets/SegmentedControl";
 export { SelectField } from "@/ui/widgets/SelectField";
 export { TextField } from "@/ui/widgets/TextField";
 export { ToggleField } from "@/ui/widgets/ToggleField";
+export { ImageRefField } from "@/ui/widgets/ImageRefField";
 export { MaterialRefField } from "@/ui/widgets/MaterialRefField";

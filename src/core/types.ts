@@ -14,13 +14,22 @@ export type ActorType =
   | "curve"
   | "plugin";
 
+export type MaterialColorChannel =
+  | { mode: "color"; color: string }
+  | { mode: "image"; assetId: string };
+
+export type MaterialScalarChannel =
+  | { mode: "scalar"; value: number }
+  | { mode: "image"; assetId: string };
+
 export interface Material {
   id: string;
   name: string;
-  albedo: string; // Hex color
-  metalness: number; // 0-1
-  roughness: number; // 0-1
-  emissive: string; // Hex color
+  albedo: MaterialColorChannel;
+  metalness: MaterialScalarChannel;
+  roughness: MaterialScalarChannel;
+  normalMap: { assetId: string } | null;
+  emissive: MaterialColorChannel;
   emissiveIntensity: number;
   opacity: number; // 0-1
   transparent: boolean;
@@ -103,6 +112,10 @@ export interface MaterialRefParameterDefinition extends ParameterDefinitionBase 
   type: "material-ref";
 }
 
+export interface MaterialSlotsParameterDefinition extends ParameterDefinitionBase {
+  type: "material-slots";
+}
+
 export interface FileParameterImportAsset {
   mode: "import-asset";
   kind: SessionAssetRef["kind"];
@@ -129,6 +142,7 @@ export type ParameterDefinition =
   | ActorRefParameterDefinition
   | ActorRefListParameterDefinition
   | MaterialRefParameterDefinition
+  | MaterialSlotsParameterDefinition
   | FileParameterDefinition;
 
 export interface ParameterSchema {
@@ -237,7 +251,7 @@ export interface SceneStats {
   cameraZoomEnabled: boolean;
 }
 
-export type ActorStatusValue = string | number | boolean | [number, number, number];
+export type ActorStatusValue = string | number | boolean | [number, number, number] | string[];
 
 export interface ActorRuntimeStatus {
   values: Record<string, ActorStatusValue | undefined>;

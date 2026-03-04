@@ -44,6 +44,7 @@ const api = {
   cloneSession: (args) => ipcRenderer.invoke("session:clone", args),
   renameSession: (args) => ipcRenderer.invoke("session:rename", args),
   importAsset: (args) => ipcRenderer.invoke("asset:import", args),
+  importDae: (args) => ipcRenderer.invoke("asset:import-dae", args),
   importGaussianSplat: (args) => ipcRenderer.invoke("asset:import-gaussian", args),
   convertGaussianAsset: (args) => ipcRenderer.invoke("asset:convert-gaussian", args),
   transcodeHdriToKtx2: (args) => ipcRenderer.invoke("asset:transcode-hdri", args),

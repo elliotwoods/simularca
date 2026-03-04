@@ -6,11 +6,26 @@ export interface DefaultSessionPointer {
 
 export interface SessionAssetRef {
   id: string;
-  kind: "hdri" | "gaussian-splat" | "generic";
+  kind: "hdri" | "gaussian-splat" | "generic" | "image";
   encoding?: "raw" | "ktx2" | "splatbin-v1";
   relativePath: string;
   sourceFileName: string;
   byteSize: number;
+}
+
+export interface DaeImportResult {
+  asset: SessionAssetRef;
+  imageAssets: SessionAssetRef[];
+  materialDefs: Array<{
+    id: string;
+    name: string;
+    albedo: { mode: "color"; color: string } | { mode: "image"; assetId: string };
+    roughness: number;
+    metalness: number;
+    normalMapAssetId: string | null;
+    emissive: string;
+  }>;
+  materialSlots: Record<string, string>;
 }
 
 export interface HdriTranscodeOptions {
@@ -53,6 +68,7 @@ export interface ElectronApi {
     sourcePath: string;
     kind: SessionAssetRef["kind"];
   }): Promise<SessionAssetRef>;
+  importDae(args: { sessionName: string; sourcePath: string }): Promise<DaeImportResult>;
   importGaussianSplat(args: {
     sessionName: string;
     sourcePath: string;
