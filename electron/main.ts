@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, screen, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import type { DefaultSessionPointer, DaeImportResult, FileDialogFilter, HdriTranscodeOptions, SessionAssetRef } from "../src/types/ipc";
 import { createSplatBinaryV1 } from "./splatBinaryFormat.js";
 
@@ -261,15 +262,28 @@ async function registerAssetProtocol(): Promise<void> {
       if (!targetPath.startsWith(sessionRoot)) {
         return new Response("Invalid asset path", { status: 400 });
       }
-      const content = await fs.readFile(targetPath);
-      return new Response(content, {
-        status: 200,
-        headers: {
-          "content-type": mimeTypeForPath(targetPath)
-        }
-      });
+      // Stream the file directly using Chromium's native file loader —
+      // avoids reading the entire file into a Buffer in the main process
+      // and eliminates the large IPC data transfer to the renderer.
+      const fileResponse = await net.fetch(pathToFileURL(targetPath).href);
+      if (fileResponse.ok) {
+        // Preserve our explicit MIME type mapping (Chromium's defaults differ for .ktx2, .ply etc.)
+        return new Response(fileResponse.body, {
+          status: 200,
+          headers: { "content-type": mimeTypeForPath(targetPath) }
+        });
+      }
+      // File not found — fall through to image fallback
+      const ext = path.extname(targetPath).toLowerCase();
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        return new Response(FALLBACK_IMAGE_PNG, {
+          status: 200,
+          headers: { "content-type": "image/png" }
+        });
+      }
+      return new Response("Not found", { status: 404 });
     } catch (error) {
-      // For missing image files, return transparent PNG fallback instead of 404
+      // Path resolution error or unexpected net.fetch failure
       try {
         const parsed = new URL(request.url);
         const ext = path.extname(parsed.pathname).toLowerCase();
@@ -1257,18 +1271,25 @@ function registerIpcHandlers(): void {
         effectById.set(effectId, { albedo, roughness, metalness: 0, normalMapAssetId: null, emissive });
       }
 
-      // 6. Map material name -> effect id
-      const materialEffectMap = new Map<string, string>();
-      const matEffectMatches = [...daeText.matchAll(/<material\s+id="([^"]+)"[^>]*>[\s\S]*?<instance_effect\s+url="#([^"]+)"/g)];
+      // 6. Map material id -> { display name, effect id }
+      // Three.js ColladaLoader names materials using the DAE <material name="..."> attribute,
+      // so we key slots by that to match what the renderer will see.
+      const materialEffectMap = new Map<string, { name: string; effectId: string }>();
+      const matEffectMatches = [...daeText.matchAll(/<material\s+id="([^"]+)"([^>]*)>[\s\S]*?<instance_effect\s+url="#([^"]+)"/g)];
       for (const m of matEffectMatches) {
-        materialEffectMap.set(m[1] ?? "", m[2] ?? "");
+        const daeId = m[1] ?? "";
+        const attrs = m[2] ?? "";
+        const nameMatch = attrs.match(/\bname="([^"]*)"/);
+        const matName = nameMatch?.[1]?.trim() || daeId;
+        const effectId = m[3] ?? "";
+        materialEffectMap.set(daeId, { name: matName, effectId });
       }
 
       // 7. Build material definitions and slot mapping
       const materialDefs: DaeImportResult["materialDefs"] = [];
       const materialSlots: Record<string, string> = {};
 
-      for (const [matName, effectId] of materialEffectMap.entries()) {
+      for (const { name: matName, effectId } of materialEffectMap.values()) {
         const effect = effectById.get(effectId);
         const matId = `mat.${randomUUID()}`;
         materialDefs.push({

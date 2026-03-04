@@ -48,10 +48,12 @@ export async function importFileForActorParam(
       kernel.store.getState().actions.addAssets(result.imageAssets);
     }
 
-    // Create Material entities from DAE definitions
+    // Build actor-local material definitions (not added to the global library)
     const materialSlots: Record<string, string> = {};
+    const localMaterials: Record<string, Material> = {};
     for (const def of result.materialDefs) {
-      const matDef: Omit<Material, "id"> = {
+      const mat: Material = {
+        id: def.id,
         name: def.name,
         albedo: def.albedo,
         metalness: { mode: "scalar", value: def.metalness },
@@ -64,24 +66,13 @@ export async function importFileForActorParam(
         side: "front",
         wireframe: false
       };
-      // Use the pre-computed ID from the main process
-      kernel.store.setState((store) => ({
-        ...store,
-        state: {
-          ...store.state,
-          materials: {
-            ...store.state.materials,
-            [def.id]: { id: def.id, ...matDef }
-          },
-          dirty: true
-        }
-      }));
+      localMaterials[def.id] = mat;
       materialSlots[def.name] = def.id;
     }
 
     appendAsset(kernel, result.asset);
     kernel.sessionService.queueAutosave();
-    return { asset: result.asset, extraParams: { materialSlots } };
+    return { asset: result.asset, extraParams: { materialSlots, localMaterials } };
   }
 
   const asset =

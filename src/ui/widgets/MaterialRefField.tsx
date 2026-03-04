@@ -7,16 +7,20 @@ interface MaterialRefFieldProps {
   onChange: (value: string | undefined) => void;
   label?: string;
   placeholder?: string;
+  extraMaterials?: Record<string, Material>;
 }
 
 export const MaterialRefField: React.FC<MaterialRefFieldProps> = ({
   value,
   onChange,
   label,
-  placeholder = "None (Default)"
+  placeholder = "None (Default)",
+  extraMaterials
 }) => {
   const materials = useAppStore((s) => s.state.materials);
-  const materialList = Object.values(materials).sort((a, b) => a.name.localeCompare(b.name));
+  // Merge extra (actor-local) materials with global ones; local materials come first
+  const merged = extraMaterials ? { ...extraMaterials, ...materials } : materials;
+  const materialList = Object.values(merged).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="widget-material-ref">

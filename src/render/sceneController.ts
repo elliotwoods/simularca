@@ -858,7 +858,10 @@ export class SceneController {
 
   private getMaterial(materialId: string | undefined, actorId: string): THREE.MeshStandardMaterial {
     const state = this.kernel.store.getState().state;
-    const materialData = materialId ? state.materials[materialId] : null;
+    const localMaterials = state.actors[actorId]?.params.localMaterials as Record<string, unknown> | undefined;
+    const materialData = materialId
+      ? ((localMaterials?.[materialId] ?? state.materials[materialId]) as typeof state.materials[string] | undefined ?? null)
+      : null;
 
     if (!materialData) {
       return new THREE.MeshStandardMaterial({ color: 0x808080 });
@@ -977,9 +980,15 @@ export class SceneController {
           ? node.material.map(() => this.getMaterial(materialOverrideId, actor.id))
           : this.getMaterial(materialOverrideId, actor.id);
       } else if (isDae) {
+        // For DAE, apply our material system. Match by Three.js material name; if the name is
+        // empty or unrecognised (some exporters omit the name attribute), fall back to the first
+        // slot material so imported materials are always applied rather than the default.
+        const firstSlotId = Object.values(materialSlots)[0];
+        const resolveSlot = (m: any): string =>
+          materialSlots[m?.name ?? ""] ?? firstSlotId ?? DEFAULT_MATERIAL_ID;
         node.material = Array.isArray(node.material)
-          ? node.material.map((m: any) => this.getMaterial(materialSlots[m?.name ?? ""] ?? DEFAULT_MATERIAL_ID, actor.id))
-          : this.getMaterial(materialSlots[(node.material as any)?.name ?? ""] ?? DEFAULT_MATERIAL_ID, actor.id);
+          ? node.material.map((m: any) => this.getMaterial(resolveSlot(m), actor.id))
+          : this.getMaterial(resolveSlot(node.material), actor.id);
       } else {
         const applyIfAssigned = (m: any) => {
           const slotId = materialSlots[m?.name ?? ""];
@@ -1027,9 +1036,10 @@ export class SceneController {
         if (typeof v === "string" && v) referencedMaterialIds.add(v);
       }
     }
+    const localMaterials = actor.params.localMaterials as Record<string, unknown> | undefined;
     const materialHash = Array.from(referencedMaterialIds)
       .sort()
-      .map((id) => JSON.stringify(state.materials[id]))
+      .map((id) => JSON.stringify(localMaterials?.[id] ?? state.materials[id]))
       .join("|");
     const sig = JSON.stringify({ slots: materialSlots, override: materialId, mats: materialHash });
 

@@ -18,6 +18,7 @@ import type {
   ActorRuntimeStatus,
   ActorVisibilityMode,
   FileParameterDefinition,
+  Material,
   ParameterDefinition,
   ParameterValue,
   ParameterValues,
@@ -1620,21 +1621,28 @@ export function InspectorPane() {
         }
 
         if (definition.type === "material-slots") {
-          const slotNames = (runtimeStatus?.values.materialSlotNames as string[] | undefined) ?? [];
           const currentSlots = (typeof current === "object" && current !== null && !Array.isArray(current)
             ? current
             : {}) as Record<string, string>;
+          // Prefer runtime-detected names; fall back to import-time keys from materialSlots param.
+          // Must check .length because the runtime may set an empty array (not null/undefined).
+          const runtimeSlotNames = runtimeStatus?.values.materialSlotNames as string[] | undefined;
+          const slotNames = runtimeSlotNames && runtimeSlotNames.length > 0
+            ? runtimeSlotNames
+            : Object.keys(currentSlots);
+          const localMaterials = singleSelection?.params.localMaterials as Record<string, Material> | undefined;
           return (
             <div key={definition.key} className="material-slots-field">
               <label className="widget-label">{definition.label}</label>
               {slotNames.length === 0 ? (
-                <div className="panel-empty-inline">No slots detected</div>
+                <p className="panel-empty">No slots detected</p>
               ) : (
                 slotNames.map((slotName) => (
                   <MaterialRefField
                     key={slotName}
                     label={slotName}
                     value={currentSlots[slotName] ?? ""}
+                    extraMaterials={localMaterials}
                     onChange={(next) => {
                       const updated = { ...currentSlots, [slotName]: next };
                       updateSelectedActorParams(definition.key, updated);
