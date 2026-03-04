@@ -866,6 +866,7 @@ function registerIpcHandlers(): void {
         typeof args.frameFolderName === "string" && args.frameFolderName.trim().length > 0
           ? args.frameFolderName
           : `frames-${jobId}`;
+      // eslint-disable-next-line no-control-regex
       const safeFrameFolderName = rawFrameFolderName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/g, "");
       const frameFolderPath = path.join(safeFolder, safeFrameFolderName || `frames-${jobId}`);
       await fs.mkdir(frameFolderPath, { recursive: true });
@@ -1136,27 +1137,20 @@ function registerIpcHandlers(): void {
     ): Promise<DaeImportResult> => {
       await ensureSessionDirectory(args.sessionName);
 
-      // 1. Copy the .dae file as a generic asset
+      // 1. Read the .dae source (needed for both XML patching and image extraction)
       const sourceFileName = path.basename(args.sourcePath);
       const extension = path.extname(sourceFileName);
       const daeTargetName = `${Date.now()}-${randomUUID()}${extension}`;
       const genericDir = getAssetDirectory(args.sessionName, "generic");
       await fs.mkdir(genericDir, { recursive: true });
       const daeTargetPath = path.join(genericDir, daeTargetName);
-      await fs.copyFile(args.sourcePath, daeTargetPath);
-      const daeStat = await fs.stat(daeTargetPath);
+      // Read source text first; we will patch and write it rather than copying
+      const daeSourceText = await fs.readFile(args.sourcePath, "utf8");
       const daeRelPath = path.relative(getSessionDirectory(args.sessionName), daeTargetPath).replaceAll("\\", "/");
-      const daeAsset: SessionAssetRef = {
-        id: randomUUID(),
-        kind: "generic",
-        encoding: "raw",
-        relativePath: daeRelPath,
-        sourceFileName,
-        byteSize: daeStat.size
-      };
+      // daeAsset is built after patching and writing so byteSize reflects the written file
 
       // 2. Parse DAE XML for texture references and material definitions
-      const daeText = await fs.readFile(args.sourcePath, "utf8");
+      const daeText = daeSourceText;
       const sourceDir = path.dirname(args.sourcePath);
       const imageDir = getAssetDirectory(args.sessionName, "image");
       await fs.mkdir(imageDir, { recursive: true });
@@ -1165,6 +1159,7 @@ function registerIpcHandlers(): void {
       const initFromMatches = [...daeText.matchAll(/<init_from>\s*([^<]+?)\s*<\/init_from>/g)];
       const imageAssets: SessionAssetRef[] = [];
       const imageIdBySourceName = new Map<string, string>(); // source filename -> asset id
+      const imgTargetNameBySourceName = new Map<string, string>(); // source filename -> target filename (for path rewriting)
 
       for (const match of initFromMatches) {
         const rawRef = (match[1] ?? "").trim();
@@ -1190,10 +1185,36 @@ function registerIpcHandlers(): void {
           };
           imageAssets.push(imgAsset);
           imageIdBySourceName.set(imgName, imgAsset.id);
+          imgTargetNameBySourceName.set(imgName, imgTargetName);
         } catch {
           // File not accessible; skip
         }
       }
+
+      // Rewrite <init_from> paths in the DAE XML so ColladaLoader can resolve textures via the
+      // simularcaasset:// protocol. The DAE is stored in assets/generic/, images in assets/image/,
+      // so the relative path from the DAE to each image is ../image/<targetName>.
+      let patchedDaeText = daeText;
+      for (const match of initFromMatches) {
+        const rawRef = (match[1] ?? "").trim();
+        const decoded = decodeURIComponent(rawRef.replace(/^file:\/\/\//i, ""));
+        const imgName = path.basename(decoded);
+        const newFileName = imgTargetNameBySourceName.get(imgName);
+        if (newFileName) {
+          // Use split/join to replace all occurrences of this exact match text safely
+          patchedDaeText = patchedDaeText.split(match[0]).join(`<init_from>../image/${newFileName}</init_from>`);
+        }
+      }
+      await fs.writeFile(daeTargetPath, patchedDaeText, "utf8");
+      const daeStat = await fs.stat(daeTargetPath);
+      const daeAsset: SessionAssetRef = {
+        id: randomUUID(),
+        kind: "generic",
+        encoding: "raw",
+        relativePath: daeRelPath,
+        sourceFileName,
+        byteSize: daeStat.size
+      };
 
       // 3. Extract image ID mapping from <library_images>: DAE image id -> asset id
       const daeImageIdToAssetId = new Map<string, string>();

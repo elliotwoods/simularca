@@ -13,8 +13,7 @@ interface AddActorMenuProps {
 export function AddActorMenu(props: AddActorMenuProps) {
   const kernel = useKernel();
   const mode = useAppStore((store) => store.state.mode);
-  const statusMessage = useAppStore((store) => store.state.statusMessage);
-  const options = useMemo(() => listActorCreationOptions(kernel), [kernel, statusMessage]);
+  const options = useMemo(() => listActorCreationOptions(kernel), [kernel]);
   const [open, setOpen] = useState(false);
   const [activeDescriptorId, setActiveDescriptorId] = useState<string | null>(options[0]?.descriptorId ?? null);
   const rootRef = useRef<HTMLDivElement | null>(null);

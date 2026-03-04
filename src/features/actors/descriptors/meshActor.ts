@@ -38,6 +38,7 @@ export const meshActorDescriptor: ReloadableDescriptor<MeshRuntime> = {
           value: typeof actor.params.scaleFactor === "number" ? actor.params.scaleFactor : 1
         },
         { label: "Format", value: runtimeStatus?.values.format ?? "n/a" },
+        { label: "Load State", value: runtimeStatus?.values.loadState ?? "n/a" },
         { label: "Meshes", value: runtimeStatus?.values.meshCount ?? "n/a" },
         { label: "Triangles", value: runtimeStatus?.values.triangleCount ?? "n/a" },
         { label: "Bounds Min (m)", value: runtimeStatus?.values.boundsMin ?? "n/a" },

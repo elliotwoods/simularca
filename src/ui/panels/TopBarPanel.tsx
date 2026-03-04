@@ -127,7 +127,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const plugins = useMemo(() => {
     void pluginsRevision;
     return kernel.pluginApi.listPlugins();
-  }, [kernel, pluginsRevision, state.statusMessage]);
+  }, [kernel, pluginsRevision]);
 
   const refreshPlugins = () => {
     if (!window.electronAPI) {

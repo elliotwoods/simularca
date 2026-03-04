@@ -124,7 +124,7 @@ const sessionSchema = z.object({
     fixedStepSeconds: z.number(),
     elapsedSimSeconds: z.number()
   }),
-  materials: z.record(materialSchema),
+  materials: z.record(materialSchema).default({}),
   assets: z.array(
     z.object({
       id: z.string(),

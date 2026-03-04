@@ -22,30 +22,30 @@ function formatDuration(valueMs: number | null): string {
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
-export function RenderOverlay(props: RenderOverlayProps) {
+export function RenderOverlay({ open, progress, onHostReady, onCancel }: RenderOverlayProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const startedAtMsRef = useRef<number | null>(null);
   const [nowMs, setNowMs] = useState(() => performance.now());
 
   useEffect(() => {
-    props.onHostReady(props.open ? hostRef.current : null);
+    onHostReady(open ? hostRef.current : null);
     return () => {
-      props.onHostReady(null);
+      onHostReady(null);
     };
-  }, [props.onHostReady, props.open]);
+  }, [onHostReady, open]);
 
   useEffect(() => {
-    if (!props.open) {
+    if (!open) {
       startedAtMsRef.current = null;
       return;
     }
-    if (props.progress && startedAtMsRef.current === null) {
+    if (progress && startedAtMsRef.current === null) {
       startedAtMsRef.current = performance.now();
     }
-  }, [props.open, props.progress]);
+  }, [open, progress]);
 
   useEffect(() => {
-    if (!props.open) {
+    if (!open) {
       return;
     }
     const handle = window.setInterval(() => {
@@ -54,14 +54,14 @@ export function RenderOverlay(props: RenderOverlayProps) {
     return () => {
       window.clearInterval(handle);
     };
-  }, [props.open]);
+  }, [open]);
 
-  if (!props.open) {
+  if (!open) {
     return null;
   }
 
-  const frameIndex = props.progress ? Math.min(props.progress.frameIndex + 1, props.progress.frameCount) : 0;
-  const frameCount = props.progress?.frameCount ?? 0;
+  const frameIndex = progress ? Math.min(progress.frameIndex + 1, progress.frameCount) : 0;
+  const frameCount = progress?.frameCount ?? 0;
   const ratio = frameCount > 0 ? Math.max(0, Math.min(1, frameIndex / frameCount)) : 0;
   const startedAtMs = startedAtMsRef.current;
   const elapsedMs = startedAtMs === null ? 0 : Math.max(0, nowMs - startedAtMs);
@@ -73,7 +73,7 @@ export function RenderOverlay(props: RenderOverlayProps) {
       <div className="render-overlay">
         <header>
           <h3>Rendering</h3>
-          <button type="button" onClick={props.onCancel}>
+          <button type="button" onClick={onCancel}>
             Cancel
           </button>
         </header>
@@ -82,8 +82,8 @@ export function RenderOverlay(props: RenderOverlayProps) {
           <div className="render-overlay-progress-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ratio * 100}>
             <span style={{ width: `${ratio * 100}%` }} />
           </div>
-          {props.progress ? <p>Frame {frameIndex} / {frameCount}</p> : <p>Starting render...</p>}
-          <p>Status: {props.progress?.message ?? "Preparing..."}</p>
+          {progress ? <p>Frame {frameIndex} / {frameCount}</p> : <p>Starting render...</p>}
+          <p>Status: {progress?.message ?? "Preparing..."}</p>
           <p>Time Spent: {formatDuration(elapsedMs)}</p>
           <p>Time Remaining (est): {formatDuration(estimatedRemainingMs)}</p>
           <p>Time Total (est): {formatDuration(estimatedTotalMs)}</p>

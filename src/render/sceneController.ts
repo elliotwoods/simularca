@@ -320,6 +320,7 @@ export class SceneController {
   }
 
   public async syncFromState(): Promise<void> {
+    const t0 = performance.now();
     const state = this.kernel.store.getState().state;
     const actorIds = new Set(Object.keys(state.actors));
     const simTimeSeconds = Number.isFinite(state.time.elapsedSimSeconds) ? state.time.elapsedSimSeconds : 0;
@@ -358,16 +359,37 @@ export class SceneController {
       }
     }
 
+    const tA = performance.now();
     for (const actor of Object.values(state.actors)) {
-      this.lastKnownActorById.set(actor.id, structuredClone(actor));
+      const _ta0 = performance.now();
+      this.lastKnownActorById.set(actor.id, actor);
+      const _ta1 = performance.now();
       await this.ensureActorObject(actor);
+      const _ta2 = performance.now();
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
+      const _ta3 = performance.now();
       if (actor.actorType === "gaussian-splat") {
         await this.syncGaussianSplatAsset(actor);
       }
+      let _ta4 = _ta3, _ta5 = _ta3;
       if (actor.actorType === "mesh") {
-        await this.syncMeshAsset(actor);
+        // Avoid an unconditional `await` every frame. `syncMeshAsset` early-exits
+        // synchronously, but `async` always yields to the microtask queue, which
+        // can allow queued macrotasks (e.g., XHR/DOMParser callbacks) to run and
+        // block the frame for seconds. Only await when an actual reload is needed.
+        const _tPrecheck = performance.now();
+        const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+        const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+        const needsReload = assetId !== (this.meshAssetByActorId.get(actor.id) ?? "")
+          || reloadToken !== (this.meshReloadTokenByActorId.get(actor.id) ?? 0);
+        const _precheckDt = performance.now() - _tPrecheck;
+        if (_precheckDt > 5) console.warn("[simularca] mesh precheck slow:", _precheckDt.toFixed(1), "ms");
+        if (needsReload) {
+          await this.syncMeshAsset(actor);
+        }
+        _ta4 = performance.now();
         this.syncMeshMaterials(actor, state);
+        _ta5 = performance.now();
       }
       if (actor.actorType === "primitive") {
         this.syncPrimitiveActor(actor);
@@ -376,16 +398,42 @@ export class SceneController {
         this.syncCurveActor(actor);
       }
       this.applyActorTransform(actor);
+      const _ta6 = performance.now();
+      if (_ta6 - _ta0 > 50) {
+        console.warn(
+          "[simularca] actor slow:", actor.actorType, actor.id,
+          "| clone:", (_ta1 - _ta0).toFixed(0), "ms",
+          "| ensure:", (_ta2 - _ta1).toFixed(0), "ms",
+          "| parentAttach:", (_ta3 - _ta2).toFixed(0), "ms",
+          "| meshAsset:", (_ta4 - _ta3).toFixed(0), "ms",
+          "| meshMat:", (_ta5 - _ta4).toFixed(0), "ms",
+          "| transform:", (_ta6 - _ta5).toFixed(0), "ms",
+          "| total:", (_ta6 - _ta0).toFixed(0), "ms"
+        );
+      }
     }
+    const tB = performance.now();
     for (const actor of Object.values(state.actors)) {
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
     }
+    const tC = performance.now();
     for (const actor of Object.values(state.actors)) {
       this.syncPluginSceneActor(actor, state, simTimeSeconds, dtSeconds);
     }
+    const tD = performance.now();
 
     this.applySceneBackgroundColor();
     await this.updateEnvironmentTexture();
+    const dt = performance.now() - t0;
+    if (dt > 100) {
+      console.warn(
+        "[simularca] syncFromState slow:", dt.toFixed(0), "ms |",
+        "actorLoop:", (tB - tA).toFixed(0), "ms |",
+        "parentSync:", (tC - tB).toFixed(0), "ms |",
+        "pluginLoop:", (tD - tC).toFixed(0), "ms |",
+        "envTex:", (performance.now() - tD).toFixed(0), "ms"
+      );
+    }
   }
 
   public getActorObject(actorId: string): any | null {
@@ -1468,8 +1516,9 @@ export class SceneController {
     const previousAssetId = this.meshAssetByActorId.get(actor.id) ?? "";
     const previousReloadToken = this.meshReloadTokenByActorId.get(actor.id) ?? 0;
     if (assetId === previousAssetId && reloadToken === previousReloadToken) {
-      return;
+      return; // early exit — expected on every frame after the first load
     }
+    console.log("[simularca] syncMeshAsset LOAD TRIGGERED assetId:", assetId, "reloadToken:", reloadToken, "actor:", actor.id);
     this.meshAssetByActorId.set(actor.id, assetId);
     this.meshReloadTokenByActorId.set(actor.id, reloadToken);
 
@@ -1493,30 +1542,43 @@ export class SceneController {
     }
 
     const extension = asset.relativePath.split(".").pop()?.toLowerCase() ?? "";
-    const url = await this.kernel.storage.resolveAssetPath({
-      sessionName: state.activeSessionName,
-      relativePath: asset.relativePath
-    });
-    this.kernel.store.getState().actions.setActorStatus(actor.id, {
-      values: {
-        format: extension || "unknown",
-        assetFileName: asset.sourceFileName,
-        loadState: "loading"
-      },
-      updatedAtIso: new Date().toISOString()
-    });
+    // Build the asset URL locally — no IPC round-trip needed.
+    const encodedSession = encodeURIComponent(state.activeSessionName);
+    const encodedPath = asset.relativePath
+      .split("/")
+      .filter((part) => part.length > 0)
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    const url = `simularcaasset://${encodedSession}/${encodedPath}`;
+    // Defer "loading" status to a macrotask so the React re-render (useSyncExternalStore) does
+    // not queue a microtask that runs before syncFromState's continuation microtask.
+    const actorIdForLoading = actor.id;
+    setTimeout(() => {
+      this.kernel.store.getState().actions.setActorStatus(actorIdForLoading, {
+        values: {
+          format: extension || "unknown",
+          assetFileName: asset.sourceFileName,
+          loadState: "loading"
+        },
+        updatedAtIso: new Date().toISOString()
+      });
+    }, 0);
 
     const loadToken = (this.meshLoadTokenByActorId.get(actor.id) ?? 0) + 1;
     this.meshLoadTokenByActorId.set(actor.id, loadToken);
 
     const attachLoaded = (loadedObject: any) => {
+      console.log("[simularca] Mesh loaded OK:", url, "token match:", this.meshLoadTokenByActorId.get(actor.id), loadToken);
       if (this.meshLoadTokenByActorId.get(actor.id) !== loadToken) {
         return;
       }
       renderRoot.clear();
       renderRoot.add(loadedObject);
 
+      const _tAL0 = performance.now();
       this.applyMeshMaterials(actor, loadedObject, extension);
+      const _tAL1 = performance.now();
+      if (_tAL1 - _tAL0 > 5) console.warn("[simularca] applyMeshMaterials slow:", (_tAL1 - _tAL0).toFixed(0), "ms");
       const bounds = new THREE.Box3().setFromObject(loadedObject);
       const size = new THREE.Vector3();
       bounds.getSize(size);
@@ -1540,29 +1602,40 @@ export class SceneController {
       });
       const slotNames = this.getMeshSlotNames(loadedObject);
       const env = this.resolveEnvironment(actor.id);
-      this.kernel.store.getState().actions.setActorStatus(actor.id, {
-        values: {
-          format: extension || "unknown",
-          assetFileName: asset.sourceFileName,
-          loadState: "loaded",
-          meshCount,
-          triangleCount,
-          boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
-          boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z],
-          size: [size.x, size.y, size.z],
-          materialSlotNames: slotNames,
-          environment: env.name
-        },
-        updatedAtIso: new Date().toISOString()
-      });
-      this.kernel.store
-        .getState()
-        .actions.setStatus(
-          `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size (m): ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}`
-        );
+      const _tAL2 = performance.now();
+      // Defer Zustand status dispatches to a macrotask (setTimeout). Without this, Zustand's
+      // set() triggers a synchronous React re-render (useSyncExternalStore) as a microtask that
+      // runs BEFORE syncFromState's continuation microtask, causing the render loop to block for
+      // ~2-3 seconds while React renders the 100-slot inspector.
+      const boundsMin: [number, number, number] = [bounds.min.x, bounds.min.y, bounds.min.z];
+      const boundsMax: [number, number, number] = [bounds.max.x, bounds.max.y, bounds.max.z];
+      const sizeArr: [number, number, number] = [size.x, size.y, size.z];
+      const actorId = actor.id;
+      const statusMsg = `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size (m): ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}`;
+      setTimeout(() => {
+        this.kernel.store.getState().actions.setActorStatus(actorId, {
+          values: {
+            format: extension || "unknown",
+            assetFileName: asset.sourceFileName,
+            loadState: "loaded",
+            meshCount,
+            triangleCount,
+            boundsMin,
+            boundsMax,
+            size: sizeArr,
+            materialSlotNames: slotNames,
+            environment: env.name
+          },
+          updatedAtIso: new Date().toISOString()
+        });
+        this.kernel.store.getState().actions.setStatus(statusMsg);
+      }, 0);
+      const _tAL3 = performance.now();
+      console.log("[simularca] attachLoaded breakdown | applyMats:", (_tAL1 - _tAL0).toFixed(0), "ms | traverse:", (_tAL2 - _tAL1).toFixed(0), "ms | setStatus(deferred):", (_tAL3 - _tAL2).toFixed(0), "ms | total:", (_tAL3 - _tAL0).toFixed(0), "ms");
     };
 
     const onError = (error: unknown) => {
+      console.error("[simularca] ColladaLoader error for", url, error);
       const message = formatLoadError(error);
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
@@ -1602,8 +1675,8 @@ export class SceneController {
       if (extension === "dae") {
         this.colladaLoader.load(
           url,
-          (collada: any) => {
-            attachLoaded(collada.scene);
+          (result: any) => {
+            attachLoaded(result.scene);
           },
           undefined,
           onError
@@ -2296,16 +2369,16 @@ export class SceneController {
     const reloadToken =
       typeof environmentActor.params.assetIdReloadToken === "number" ? environmentActor.params.assetIdReloadToken : 0;
     if (!assetId) {
-      this.scene.environment = null;
-      this.currentEnvironmentAssetId = null;
-      this.currentEnvironmentReloadToken = 0;
-      this.applySceneBackgroundColor();
-      this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
-        values: {
-          loadState: "idle"
-        },
-        updatedAtIso: new Date().toISOString()
-      });
+      if (this.currentEnvironmentAssetId !== null) {
+        this.scene.environment = null;
+        this.currentEnvironmentAssetId = null;
+        this.currentEnvironmentReloadToken = 0;
+        this.applySceneBackgroundColor();
+        this.kernel.store.getState().actions.setActorStatus(environmentActor.id, {
+          values: { loadState: "idle" },
+          updatedAtIso: new Date().toISOString()
+        });
+      }
       return;
     }
     if (assetId === this.currentEnvironmentAssetId && reloadToken === this.currentEnvironmentReloadToken) {

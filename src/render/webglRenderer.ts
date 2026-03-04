@@ -39,6 +39,7 @@ export class WebGlViewport {
   private fastStatsLastSampleAt = performance.now();
   private slowStatsLastSampleAt = performance.now();
   private lastAppliedCameraSignature = "";
+  private lastDispatchedCameraSignature = "";
   private readonly geometryByteCache = new WeakMap<object, number>();
   private readonly textureByteCache = new WeakMap<object, number>();
   private started = false;
@@ -168,8 +169,11 @@ export class WebGlViewport {
   };
 
   private async renderFrame(): Promise<void> {
+    const _rf0 = performance.now();
     await this.sceneController.syncFromState();
+    const _rf1 = performance.now();
     await this.sparkSplatController.syncFromState();
+    const _rf2 = performance.now();
     this.enforceActorCompatibility("webgl2");
     this.syncCameraState();
     this.applyKeyboardNavigation(performance.now());
@@ -177,7 +181,19 @@ export class WebGlViewport {
     this.curveEditController.update();
     this.controls.update();
     this.syncCameraToState();
+    const _rf3 = performance.now();
     this.renderer.render(this.sceneController.scene, this.activeCamera);
+    const _rf4 = performance.now();
+    const _rfTotal = _rf4 - _rf0;
+    if (_rfTotal > 100) {
+      console.warn(
+        "[simularca] renderFrame slow:", _rfTotal.toFixed(0), "ms |",
+        "sceneSync:", (_rf1 - _rf0).toFixed(0), "ms |",
+        "sparkSync:", (_rf2 - _rf1).toFixed(0), "ms |",
+        "controls:", (_rf3 - _rf2).toFixed(0), "ms |",
+        "render:", (_rf4 - _rf3).toFixed(0), "ms"
+      );
+    }
     this.updateStats();
   }
 
@@ -289,6 +305,9 @@ export class WebGlViewport {
       far: this.activeCamera.far
     };
 
+    const sig = JSON.stringify(nextCameraState);
+    if (sig === this.lastDispatchedCameraSignature) return;
+    this.lastDispatchedCameraSignature = sig;
     this.kernel.store.getState().actions.setCameraState(nextCameraState, false);
   }
 

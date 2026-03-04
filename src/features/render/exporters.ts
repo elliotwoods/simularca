@@ -31,6 +31,7 @@ function sanitizeFolderNameSegment(value: string): string {
   if (!trimmed) {
     return "Session";
   }
+  // eslint-disable-next-line no-control-regex
   const sanitized = trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim();
   const withoutTrailingDots = sanitized.replace(/[. ]+$/g, "");
   return withoutTrailingDots || "Session";

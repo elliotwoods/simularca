@@ -14,6 +14,7 @@ export function buildSessionManifest(state: AppState, mode: SessionManifest["app
     camera: structuredClone(state.camera),
     cameraBookmarks: structuredClone(state.cameraBookmarks),
     time: structuredClone(state.time),
+    materials: structuredClone(state.materials),
     assets: structuredClone(state.assets)
   };
 }

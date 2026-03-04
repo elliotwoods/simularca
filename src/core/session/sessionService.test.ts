@@ -21,6 +21,7 @@ function buildManifest(sessionName: string, assets: SessionAssetRef[] = []): Ses
     camera: state.camera,
     cameraBookmarks: state.cameraBookmarks,
     time: state.time,
+    materials: state.materials,
     assets
   };
 }

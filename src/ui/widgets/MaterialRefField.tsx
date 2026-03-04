@@ -10,7 +10,7 @@ interface MaterialRefFieldProps {
   extraMaterials?: Record<string, Material>;
 }
 
-export const MaterialRefField: React.FC<MaterialRefFieldProps> = ({
+const MaterialRefFieldImpl: React.FC<MaterialRefFieldProps> = ({
   value,
   onChange,
   label,
@@ -18,9 +18,14 @@ export const MaterialRefField: React.FC<MaterialRefFieldProps> = ({
   extraMaterials
 }) => {
   const materials = useAppStore((s) => s.state.materials);
-  // Merge extra (actor-local) materials with global ones; local materials come first
-  const merged = extraMaterials ? { ...extraMaterials, ...materials } : materials;
-  const materialList = Object.values(merged).sort((a, b) => a.name.localeCompare(b.name));
+  // Memoize sort — localeCompare on 100 items is expensive and materials rarely change.
+  const materialList = React.useMemo(
+    () => {
+      const merged = extraMaterials ? { ...extraMaterials, ...materials } : materials;
+      return Object.values(merged).sort((a, b) => a.name.localeCompare(b.name));
+    },
+    [materials, extraMaterials]
+  );
 
   return (
     <div className="widget-material-ref">
@@ -40,3 +45,14 @@ export const MaterialRefField: React.FC<MaterialRefFieldProps> = ({
     </div>
   );
 };
+
+// Memo with custom comparator: skip re-render when only onChange changes.
+// onChange is always a new closure from the parent's map(), but value/label are stable
+// when material assignments haven't changed. If value changes (user picks a material),
+// the comparator returns false and the component re-renders with a fresh onChange.
+export const MaterialRefField = React.memo(MaterialRefFieldImpl, (prev, next) =>
+  prev.value === next.value &&
+  prev.label === next.label &&
+  prev.placeholder === next.placeholder &&
+  prev.extraMaterials === next.extraMaterials
+);

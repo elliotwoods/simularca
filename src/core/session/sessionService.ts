@@ -43,6 +43,7 @@ export class SessionService {
       camera: manifest.camera,
       cameraBookmarks: manifest.cameraBookmarks,
       time: manifest.time,
+      materials: manifest.materials,
       assets: manifest.assets,
       dirty: false
     });

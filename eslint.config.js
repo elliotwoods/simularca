@@ -26,6 +26,14 @@ export default tseslint.config(
     }
   },
   {
-    ignores: ["dist/**", "dist-electron/**", "coverage/**", "node_modules/**", "electron/preload.mjs", "electron/preload.cjs"]
+    ignores: [
+      "dist/**",
+      "dist-electron/**",
+      "coverage/**",
+      "node_modules/**",
+      "electron/preload.mjs",
+      "electron/preload.cjs",
+      "plugins-local/**/dist/**"
+    ]
   }
 );

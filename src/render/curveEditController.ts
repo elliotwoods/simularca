@@ -127,7 +127,7 @@ export class CurveEditController {
   }
 
   public update(): void {
-    if (Boolean(this.transformControls.dragging)) {
+    if (this.transformControls.dragging) {
       return;
     }
     const actor = this.getSingleSelectedCurveActor();
