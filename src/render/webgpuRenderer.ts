@@ -3,6 +3,7 @@ import { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
+import { ActorTransformController, type ActorTransformMode } from "./actorTransformController";
 import { SceneController } from "./sceneController";
 import { incompatibilityReason } from "./engineCompatibility";
 import { clearSplatQueryProvider, registerSplatQueryProvider } from "./splatQueryRegistry";
@@ -32,6 +33,7 @@ export class WebGpuViewport {
   private readonly controls: OrbitControls;
   private readonly sceneController: SceneController;
   private readonly curveEditController: CurveEditController;
+  private readonly actorTransformController: ActorTransformController;
   private frameHandle = 0;
   private frameCount = 0;
   private frameTimeAccumulatorMs = 0;
@@ -109,6 +111,13 @@ export class WebGpuViewport {
       this.renderer.domElement,
       this.activeCamera
     );
+    this.actorTransformController = new ActorTransformController(
+      kernel,
+      this.sceneController,
+      this.controls,
+      this.renderer.domElement,
+      this.activeCamera
+    );
     window.addEventListener("wheel", this.onViewportWheel, { passive: false, capture: true });
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("keyup", this.onKeyUp, { capture: true });
@@ -156,6 +165,7 @@ export class WebGpuViewport {
     }
     this.controls.dispose();
     window.removeEventListener("wheel", this.onViewportWheel, true);
+    this.actorTransformController.dispose();
     this.curveEditController.dispose();
     clearSplatQueryProvider(this.queryVisibleSplats);
     this.clearCompatibilityStatus();
@@ -171,6 +181,10 @@ export class WebGpuViewport {
     }
   }
 
+  public setActorTransformMode(mode: ActorTransformMode): void {
+    this.actorTransformController.setMode(mode);
+  }
+
   private animate = (): void => {
     if (this.disposed) {
       return;
@@ -184,7 +198,9 @@ export class WebGpuViewport {
     this.syncCameraState();
     this.applyKeyboardNavigation(performance.now());
     this.curveEditController.setCamera(this.activeCamera);
+    this.actorTransformController.setCamera(this.activeCamera);
     this.curveEditController.update();
+    this.actorTransformController.update();
     this.controls.update();
     this.enforceActorCompatibility("webgpu");
     this.updateGaussianDepthSortingIfNeeded();

@@ -55,8 +55,26 @@ function normalize3(v: [number, number, number]): [number, number, number] {
   return [v[0] / mag, v[1] / mag, v[2] / mag];
 }
 
+function isCircleCurve(curve: CurveData): boolean {
+  return curve.kind === "circle";
+}
+
+function getCircleRadius(curve: CurveData): number {
+  const parsed = Number(curve.radius);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 1;
+}
+
 function enabledCurve(curve: CurveData): CurveData {
+  if (isCircleCurve(curve)) {
+    return {
+      kind: "circle",
+      closed: true,
+      points: [],
+      radius: getCircleRadius(curve)
+    };
+  }
   return {
+    kind: "spline",
     closed: curve.closed,
     points: curve.points.filter((point) => point.enabled !== false)
   };
@@ -114,6 +132,12 @@ function mapGlobalT(curve: CurveData, t: number): { segmentIndex: number; segmen
 
 export function sampleCurvePosition(curve: CurveData, t: number): [number, number, number] {
   curve = enabledCurve(curve);
+  if (isCircleCurve(curve)) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    const angle = clamped * Math.PI * 2;
+    const radius = getCircleRadius(curve);
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius, 0];
+  }
   if (curve.points.length === 0) {
     return [0, 0, 0];
   }
@@ -128,6 +152,11 @@ export function sampleCurvePosition(curve: CurveData, t: number): [number, numbe
 
 export function sampleCurveTangent(curve: CurveData, t: number): [number, number, number] {
   curve = enabledCurve(curve);
+  if (isCircleCurve(curve)) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    const angle = clamped * Math.PI * 2;
+    return normalize3([-Math.sin(angle), Math.cos(angle), 0]);
+  }
   if (curve.points.length < 2) {
     return [1, 0, 0];
   }
@@ -148,6 +177,9 @@ export function sampleCurvePositionAndTangent(
 
 export function estimateCurveLength(curve: CurveData, samplesPerSegment = 24): number {
   curve = enabledCurve(curve);
+  if (isCircleCurve(curve)) {
+    return Math.PI * 2 * getCircleRadius(curve);
+  }
   const segCount = segmentCount(curve);
   if (segCount <= 0) {
     return 0;

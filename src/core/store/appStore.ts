@@ -65,6 +65,7 @@ export interface AppActions {
   deleteSelection(): void;
   renameNode(node: SelectionEntry, name: string): void;
   setActorTransform(actorId: string, key: "position" | "rotation" | "scale", value: [number, number, number]): void;
+  setActorTransformNoHistory(actorId: string, key: "position" | "rotation" | "scale", value: [number, number, number]): void;
   setActorVisibilityMode(actorId: string, mode: ActorVisibilityMode): void;
   setNodeEnabled(node: SelectionEntry, enabled: boolean): void;
   select(nodes: SelectionEntry[], additive?: boolean): void;
@@ -471,6 +472,17 @@ export function createAppStore(mode: AppMode): AppStoreApi {
       },
       setActorTransform(actorId, key, value) {
         withHistory(get, set, "Transform actor");
+        set({
+          state: produce(get().state, (draft) => {
+            if (!draft.actors[actorId]) {
+              return;
+            }
+            draft.actors[actorId].transform[key] = value;
+            draft.dirty = true;
+          })
+        });
+      },
+      setActorTransformNoHistory(actorId, key, value) {
         set({
           state: produce(get().state, (draft) => {
             if (!draft.actors[actorId]) {

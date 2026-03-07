@@ -3,6 +3,8 @@ import type { ActorType } from "@/core/types";
 import { buildDefaultCameraPathKeyframes, buildSinglePointCurveData } from "@/features/cameraPath/model";
 import { createDefaultCurveData } from "@/features/curves/types";
 
+const CIRCLE_ACTOR_DESCRIPTOR_ID = "actor.curve.circle";
+
 export interface ActorCreationOption {
   descriptorId: string;
   label: string;
@@ -28,7 +30,7 @@ export function listActorCreationOptions(kernel: AppKernel): ActorCreationOption
     }
   }
 
-  return kernel.descriptorRegistry
+  const options = kernel.descriptorRegistry
     .listByKind("actor")
     .filter((descriptor) => Boolean(descriptor.spawn))
     .map((descriptor) => {
@@ -54,7 +56,20 @@ export function listActorCreationOptions(kernel: AppKernel): ActorCreationOption
         groupLabel,
         pluginName: pluginEntry?.pluginName
       };
-    })
+    });
+
+  const curveOption = options.find((entry) => entry.descriptorId === "actor.curve");
+  if (curveOption) {
+    options.push({
+      ...curveOption,
+      descriptorId: CIRCLE_ACTOR_DESCRIPTOR_ID,
+      label: "Circle",
+      description: "Analytic circle curve with no control points.",
+      iconGlyph: "CI"
+    });
+  }
+
+  return options
     .sort((a, b) => {
       if (a.groupLabel !== b.groupLabel) {
         return a.groupLabel.localeCompare(b.groupLabel);
@@ -91,12 +106,14 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
       select: false
     });
     actions.updateActorParamsNoHistory(positionCurveActorId, {
+      curveType: "spline",
       closed: false,
       samplesPerSegment: 24,
       handleSize: 0.5,
       curveData: buildSinglePointCurveData(camera.position)
     });
     actions.updateActorParamsNoHistory(targetCurveActorId, {
+      curveType: "spline",
       closed: false,
       samplesPerSegment: 24,
       handleSize: 0.5,
@@ -158,10 +175,19 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
   if (descriptorId === "actor.curve") {
     const curveData = createDefaultCurveData();
     kernel.store.getState().actions.updateActorParams(actorId, {
+      curveType: "spline",
       closed: false,
       samplesPerSegment: 24,
       handleSize: 0.5,
       curveData
+    });
+  }
+  if (descriptorId === CIRCLE_ACTOR_DESCRIPTOR_ID) {
+    kernel.store.getState().actions.updateActorParams(actorId, {
+      curveType: "circle",
+      radius: 1,
+      samplesPerSegment: 64,
+      handleSize: 0.5
     });
   }
   return actorId;

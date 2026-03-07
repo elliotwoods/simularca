@@ -78,5 +78,19 @@ describe("appStore undo/redo", () => {
     const actor = store.getState().state.actors[actorId];
     expect(actor?.params.curveData).toBeTruthy();
   });
+
+  it("updates actor transform without adding history entries when using no-history path", () => {
+    const store = createAppStore("web-ro");
+    const actorId = store.getState().actions.createActor({
+      actorType: "empty",
+      name: "Transform Target"
+    });
+
+    const historyAfterCreate = store.getState().historyPast.length;
+    store.getState().actions.setActorTransformNoHistory(actorId, "position", [2, 3, 4]);
+
+    expect(store.getState().historyPast.length).toBe(historyAfterCreate);
+    expect(store.getState().state.actors[actorId]?.transform.position).toEqual([2, 3, 4]);
+  });
 });
 

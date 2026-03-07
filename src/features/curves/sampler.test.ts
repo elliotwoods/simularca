@@ -77,4 +77,26 @@ describe("curve sampler", () => {
     expect(tangent[0]).toBeCloseTo(1, 6);
     expect(tangent[1]).toBeCloseTo(0, 6);
   });
+
+  it("samples analytic circles in local XY", () => {
+    const circle: CurveData = {
+      kind: "circle",
+      closed: true,
+      points: [],
+      radius: 2
+    };
+
+    expect(sampleCurvePosition(circle, 0)).toEqual([2, 0, 0]);
+    const quarter = sampleCurvePosition(circle, 0.25);
+    expect(quarter[0]).toBeCloseTo(0, 6);
+    expect(quarter[1]).toBeCloseTo(2, 6);
+    const half = sampleCurvePosition(circle, 0.5);
+    expect(half[0]).toBeCloseTo(-2, 6);
+    expect(half[1]).toBeCloseTo(0, 6);
+
+    const tangent = sampleCurveTangent(circle, 0.25);
+    expect(tangent[0]).toBeCloseTo(-1, 6);
+    expect(tangent[1]).toBeCloseTo(0, 6);
+    expect(estimateCurveLength(circle, 24)).toBeCloseTo(Math.PI * 4, 6);
+  });
 });

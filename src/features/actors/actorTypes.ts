@@ -213,19 +213,37 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
   title: "Curve",
   params: [
     {
+      key: "curveType",
+      label: "Curve Type",
+      type: "select",
+      options: ["spline", "circle"],
+      defaultValue: "spline"
+    },
+    {
       key: "closed",
       label: "Closed",
       type: "boolean",
-      defaultValue: false
+      defaultValue: false,
+      visibleWhen: [{ key: "curveType", equals: "spline" }]
     },
     {
       key: "samplesPerSegment",
-      label: "Samples / Segment",
+      label: "Samples",
       type: "number",
       min: 2,
       max: 256,
       step: 1,
       defaultValue: 24
+    },
+    {
+      key: "radius",
+      label: "Radius",
+      type: "number",
+      unit: "m",
+      min: 0,
+      step: 0.05,
+      defaultValue: 1,
+      visibleWhen: [{ key: "curveType", equals: "circle" }]
     },
     {
       key: "handleSize",
@@ -235,7 +253,8 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       min: 0.1,
       max: 4,
       step: 0.05,
-      defaultValue: 0.5
+      defaultValue: 0.5,
+      visibleWhen: [{ key: "curveType", equals: "spline" }]
     }
   ]
 };

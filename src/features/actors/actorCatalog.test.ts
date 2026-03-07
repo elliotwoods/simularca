@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppKernel } from "@/app/kernel";
 import { createAppStore } from "@/core/store/appStore";
-import { createActorFromDescriptor } from "@/features/actors/actorCatalog";
+import { createActorFromDescriptor, listActorCreationOptions } from "@/features/actors/actorCatalog";
 import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraPathActor";
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
 import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
@@ -70,5 +70,20 @@ describe("actorCatalog camera path creation", () => {
     expect(actor?.actorType).toBe("primitive");
     expect(actor?.params.shape).toBe("sphere");
     expect(actor?.params.sphereRadius).toBe(0.5);
+  });
+
+  it("offers and creates analytic circle curves as curve actors", () => {
+    const kernel = createKernelStub();
+    const options = listActorCreationOptions(kernel);
+    expect(options.some((option) => option.descriptorId === "actor.curve.circle" && option.label === "Circle")).toBe(true);
+
+    const actorId = createActorFromDescriptor(kernel, "actor.curve.circle");
+    expect(actorId).toBeTruthy();
+
+    const actor = actorId ? kernel.store.getState().state.actors[actorId] : null;
+    expect(actor?.actorType).toBe("curve");
+    expect(actor?.params.curveType).toBe("circle");
+    expect(actor?.params.radius).toBe(1);
+    expect(actor?.params.samplesPerSegment).toBe(64);
   });
 });

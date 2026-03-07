@@ -41,7 +41,7 @@ import {
   setCurveHandleWeightMode,
   setCurvePointMode
 } from "@/features/curves/editing";
-import { curveDataWithOverrides } from "@/features/curves/model";
+import { curveDataWithOverrides, getCurveTypeFromActor } from "@/features/curves/model";
 import {
   appendCameraPathCurvePoint,
   clampCameraPathKeyframeTime,
@@ -1985,7 +1985,7 @@ export function InspectorPane() {
           </div>
         </section>
       ) : null}
-      {singleSelection?.actorType === "curve" ? (
+      {singleSelection?.actorType === "curve" && getCurveTypeFromActor(singleSelection) === "spline" ? (
         <section
           className="widget-row"
           onMouseLeave={() => {

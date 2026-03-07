@@ -254,6 +254,64 @@ describe("cameraPath model", () => {
     })).toBe(3);
   });
 
+  it("uses explicit keyframes for playback when a referenced curve is analytic circle", () => {
+    const cameraPath = createActor({
+      id: "path",
+      actorType: "camera-path",
+      name: "Camera Path",
+      params: {
+        positionCurveActorId: "position",
+        targetCurveActorId: "target",
+        targetMode: "curve",
+        keyframes: [
+          { id: "kf0", timeSeconds: 0 },
+          { id: "kf1", timeSeconds: 4 }
+        ]
+      }
+    });
+    const positionCurve = createActor({
+      id: "position",
+      actorType: "curve",
+      name: "circle path",
+      params: {
+        curveType: "circle",
+        radius: 2
+      }
+    });
+    const targetCurve = createActor({
+      id: "target",
+      actorType: "curve",
+      name: "target curve",
+      params: {
+        curveData: {
+          kind: "spline",
+          closed: false,
+          points: [
+            { position: [0, 0, 1], handleIn: [0, 0, 0], handleOut: [0, 0, 0], mode: "mirrored" },
+            { position: [0, 2, 1], handleIn: [0, 0, 0], handleOut: [0, 0, 0], mode: "mirrored" }
+          ]
+        }
+      }
+    });
+
+    const keyframes = getCameraPathKeyframes(cameraPath, {
+      [cameraPath.id]: cameraPath,
+      [positionCurve.id]: positionCurve,
+      [targetCurve.id]: targetCurve
+    });
+    expect(keyframes).toHaveLength(2);
+
+    const pose = sampleCameraPathPoseAtTime(cameraPath, {
+      [cameraPath.id]: cameraPath,
+      [positionCurve.id]: positionCurve,
+      [targetCurve.id]: targetCurve
+    }, 2);
+
+    expect(pose?.position[0]).toBeCloseTo(-2, 6);
+    expect(pose?.position[1]).toBeCloseTo(0, 6);
+    expect(pose?.target).toEqual([0, 1, 1]);
+  });
+
   it("clamps retimed keyframes between their neighbors", () => {
     const clamped = clampCameraPathKeyframeTime([
       { id: "kf0", timeSeconds: 0 },

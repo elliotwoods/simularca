@@ -1179,11 +1179,12 @@ export class SceneController {
     }
 
     const curveData = curveDataWithOverrides(actor);
+    const curveType = curveData.kind === "circle" ? "circle" : "spline";
     const activePoints = curveData.points.filter((point) => point.enabled !== false);
     const samplesPerSegment = getCurveSamplesPerSegmentFromActor(actor);
     const pointCount = activePoints.length;
     const skippedPointCount = Math.max(0, curveData.points.length - activePoints.length);
-    const segmentCount = pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
+    const segmentCount = curveType === "circle" ? 1 : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
     const signature = JSON.stringify({
       curveData,
       samplesPerSegment
@@ -1194,15 +1195,25 @@ export class SceneController {
     this.curveSignatureByActorId.set(actor.id, signature);
 
     const sampled: any[] = [];
-    if (segmentCount > 0) {
+    if (curveType === "circle") {
+      const totalSamples = Math.max(8, samplesPerSegment);
+      for (let sampleIndex = 0; sampleIndex <= totalSamples; sampleIndex += 1) {
+        const t = sampleIndex / totalSamples;
+        const sample = sampleCurvePositionAndTangent(curveData, t);
+        sampled.push(new THREE.Vector3(...sample.position));
+      }
+    } else if (segmentCount > 0) {
       for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
         const current = activePoints[segmentIndex];
         const next = activePoints[(segmentIndex + 1) % pointCount];
         if (!current || !next) {
           continue;
         }
-        const currentHandles = getEffectiveCurveHandlesAt({ closed, points: activePoints }, segmentIndex);
-        const nextHandles = getEffectiveCurveHandlesAt({ closed, points: activePoints }, (segmentIndex + 1) % pointCount);
+        const currentHandles = getEffectiveCurveHandlesAt({ kind: "spline", closed: curveData.closed, points: activePoints }, segmentIndex);
+        const nextHandles = getEffectiveCurveHandlesAt(
+          { kind: "spline", closed: curveData.closed, points: activePoints },
+          (segmentIndex + 1) % pointCount
+        );
         const p0 = new THREE.Vector3(...current.position);
         const p1 = new THREE.Vector3(
           current.position[0] + currentHandles.handleOut[0],
@@ -1239,6 +1250,8 @@ export class SceneController {
         pointCount,
         skippedPointCount,
         segmentCount,
+        curveType,
+        radius: curveType === "circle" ? curveData.radius ?? 1 : null,
         closed: curveData.closed,
         samplesPerSegment,
         length,

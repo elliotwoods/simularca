@@ -1,3 +1,4 @@
+export type CurveKind = "spline" | "circle";
 export type CurveHandleMode = "normal" | "mirrored" | "auto" | "hard";
 export type CurveHandleWeightMode = "normal" | "hard";
 
@@ -12,8 +13,10 @@ export interface CurvePoint {
 }
 
 export interface CurveData {
+  kind?: CurveKind;
   closed: boolean;
   points: CurvePoint[];
+  radius?: number;
 }
 
 function toFiniteNumber(value: unknown, fallback: number): number {
@@ -44,6 +47,10 @@ function sanitizeHandleMode(value: unknown): CurveHandleMode {
 
 function sanitizeHandleWeightMode(value: unknown): CurveHandleWeightMode {
   return value === "hard" ? "hard" : "normal";
+}
+
+function sanitizeCurveKind(value: unknown): CurveKind {
+  return value === "circle" ? "circle" : "spline";
 }
 
 function sanitizePoint(value: unknown, fallback: CurvePoint): CurvePoint {
@@ -88,6 +95,7 @@ function sanitizePoint(value: unknown, fallback: CurvePoint): CurvePoint {
 
 export function createDefaultCurveData(): CurveData {
   return {
+    kind: "spline",
     closed: false,
     points: [
       {
@@ -112,8 +120,35 @@ export function createDefaultCurveData(): CurveData {
   };
 }
 
+export function createCircleCurveData(radius = 1): CurveData {
+  return {
+    kind: "circle",
+    closed: true,
+    points: [],
+    radius: Math.max(0, toFiniteNumber(radius, 1))
+  };
+}
+
 export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveData {
   const baseline = fallback ?? createDefaultCurveData();
+  const baselineKind = sanitizeCurveKind(baseline.kind);
+  if (!value || typeof value !== "object") {
+    return baselineKind === "circle"
+      ? createCircleCurveData(baseline.radius ?? 1)
+      : {
+        kind: "spline",
+        closed: baseline.closed,
+        points: baseline.points.map((point) => sanitizePoint(point, point))
+      };
+  }
+
+  const source = value as { kind?: unknown; closed?: unknown; points?: unknown; radius?: unknown };
+  const kind = sanitizeCurveKind(source.kind ?? baseline.kind);
+  if (kind === "circle") {
+    const fallbackRadius = typeof baseline.radius === "number" ? baseline.radius : 1;
+    return createCircleCurveData(toFiniteNumber(source.radius, fallbackRadius));
+  }
+
   const defaultPoints = createDefaultCurveData().points;
   const firstDefaultPoint = defaultPoints[0] ?? {
     position: [0, 0, 0] as [number, number, number],
@@ -121,14 +156,6 @@ export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveDa
     handleOut: [0.3, 0, 0] as [number, number, number],
     mode: "mirrored" as CurveHandleMode
   };
-  if (!value || typeof value !== "object") {
-    return {
-      closed: baseline.closed,
-      points: baseline.points.map((point) => sanitizePoint(point, point))
-    };
-  }
-
-  const source = value as { closed?: unknown; points?: unknown };
   const sourcePoints = Array.isArray(source.points) ? source.points : [];
   const fallbackPoints = baseline.points.length > 0 ? baseline.points : defaultPoints;
   const points = sourcePoints.map((entry, index) => {
@@ -137,6 +164,7 @@ export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveDa
   });
 
   return {
+    kind: "spline",
     closed: Boolean(source.closed),
     points
   };

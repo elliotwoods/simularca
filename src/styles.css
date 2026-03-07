@@ -1537,6 +1537,42 @@ select {
   overflow: hidden;
 }
 
+.viewport-transform-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(126, 163, 203, 0.35);
+  border-radius: 6px;
+  background: rgba(7, 17, 30, 0.84);
+}
+
+.viewport-transform-button {
+  border: 1px solid rgba(126, 163, 203, 0.26);
+  background: rgba(255, 255, 255, 0.03);
+  color: #d6e7ff;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 1;
+  padding: 7px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.viewport-transform-button:hover {
+  border-color: rgba(126, 163, 203, 0.48);
+  background: rgba(126, 163, 203, 0.1);
+}
+
+.viewport-transform-button.is-active {
+  border-color: rgba(126, 163, 203, 0.85);
+  background: rgba(126, 163, 203, 0.18);
+}
+
 .viewport-resolution-overlay {
   position: absolute;
   top: 8px;

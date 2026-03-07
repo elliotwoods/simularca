@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
+import type { ActorTransformMode } from "@/render/actorTransformController";
 import { WebGpuViewport } from "@/render/webgpuRenderer";
 import { WebGlViewport } from "@/render/webglRenderer";
 
 interface ViewportRuntime {
   start(): Promise<void>;
   stop(): void;
+  setActorTransformMode(mode: ActorTransformMode): void;
 }
 
 interface ViewportPanelProps {
@@ -37,6 +39,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
   const resizeObservedElementsRef = useRef<HTMLElement[]>([]);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [showResolutionOverlay, setShowResolutionOverlay] = useState(false);
+  const [actorTransformMode, setActorTransformMode] = useState<ActorTransformMode>("translate");
 
   useEffect(() => {
     if (props.suspended) {
@@ -49,6 +52,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
       backend === "webgl2"
         ? new WebGlViewport(kernel, hostRef.current, { antialias: antialiasing })
         : new WebGpuViewport(kernel, hostRef.current, { antialias: antialiasing });
+    viewport.setActorTransformMode(actorTransformMode);
     viewportRef.current = viewport;
     let cancelled = false;
     void viewport.start().catch((error) => {
@@ -67,6 +71,10 @@ export function ViewportPanel(props: ViewportPanelProps) {
       viewportRef.current = null;
     };
   }, [antialiasing, backend, kernel, props.suspended]);
+
+  useEffect(() => {
+    viewportRef.current?.setActorTransformMode(actorTransformMode);
+  }, [actorTransformMode]);
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -144,6 +152,26 @@ export function ViewportPanel(props: ViewportPanelProps) {
   return (
       <div className="viewport-panel">
       <div className="viewport-canvas-host" ref={hostRef} />
+      {!props.suspended ? (
+        <div className="viewport-transform-toolbar" role="toolbar" aria-label="Actor transform mode">
+          <button
+            type="button"
+            className={`viewport-transform-button${actorTransformMode === "translate" ? " is-active" : ""}`}
+            onClick={() => setActorTransformMode("translate")}
+            title="Translate selected actor"
+          >
+            Move
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${actorTransformMode === "rotate" ? " is-active" : ""}`}
+            onClick={() => setActorTransformMode("rotate")}
+            title="Rotate selected actor"
+          >
+            Rotate
+          </button>
+        </div>
+      ) : null}
       {props.suspended ? <div className="viewport-suspended-overlay">Viewport suspended during render</div> : null}
       {loadingBannerText && !props.suspended ? (
         <div className="viewport-loading-banner">
@@ -157,4 +185,3 @@ export function ViewportPanel(props: ViewportPanelProps) {
     </div>
   );
 }
-

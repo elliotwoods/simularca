@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
+import { ActorTransformController, type ActorTransformMode } from "@/render/actorTransformController";
 import { CurveEditController } from "@/render/curveEditController";
 import { incompatibilityReason } from "@/render/engineCompatibility";
 import { SceneController } from "@/render/sceneController";
@@ -31,6 +32,7 @@ export class WebGlViewport {
   private readonly controls: OrbitControls;
   private readonly sceneController: SceneController;
   private readonly curveEditController: CurveEditController;
+  private readonly actorTransformController: ActorTransformController;
   private readonly sparkSplatController: SparkSplatController;
   private frameHandle = 0;
   private frameCount = 0;
@@ -106,6 +108,13 @@ export class WebGlViewport {
       this.renderer.domElement,
       this.activeCamera
     );
+    this.actorTransformController = new ActorTransformController(
+      kernel,
+      this.sceneController,
+      this.controls,
+      this.renderer.domElement,
+      this.activeCamera
+    );
   }
 
   public async start(): Promise<void> {
@@ -144,6 +153,7 @@ export class WebGlViewport {
     }
     this.controls.dispose();
     window.removeEventListener("wheel", this.onViewportWheel, true);
+    this.actorTransformController.dispose();
     this.curveEditController.dispose();
     this.sparkSplatController.dispose();
     this.clearNativeGaussianConflictStatus();
@@ -151,6 +161,10 @@ export class WebGlViewport {
     if (this.mountEl.contains(this.renderer.domElement)) {
       this.mountEl.removeChild(this.renderer.domElement);
     }
+  }
+
+  public setActorTransformMode(mode: ActorTransformMode): void {
+    this.actorTransformController.setMode(mode);
   }
 
   private animate = (): void => {
@@ -178,7 +192,9 @@ export class WebGlViewport {
     this.syncCameraState();
     this.applyKeyboardNavigation(performance.now());
     this.curveEditController.setCamera(this.activeCamera);
+    this.actorTransformController.setCamera(this.activeCamera);
     this.curveEditController.update();
+    this.actorTransformController.update();
     this.controls.update();
     this.syncCameraToState();
     const _rf3 = performance.now();

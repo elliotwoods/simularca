@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { createId } from "@/core/ids";
 import type { ActorNode } from "@/core/types";
-import { curveDataWithOverrides } from "@/features/curves/model";
+import { curveDataWithOverrides, getCurveTypeFromActor } from "@/features/curves/model";
 import { sampleCurvePositionAndTangent } from "@/features/curves/sampler";
 
 export interface CameraPathKeyframe {
@@ -36,11 +36,17 @@ function toFiniteTimeSeconds(value: unknown, fallback: number): number {
 }
 
 function getSharedManagedCurveCount(refs: CameraPathRefs): number {
-  const positionCount = refs.positionCurveActor ? curveDataWithOverrides(refs.positionCurveActor).points.length : 0;
+  const positionCount =
+    refs.positionCurveActor && getCurveTypeFromActor(refs.positionCurveActor) === "spline"
+      ? curveDataWithOverrides(refs.positionCurveActor).points.length
+      : 0;
   if (refs.targetMode === "actor") {
     return positionCount;
   }
-  const targetCount = refs.targetCurveActor ? curveDataWithOverrides(refs.targetCurveActor).points.length : 0;
+  const targetCount =
+    refs.targetCurveActor && getCurveTypeFromActor(refs.targetCurveActor) === "spline"
+      ? curveDataWithOverrides(refs.targetCurveActor).points.length
+      : 0;
   return Math.min(positionCount, targetCount);
 }
 
@@ -78,15 +84,16 @@ export function resolveCameraPathRefs(cameraPathActor: ActorNode, actors: Record
 export function getCameraPathKeyframes(cameraPathActor: ActorNode, actors: Record<string, ActorNode>): CameraPathKeyframe[] {
   const refs = resolveCameraPathRefs(cameraPathActor, actors);
   const expectedCount = getSharedManagedCurveCount(refs);
-  if (expectedCount <= 0) {
-    return [];
-  }
-
   const source = Array.isArray(cameraPathActor.params.keyframes)
     ? cameraPathActor.params.keyframes
     : [];
+  const explicitCount = source.length;
+  const resolvedCount = expectedCount > 0 ? expectedCount : explicitCount;
+  if (resolvedCount <= 0) {
+    return [];
+  }
   const keyframes: CameraPathKeyframe[] = [];
-  for (let index = 0; index < expectedCount; index += 1) {
+  for (let index = 0; index < resolvedCount; index += 1) {
     const raw = source[index];
     const previous = keyframes[index - 1];
     const fallbackTime = index === 0 ? 0 : (previous?.timeSeconds ?? index - 1) + 1;
@@ -156,6 +163,7 @@ export function getCameraPathValidity(cameraPathActor: ActorNode, actors: Record
 
 export function buildSinglePointCurveData(position: [number, number, number]) {
   return {
+    kind: "spline" as const,
     closed: false,
     points: [
       {

@@ -6,13 +6,13 @@ import type { AppKernel } from "@/app/kernel";
 import type { ActorNode } from "@/core/types";
 import { getEffectiveCurveHandlesAt } from "@/features/curves/handles";
 import { setCurveAnchorPosition, setCurveHandlePosition, appendCurvePoint } from "@/features/curves/editing";
-import { curveDataWithOverrides } from "@/features/curves/model";
+import { curveDataWithOverrides, getCurveTypeFromActor } from "@/features/curves/model";
 import type { CurvePoint } from "@/features/curves/types";
 import type { SceneController } from "@/render/sceneController";
 
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
-const CURVE_VERTEX_HOVER_EVENT = "simularca:curve-vertex-hover";
-const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
+export const CURVE_VERTEX_HOVER_EVENT = "simularca:curve-vertex-hover";
+export const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
 
 interface CurveControlMeta {
   actorId: string;
@@ -184,7 +184,7 @@ export class CurveEditController {
       return null;
     }
     const actor = state.actors[selected.id];
-    if (!actor || actor.actorType !== "curve") {
+    if (!actor || actor.actorType !== "curve" || getCurveTypeFromActor(actor) !== "spline") {
       return null;
     }
     return actor;
@@ -353,6 +353,12 @@ export class CurveEditController {
     }
     const picked = this.pickControl(event);
     if (!picked) {
+      if (this.activeControlMeta) {
+        this.transformControls.detach();
+        this.activeControlMeta = null;
+        this.refreshControlSelectionVisuals();
+        this.emitCurveVertexSelection(null, null, "anchor");
+      }
       return;
     }
     event.preventDefault();
