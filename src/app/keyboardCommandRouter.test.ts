@@ -27,4 +27,17 @@ describe("keyboard command router", () => {
     unregister();
     expect(handled).toBe(false);
   });
+
+  it("supports add actor browser shortcut handlers", () => {
+    const calls: string[] = [];
+    const unregister = keyboardCommandRouter.register("open-add-actor-browser", () => {
+      calls.push("open");
+      return true;
+    });
+    const handled = keyboardCommandRouter.dispatch("open-add-actor-browser", new KeyboardEvent("keydown", { key: "a" }));
+    unregister();
+
+    expect(handled).toBe(true);
+    expect(calls).toEqual(["open"]);
+  });
 });

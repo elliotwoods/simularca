@@ -43,6 +43,7 @@ function createBeamRoot(): THREE.Group {
     color: 0xffffff,
     transparent: true,
     opacity: DEFAULT_BEAM_ALPHA,
+    blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.DoubleSide
   });
@@ -172,6 +173,7 @@ function updateMaterial(state: BeamObjectState, params: BeamParams): void {
   state.material.color.set(params.beamColor);
   state.material.transparent = true;
   state.material.opacity = params.beamAlpha;
+  state.material.blending = THREE.AdditiveBlending;
   state.material.depthWrite = false;
   state.material.side = THREE.DoubleSide;
   state.material.needsUpdate = true;

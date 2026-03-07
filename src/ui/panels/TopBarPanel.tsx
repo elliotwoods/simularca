@@ -279,7 +279,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
 
       <div className="toolbar-group">
         <label title="Create Actor Browser">Create</label>
-        <AddActorMenu disabled={isReadOnly} />
+        <AddActorMenu disabled={isReadOnly} registerGlobalShortcut />
       </div>
 
       <div className="toolbar-group">

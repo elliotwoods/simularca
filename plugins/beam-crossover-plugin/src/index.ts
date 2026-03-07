@@ -1,5 +1,5 @@
 import type { PluginHandshakeModule } from "./contracts";
-import { beamEmitterArrayDescriptor, beamEmitterDescriptor, createBeamCrossoverPlugin } from "./beamPlugin";
+import { createBeamCrossoverPlugin } from "./beamPlugin";
 
 export { beamEmitterArrayDescriptor, beamEmitterDescriptor } from "./beamPlugin";
 export {

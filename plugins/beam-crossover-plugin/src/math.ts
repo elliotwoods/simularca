@@ -335,6 +335,9 @@ export function buildBeamGeometryWorld(
 
   for (let index = 0; index < contourCount; index += 1) {
     const contourPoint = contourWorld[index];
+    if (!contourPoint) {
+      continue;
+    }
     const direction = contourPoint.clone().sub(emitterWorld);
     if (direction.lengthSq() <= EPSILON) {
       direction.set(0, 0, 1);
@@ -382,6 +385,9 @@ export function buildCombinedBeamGeometryWorld(
     positions[vertexBase * 3 + 2] = apexLocal.z;
     for (let contourIndex = 0; contourIndex < placement.contourWorld.length; contourIndex += 1) {
       const contourPoint = placement.contourWorld[contourIndex];
+      if (!contourPoint) {
+        continue;
+      }
       const direction = contourPoint.clone().sub(placement.emitterWorld);
       if (direction.lengthSq() <= EPSILON) {
         direction.set(0, 0, 1);
@@ -453,11 +459,14 @@ export function sampleArcLengthCurveTs(
   const result: number[] = [];
   let lookupIndex = 1;
   for (const targetLength of targets) {
-    while (lookupIndex < cumulative.length && cumulative[lookupIndex].length < targetLength) {
+    while (lookupIndex < cumulative.length && (cumulative[lookupIndex]?.length ?? Number.POSITIVE_INFINITY) < targetLength) {
       lookupIndex += 1;
     }
     const upper = cumulative[Math.min(lookupIndex, cumulative.length - 1)];
     const lower = cumulative[Math.max(0, lookupIndex - 1)];
+    if (!upper || !lower) {
+      continue;
+    }
     const span = upper.length - lower.length;
     if (span <= EPSILON) {
       result.push(upper.t);

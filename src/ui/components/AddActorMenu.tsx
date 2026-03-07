@@ -5,9 +5,12 @@ import { faPlus, faXmark } from "@fortawesome/free-solid-svg-icons";
 import { createActorFromDescriptor, listActorCreationOptions } from "@/features/actors/actorCatalog";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
+import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
 
 interface AddActorMenuProps {
   disabled?: boolean;
+  buttonTitle?: string;
+  registerGlobalShortcut?: boolean;
 }
 
 function normalizeSearchValue(value: string): string {
@@ -164,6 +167,16 @@ export function AddActorMenu(props: AddActorMenuProps) {
     }
   }, [activeOption, open]);
 
+  useEffect(() => {
+    if (!props.registerGlobalShortcut || props.disabled) {
+      return;
+    }
+    return keyboardCommandRouter.register("open-add-actor-browser", () => {
+      setOpen(true);
+      return true;
+    }, 10);
+  }, [props.disabled, props.registerGlobalShortcut]);
+
   const handleCreateFromOption = async (descriptorId: string): Promise<void> => {
     const created = createActorFromDescriptor(kernel, descriptorId);
     if (!created) {
@@ -206,7 +219,7 @@ export function AddActorMenu(props: AddActorMenuProps) {
         type="button"
         className="add-actor-button"
         disabled={props.disabled}
-        title="Create Actor Browser"
+        title={props.buttonTitle ?? "Create Actor Browser"}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => {

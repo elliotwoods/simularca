@@ -31,7 +31,7 @@ export function LeftPanel(props: LeftPanelProps) {
         <header>
           <h3>Scene Graph</h3>
           <div className="inline-actions">
-            <AddActorMenu disabled={readOnly} />
+            <AddActorMenu disabled={readOnly} buttonTitle="Add actor" />
           </div>
         </header>
         <SceneTree pendingDropFileName={props.pendingDropFileName} />

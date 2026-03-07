@@ -151,6 +151,17 @@ describe("project service", () => {
     expect(storage.saveProjectSnapshot).not.toHaveBeenCalled();
   });
 
+  it("trims the target project name before renaming", async () => {
+    const storage = createStorageMocks();
+    const store = createAppStore("electron-rw");
+    const service = new ProjectService(storage, store);
+
+    await service.renameProject("demo", "  renamed  ");
+
+    expect(storage.renameProject).toHaveBeenCalledWith("demo", "renamed");
+    expect(store.getState().state.activeProjectName).toBe("renamed");
+  });
+
   it("does not rewrite snapshot file when manifest identity already matches and no migration happens", async () => {
     const storage = createStorageMocks({
       loadProjectSnapshot: vi.fn(async () => serializeProjectSnapshot(buildManifest("demo", "main")))
@@ -162,5 +173,29 @@ describe("project service", () => {
 
     expect(storage.saveProjectSnapshot).not.toHaveBeenCalled();
     expect(storage.convertGaussianAsset).not.toHaveBeenCalled();
+  });
+
+  it("can set defaults for a specific snapshot without loading it first", async () => {
+    const storage = createStorageMocks();
+    const store = createAppStore("electron-rw");
+    const service = new ProjectService(storage, store);
+
+    await service.setDefaultSnapshot("lighting-pass", "demo");
+
+    expect(storage.saveDefaults).toHaveBeenCalledWith({
+      defaultProjectName: "demo",
+      defaultSnapshotName: "lighting-pass"
+    });
+  });
+
+  it("trims the target snapshot name before renaming", async () => {
+    const storage = createStorageMocks();
+    const store = createAppStore("electron-rw");
+    const service = new ProjectService(storage, store);
+
+    await service.renameSnapshot("main", "  draft-2  ");
+
+    expect(storage.renameSnapshot).toHaveBeenCalledWith("demo", "main", "draft-2");
+    expect(store.getState().state.activeSnapshotName).toBe("draft-2");
   });
 });

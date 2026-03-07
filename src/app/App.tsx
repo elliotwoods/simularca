@@ -500,6 +500,15 @@ export function App() {
         cycleCameraByTab(event.shiftKey ? -1 : 1);
         return;
       }
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "a") {
+        if (event.repeat) {
+          return;
+        }
+        if (keyboardCommandRouter.dispatch("open-add-actor-browser", event)) {
+          event.preventDefault();
+          return;
+        }
+      }
       if (event.key.toLowerCase() === "p") {
         event.preventDefault();
         stopCameraTween();

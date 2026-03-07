@@ -3,7 +3,7 @@ import { buildProjectSnapshotManifest } from "@/core/project/projectSnapshotMani
 import { parseProjectSnapshot, serializeProjectSnapshot } from "@/core/project/projectSnapshotSchema";
 import type { StorageAdapter } from "@/features/storage/storageAdapter";
 import type { AppStoreApi } from "@/core/store/appStore";
-import type { ProjectAssetRef, ProjectSnapshotListEntry } from "@/types/ipc";
+import type { DefaultProjectPointer, ProjectAssetRef, ProjectSnapshotListEntry } from "@/types/ipc";
 import type { ProjectSnapshotManifest } from "@/core/types";
 
 const DEFAULT_SNAPSHOT_NAME = "main";
@@ -88,16 +88,20 @@ export class ProjectService {
       return;
     }
 
+    const normalizedName = projectName.trim();
+    if (!normalizedName) {
+      throw new Error("Project name is required.");
+    }
     const previousName = this.store.getState().state.activeProjectName;
-    if (previousName === projectName) {
+    if (previousName === normalizedName) {
       await this.saveProject();
       return;
     }
     await this.saveProject();
-    await this.storage.cloneProject(previousName, projectName);
-    this.store.getState().actions.setProjectName(projectName);
+    await this.storage.cloneProject(previousName, normalizedName);
+    this.store.getState().actions.setProjectName(normalizedName);
     await this.storage.saveDefaults({
-      defaultProjectName: projectName,
+      defaultProjectName: normalizedName,
       defaultSnapshotName: this.store.getState().state.activeSnapshotName
     });
     await this.saveProject();
@@ -107,10 +111,14 @@ export class ProjectService {
     if (this.storage.isReadOnly) {
       return;
     }
+    const normalizedName = snapshotName.trim();
+    if (!normalizedName) {
+      throw new Error("Snapshot name is required.");
+    }
     const state = this.store.getState().state;
     const payload = serializeProjectSnapshot(buildProjectSnapshotManifest(state, this.storage.mode));
-    await this.storage.saveProjectSnapshot(state.activeProjectName, snapshotName, payload);
-    this.store.getState().actions.setSnapshotName(snapshotName);
+    await this.storage.saveProjectSnapshot(state.activeProjectName, normalizedName, payload);
+    this.store.getState().actions.setSnapshotName(normalizedName);
     this.store.getState().actions.setDirty(false);
     const savedBytes = new Blob([payload]).size;
     this.store.getState().actions.setStats({
@@ -123,31 +131,39 @@ export class ProjectService {
     if (this.storage.isReadOnly) {
       return;
     }
-    const fresh = createInitialState(this.storage.mode, projectName, DEFAULT_SNAPSHOT_NAME);
+    const normalizedName = projectName.trim();
+    if (!normalizedName) {
+      throw new Error("Project name is required.");
+    }
+    const fresh = createInitialState(this.storage.mode, normalizedName, DEFAULT_SNAPSHOT_NAME);
     this.store.getState().actions.hydrate(fresh);
     await this.storage.saveDefaults({
-      defaultProjectName: projectName,
+      defaultProjectName: normalizedName,
       defaultSnapshotName: DEFAULT_SNAPSHOT_NAME
     });
     await this.saveProject();
   }
 
   public async renameProject(previousName: string, nextName: string): Promise<void> {
-    if (this.storage.isReadOnly || previousName === nextName) {
+    const normalizedName = nextName.trim();
+    if (this.storage.isReadOnly || previousName === normalizedName) {
       return;
+    }
+    if (!normalizedName) {
+      throw new Error("Project name is required.");
     }
     const stateBeforeRename = this.store.getState().state;
     const renamingActiveProject = stateBeforeRename.activeProjectName === previousName;
     if (renamingActiveProject) {
       await this.saveProject();
     }
-    await this.storage.renameProject(previousName, nextName);
+    await this.storage.renameProject(previousName, normalizedName);
     const state = this.store.getState().state;
     if (renamingActiveProject || state.activeProjectName === previousName) {
-      this.store.getState().actions.setProjectName(nextName);
+      this.store.getState().actions.setProjectName(normalizedName);
     }
     await this.storage.saveDefaults({
-      defaultProjectName: nextName,
+      defaultProjectName: normalizedName,
       defaultSnapshotName: this.store.getState().state.activeSnapshotName
     });
     if (renamingActiveProject) {
@@ -164,13 +180,17 @@ export class ProjectService {
   }
 
   public async renameSnapshot(previousName: string, nextName: string): Promise<void> {
-    if (this.storage.isReadOnly || previousName === nextName) {
+    const normalizedName = nextName.trim();
+    if (this.storage.isReadOnly || previousName === normalizedName) {
       return;
     }
+    if (!normalizedName) {
+      throw new Error("Snapshot name is required.");
+    }
     const state = this.store.getState().state;
-    await this.storage.renameSnapshot(state.activeProjectName, previousName, nextName);
+    await this.storage.renameSnapshot(state.activeProjectName, previousName, normalizedName);
     if (state.activeSnapshotName === previousName) {
-      this.store.getState().actions.setSnapshotName(nextName);
+      this.store.getState().actions.setSnapshotName(normalizedName);
     }
     await this.saveDefaultsForCurrentState();
   }
@@ -197,8 +217,12 @@ export class ProjectService {
     await this.saveDefaultsForCurrentState();
   }
 
-  public async setDefaultSnapshot(): Promise<void> {
-    await this.saveDefaultsForCurrentState();
+  public async setDefaultSnapshot(snapshotName?: string, projectName?: string): Promise<void> {
+    const state = this.store.getState().state;
+    await this.storage.saveDefaults({
+      defaultProjectName: projectName ?? state.activeProjectName,
+      defaultSnapshotName: snapshotName ?? state.activeSnapshotName
+    });
   }
 
   public queueAutosave(delayMs = 1000): void {
@@ -212,6 +236,10 @@ export class ProjectService {
 
   public async listSnapshots(projectName?: string): Promise<ProjectSnapshotListEntry[]> {
     return this.storage.listSnapshots(projectName ?? this.store.getState().state.activeProjectName);
+  }
+
+  public async loadDefaultsPointer(): Promise<DefaultProjectPointer> {
+    return this.storage.loadDefaults();
   }
 
   public get isReadOnly(): boolean {

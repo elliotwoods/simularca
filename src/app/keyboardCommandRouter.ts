@@ -1,4 +1,4 @@
-export type KeyboardCommand = "delete-selection";
+export type KeyboardCommand = "delete-selection" | "open-add-actor-browser";
 
 export type KeyboardCommandHandler = (event: KeyboardEvent) => boolean;
 

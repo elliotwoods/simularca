@@ -3,6 +3,7 @@
 This folder contains reference plugin package layouts that can be moved into independent Git repositories.
 
 ## Included
+- `beam-crossover-plugin`
 - `example-wave-plugin`
 - `template-artwork-actor-plugin`
 
