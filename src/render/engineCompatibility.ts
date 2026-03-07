@@ -11,9 +11,11 @@ export function incompatibilityReason(actor: ActorNode, engine: RenderEngine): s
     engine === "webgpu" &&
     actor.actorType === "plugin" &&
     (actor.pluginType === "plugin.beamCrossover.emitter" || actor.pluginType === "plugin.beamCrossover.emitterArray") &&
-    actor.params.beamType === "ghost"
+    (actor.params.beamType === "ghost" || actor.params.beamType === "scatteringShell")
   ) {
-    return "Beam Crossover ghost mode currently requires WebGL2.";
+    return actor.params.beamType === "scatteringShell"
+      ? "Beam Crossover Scattering Shell mode currently requires WebGL2."
+      : "Beam Crossover ghost mode currently requires WebGL2.";
   }
   return null;
 }

@@ -3,7 +3,8 @@ import { describe, expect, test } from "vitest";
 import {
   beamEmitterArrayDescriptor,
   beamEmitterDescriptor,
-  computeGhostAlpha
+  computeGhostAlpha,
+  computeScatteringShellVisibility
 } from "../../../plugins/beam-crossover-plugin/src/beamPlugin";
 import {
   buildBeamGeometryWorld,
@@ -18,7 +19,16 @@ describe("beam crossover plugin descriptors", () => {
     expect(beamEmitterArrayDescriptor.schema.params.some((param) => param.key === "emitterCurveId")).toBe(true);
     expect(beamEmitterArrayDescriptor.schema.params.some((param) => param.key === "targetActorId")).toBe(true);
     const beamType = beamEmitterDescriptor.schema.params.find((param) => param.key === "beamType");
-    expect(beamType?.options).toEqual(["solid", "ghost"]);
+    expect(beamType?.options).toEqual(["solid", "ghost", "normals", "scatteringShell"]);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "hazeIntensity")?.defaultValue).toBe(1);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "extinctionCoeff")?.defaultValue).toBe(0.05);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "anisotropyG")?.defaultValue).toBe(0.6);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "beamDivergenceRad")?.defaultValue).toBe(0.001);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "beamApertureDiameter")?.defaultValue).toBe(0.002);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "softClampKnee")?.defaultValue).toBe(0.25);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "hazeIntensity")?.description).toContain("visible atmospheric haze");
+    expect(beamEmitterDescriptor.schema.params.some((param) => param.key === "travelGain")).toBe(false);
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "beamAlpha")?.description).toContain("shader's base alpha");
   });
 });
 
@@ -87,35 +97,194 @@ describe("beam crossover silhouette math", () => {
     expect(silhouette.reason).toMatch(/inside|on the target primitive/i);
   });
 
-  test("builds a triangle fan with one triangle per contour sample", () => {
+  test("builds explicit triangles with flat face normals", () => {
     const emitterWorld = new THREE.Vector3(0, 0, 0);
     const contourWorld = [
-      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 0.5, 1),
       new THREE.Vector3(1, 0, 0),
-      new THREE.Vector3(0, 0, -1),
-      new THREE.Vector3(-1, 0, 0)
+      new THREE.Vector3(0, -0.5, -1),
+      new THREE.Vector3(-1, 0.25, 0)
     ];
     const geometry = buildBeamGeometryWorld(emitterWorld, contourWorld, 5, new THREE.Matrix4().identity());
-    expect(geometry.getAttribute("position").count).toBe(5);
-    expect(geometry.getAttribute("normal")?.count).toBe(5);
-    expect(geometry.getIndex()?.count).toBe(12);
+    const position = geometry.getAttribute("position");
+    const normal = geometry.getAttribute("normal");
+    const emitterPosition = geometry.getAttribute("beamEmitterPosition");
+    expect(position.count).toBe(12);
+    expect(normal?.count).toBe(12);
+    expect(emitterPosition?.count).toBe(12);
+    expect(geometry.getIndex()).toBeNull();
+    expect(position.getX(0)).toBeCloseTo(position.getX(3), 6);
+    expect(position.getY(0)).toBeCloseTo(position.getY(3), 6);
+    expect(position.getZ(0)).toBeCloseTo(position.getZ(3), 6);
+    expect(normal?.getX(0)).toBeCloseTo(normal?.getX(1) ?? 0, 6);
+    expect(normal?.getY(0)).toBeCloseTo(normal?.getY(1) ?? 0, 6);
+    expect(normal?.getZ(0)).toBeCloseTo(normal?.getZ(1) ?? 0, 6);
+    expect(normal?.getX(0)).toBeCloseTo(normal?.getX(2) ?? 0, 6);
+    expect(normal?.getY(0)).toBeCloseTo(normal?.getY(2) ?? 0, 6);
+    expect(normal?.getZ(0)).toBeCloseTo(normal?.getZ(2) ?? 0, 6);
+    expect(emitterPosition?.getX(0)).toBeCloseTo(0, 6);
+    expect(emitterPosition?.getY(0)).toBeCloseTo(0, 6);
+    expect(emitterPosition?.getZ(0)).toBeCloseTo(0, 6);
   });
 });
 
 describe("beam crossover ghost alpha", () => {
-  test("returns full alpha when view and normal are parallel", () => {
+  test("returns zero alpha when view and normal are parallel", () => {
     const alpha = computeGhostAlpha(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 1), 0.6);
-    expect(alpha).toBeCloseTo(0.6, 6);
+    expect(alpha).toBeCloseTo(0, 6);
   });
 
-  test("returns zero alpha when view and normal are orthogonal", () => {
+  test("returns full alpha when view and normal are orthogonal", () => {
     const alpha = computeGhostAlpha(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), 0.6);
-    expect(alpha).toBeCloseTo(0, 6);
+    expect(alpha).toBeCloseTo(0.6, 6);
   });
 
   test("scales intermediate ghost alpha by beam alpha", () => {
     const alpha = computeGhostAlpha(new THREE.Vector3(1, 0, 1), new THREE.Vector3(0, 0, 1), 0.5);
-    expect(alpha).toBeCloseTo(0.5 * (1 - Math.sqrt(0.5)), 6);
+    expect(alpha).toBeCloseTo(0.5 * Math.sqrt(0.5), 6);
+  });
+});
+
+describe("beam crossover scattering shell", () => {
+  test("increases path-length term at grazing angles", () => {
+    const faceOn = computeScatteringShellVisibility({
+      emitterPos: new THREE.Vector3(0, 0, 0),
+      worldPos: new THREE.Vector3(0, 0, 1),
+      worldNormal: new THREE.Vector3(0, 0, 1),
+      cameraPos: new THREE.Vector3(0, 0, 3),
+      beamAlpha: 1,
+      hazeIntensity: 1,
+      scatteringCoeff: 1,
+      extinctionCoeff: 0,
+      anisotropyG: 0,
+      beamDivergenceRad: 0.001,
+      beamApertureDiameter: 0.002,
+      distanceFalloffExponent: 0,
+      pathLengthGain: 1,
+      pathLengthExponent: 2,
+      phaseGain: 1,
+      scanDuty: 1,
+      nearFadeStart: 0,
+      nearFadeEnd: 0,
+      softClampKnee: 0
+    });
+    const grazing = computeScatteringShellVisibility({
+      emitterPos: new THREE.Vector3(0, 0, 0),
+      worldPos: new THREE.Vector3(0, 0, 1),
+      worldNormal: new THREE.Vector3(1, 0, 0),
+      cameraPos: new THREE.Vector3(0, 0, 3),
+      beamAlpha: 1,
+      hazeIntensity: 1,
+      scatteringCoeff: 1,
+      extinctionCoeff: 0,
+      anisotropyG: 0,
+      beamDivergenceRad: 0.001,
+      beamApertureDiameter: 0.002,
+      distanceFalloffExponent: 0,
+      pathLengthGain: 1,
+      pathLengthExponent: 2,
+      phaseGain: 1,
+      scanDuty: 1,
+      nearFadeStart: 0,
+      nearFadeEnd: 0,
+      softClampKnee: 0
+    });
+    expect(grazing.pathLengthTerm).toBeGreaterThan(faceOn.pathLengthTerm);
+  });
+
+  test("uses a fixed normal-view brightness rule from 1.0 at silhouette to 0.5 face-on", () => {
+    const silhouette = computeScatteringShellVisibility({
+      emitterPos: new THREE.Vector3(0, 0, 0),
+      worldPos: new THREE.Vector3(0, 0, 1),
+      worldNormal: new THREE.Vector3(1, 0, 0),
+      cameraPos: new THREE.Vector3(0, 0, 5),
+      beamAlpha: 1,
+      hazeIntensity: 1,
+      scatteringCoeff: 1,
+      extinctionCoeff: 0,
+      anisotropyG: 0,
+      beamDivergenceRad: 0.001,
+      beamApertureDiameter: 0.002,
+      distanceFalloffExponent: 0,
+      pathLengthGain: 0,
+      pathLengthExponent: 1,
+      phaseGain: 1,
+      scanDuty: 1,
+      nearFadeStart: 0,
+      nearFadeEnd: 0,
+      softClampKnee: 0
+    });
+    const faceOn = computeScatteringShellVisibility({
+      emitterPos: new THREE.Vector3(0, 0, 0),
+      worldPos: new THREE.Vector3(0, 0, 1),
+      worldNormal: new THREE.Vector3(0, 0, 1),
+      cameraPos: new THREE.Vector3(0, 0, 5),
+      beamAlpha: 1,
+      hazeIntensity: 1,
+      scatteringCoeff: 1,
+      extinctionCoeff: 0,
+      anisotropyG: 0,
+      beamDivergenceRad: 0.001,
+      beamApertureDiameter: 0.002,
+      distanceFalloffExponent: 0,
+      pathLengthGain: 0,
+      pathLengthExponent: 1,
+      phaseGain: 1,
+      scanDuty: 1,
+      nearFadeStart: 0,
+      nearFadeEnd: 0,
+      softClampKnee: 0
+    });
+    expect(silhouette.normalViewTerm).toBeCloseTo(1, 6);
+    expect(faceOn.normalViewTerm).toBeCloseTo(0.5, 6);
+  });
+
+  test("applies extinction, near fade, and soft clamp to visibility", () => {
+    const withoutClamp = computeScatteringShellVisibility({
+      emitterPos: new THREE.Vector3(0, 0, 0),
+      worldPos: new THREE.Vector3(0, 0, 2),
+      worldNormal: new THREE.Vector3(1, 0, 0),
+      cameraPos: new THREE.Vector3(0, 0, 6),
+      beamAlpha: 1,
+      hazeIntensity: 10,
+      scatteringCoeff: 5,
+      extinctionCoeff: 0,
+      anisotropyG: 0.6,
+      beamDivergenceRad: 0.001,
+      beamApertureDiameter: 0.002,
+      distanceFalloffExponent: 0,
+      pathLengthGain: 2,
+      pathLengthExponent: 2,
+      phaseGain: 1,
+      scanDuty: 1,
+      nearFadeStart: 0,
+      nearFadeEnd: 0,
+      softClampKnee: 0
+    });
+    const clampedAndFaded = computeScatteringShellVisibility({
+      emitterPos: new THREE.Vector3(0, 0, 0),
+      worldPos: new THREE.Vector3(0, 0, 2),
+      worldNormal: new THREE.Vector3(1, 0, 0),
+      cameraPos: new THREE.Vector3(0, 0, 6),
+      beamAlpha: 1,
+      hazeIntensity: 10,
+      scatteringCoeff: 5,
+      extinctionCoeff: 0.5,
+      anisotropyG: 0.6,
+      beamDivergenceRad: 0.001,
+      beamApertureDiameter: 0.002,
+      distanceFalloffExponent: 0,
+      pathLengthGain: 2,
+      pathLengthExponent: 2,
+      phaseGain: 1,
+      scanDuty: 1,
+      nearFadeStart: 1,
+      nearFadeEnd: 3,
+      softClampKnee: 0.25
+    });
+    expect(clampedAndFaded.extinctionTerm).toBeLessThan(withoutClamp.extinctionTerm);
+    expect(clampedAndFaded.nearFadeTerm).toBeLessThan(1);
+    expect(clampedAndFaded.visibility).toBeLessThan(withoutClamp.visibility);
   });
 });
 

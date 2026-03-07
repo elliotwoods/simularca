@@ -4,6 +4,7 @@ import { createAppStore } from "@/core/store/appStore";
 import { createActorFromDescriptor } from "@/features/actors/actorCatalog";
 import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraPathActor";
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
+import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
 
 function createKernelStub(): AppKernel {
   const store = createAppStore("electron-rw");
@@ -16,7 +17,7 @@ function createKernelStub(): AppKernel {
       listPlugins: () => []
     } as unknown as AppKernel["pluginApi"],
     descriptorRegistry: {
-      listByKind: () => [cameraPathActorDescriptor, curveActorDescriptor]
+      listByKind: () => [cameraPathActorDescriptor, curveActorDescriptor, primitiveActorDescriptor]
     } as unknown as AppKernel["descriptorRegistry"],
     clock: {} as AppKernel["clock"]
   };
@@ -56,5 +57,18 @@ describe("actorCatalog camera path creation", () => {
     expect(kernel.store.getState().state.actors[actorId ?? ""]).toBeUndefined();
     expect(positionCurveActorId ? kernel.store.getState().state.actors[positionCurveActorId] : undefined).toBeUndefined();
     expect(targetCurveActorId ? kernel.store.getState().state.actors[targetCurveActorId] : undefined).toBeUndefined();
+  });
+
+  it("defaults new primitive actors to sphere", () => {
+    const kernel = createKernelStub();
+
+    const actorId = createActorFromDescriptor(kernel, "actor.primitive");
+    expect(actorId).toBeTruthy();
+
+    const state = kernel.store.getState().state;
+    const actor = actorId ? state.actors[actorId] : null;
+    expect(actor?.actorType).toBe("primitive");
+    expect(actor?.params.shape).toBe("sphere");
+    expect(actor?.params.sphereRadius).toBe(0.5);
   });
 });

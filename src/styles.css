@@ -1762,6 +1762,7 @@ select {
   grid-template-columns: 78px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
+  position: relative;
 }
 
 .widget-row-field .widget-row-header {
@@ -1793,6 +1794,10 @@ select {
 .widget-description {
   color: #6d88a8;
   font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .widget-row-control {
@@ -1824,6 +1829,30 @@ select {
 .widget-reset-button.is-hidden {
   visibility: hidden;
   pointer-events: none;
+}
+
+.widget-description-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: min(320px, calc(100vw - 48px));
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  background: #0d1828;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 10px 24px rgba(1, 3, 8, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  white-space: normal;
+}
+
+.widget-row-field.has-description-tooltip:hover .widget-description-popover,
+.widget-row-field.has-description-tooltip:focus-within .widget-description-popover {
+  opacity: 1;
 }
 
 .widget-number {

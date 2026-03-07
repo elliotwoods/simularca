@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faRotateLeft } from "@fortawesome/free-solid-svg-icons";
 
@@ -14,11 +14,44 @@ interface InspectorFieldRowProps {
 }
 
 export function InspectorFieldRow(props: InspectorFieldRowProps) {
+  const descriptionRef = useRef<HTMLSpanElement | null>(null);
+  const [descriptionOverflowing, setDescriptionOverflowing] = useState(false);
+
+  useEffect(() => {
+    if (!props.description) {
+      setDescriptionOverflowing(false);
+      return;
+    }
+
+    const element = descriptionRef.current;
+    if (!element) {
+      return;
+    }
+
+    const updateOverflow = () => {
+      const nextOverflowing = element.scrollWidth > element.clientWidth + 1;
+      setDescriptionOverflowing(nextOverflowing);
+    };
+
+    updateOverflow();
+    const observer = new ResizeObserver(() => {
+      updateOverflow();
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+    };
+  }, [props.description]);
+
   return (
-    <div className="widget-row widget-row-field">
+    <div className={`widget-row widget-row-field${descriptionOverflowing ? " has-description-tooltip" : ""}`}>
       <div className="widget-row-header">
         <label className="widget-label">{props.label}</label>
-        {props.description ? <span className="widget-description">{props.description}</span> : null}
+        {props.description ? (
+          <span ref={descriptionRef} className="widget-description">
+            {props.description}
+          </span>
+        ) : null}
       </div>
       <div className={`widget-row-control-wrap${props.resetAlign === "start" ? " align-start" : ""}`}>
         <div className="widget-row-control">{props.children}</div>
@@ -32,6 +65,11 @@ export function InspectorFieldRow(props: InspectorFieldRowProps) {
           <FontAwesomeIcon icon={faRotateLeft} />
         </button>
       </div>
+      {props.description && descriptionOverflowing ? (
+        <div className="widget-description-popover" role="tooltip">
+          {props.description}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -101,4 +101,65 @@ describe("InspectorPane camera path", () => {
       root.unmount();
     });
   });
+
+  it("survives selection transitions between scene and camera path", async () => {
+    const kernel = createKernelStub();
+    const actions = kernel.store.getState().actions;
+    const parentId = actions.createActor({ actorType: "camera-path", name: "Camera Path" });
+    const positionId = actions.createActor({ actorType: "curve", name: "camera position", parentActorId: parentId });
+    const targetId = actions.createActor({ actorType: "curve", name: "camera target", parentActorId: parentId });
+    actions.updateActorParams(parentId, {
+      positionCurveActorId: positionId,
+      targetCurveActorId: targetId,
+      targetMode: "curve",
+      targetActorId: "",
+      keyframes: [{ id: "kf0", timeSeconds: 0 }]
+    });
+    actions.updateActorParams(positionId, {
+      curveData: {
+        closed: false,
+        points: [{ position: [0, 0, 0], handleIn: [0, 0, 0], handleOut: [0, 0, 0], mode: "mirrored" }]
+      }
+    });
+    actions.updateActorParams(targetId, {
+      curveData: {
+        closed: false,
+        points: [{ position: [0, 0, 1], handleIn: [0, 0, 0], handleOut: [0, 0, 0], mode: "mirrored" }]
+      }
+    });
+    actions.select([]);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          KernelProvider as React.ComponentType<{ kernel: AppKernel; children?: React.ReactNode }>,
+          { kernel },
+          React.createElement(InspectorPane)
+        )
+      );
+    });
+
+    expect(container.textContent).toContain("Scene");
+
+    await act(async () => {
+      actions.select([{ kind: "actor", id: parentId }]);
+    });
+
+    expect(container.textContent).toContain("Camera Path");
+    expect(container.textContent).toContain("Keyframes");
+
+    await act(async () => {
+      actions.select([]);
+    });
+
+    expect(container.textContent).toContain("Scene");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

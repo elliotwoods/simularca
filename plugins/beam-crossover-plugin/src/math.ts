@@ -327,11 +327,9 @@ export function buildBeamGeometryWorld(
   rootWorldInverse: THREE.Matrix4
 ): THREE.BufferGeometry {
   const contourCount = contourWorld.length;
-  const positions = new Float32Array((contourCount + 1) * 3);
   const apexLocal = emitterWorld.clone().applyMatrix4(rootWorldInverse);
-  positions[0] = apexLocal.x;
-  positions[1] = apexLocal.y;
-  positions[2] = apexLocal.z;
+  const positions = new Float32Array(contourCount * 9);
+  const emitterPositions = new Float32Array(contourCount * 9);
 
   for (let index = 0; index < contourCount; index += 1) {
     const contourPoint = contourWorld[index];
@@ -344,23 +342,47 @@ export function buildBeamGeometryWorld(
     } else {
       direction.normalize();
     }
+    const nextContourPoint = contourWorld[index + 1 === contourCount ? 0 : index + 1];
+    if (!nextContourPoint) {
+      continue;
+    }
+    const nextDirection = nextContourPoint.clone().sub(emitterWorld);
+    if (nextDirection.lengthSq() <= EPSILON) {
+      nextDirection.set(0, 0, 1);
+    } else {
+      nextDirection.normalize();
+    }
     const farPointLocal = emitterWorld.clone().addScaledVector(direction, beamLength).applyMatrix4(rootWorldInverse);
-    const offset = (index + 1) * 3;
-    positions[offset] = farPointLocal.x;
-    positions[offset + 1] = farPointLocal.y;
-    positions[offset + 2] = farPointLocal.z;
+    const nextFarPointLocal = emitterWorld
+      .clone()
+      .addScaledVector(nextDirection, beamLength)
+      .applyMatrix4(rootWorldInverse);
+
+    const offset = index * 9;
+    positions[offset] = apexLocal.x;
+    positions[offset + 1] = apexLocal.y;
+    positions[offset + 2] = apexLocal.z;
+    positions[offset + 3] = farPointLocal.x;
+    positions[offset + 4] = farPointLocal.y;
+    positions[offset + 5] = farPointLocal.z;
+    positions[offset + 6] = nextFarPointLocal.x;
+    positions[offset + 7] = nextFarPointLocal.y;
+    positions[offset + 8] = nextFarPointLocal.z;
+
+    emitterPositions[offset] = emitterWorld.x;
+    emitterPositions[offset + 1] = emitterWorld.y;
+    emitterPositions[offset + 2] = emitterWorld.z;
+    emitterPositions[offset + 3] = emitterWorld.x;
+    emitterPositions[offset + 4] = emitterWorld.y;
+    emitterPositions[offset + 5] = emitterWorld.z;
+    emitterPositions[offset + 6] = emitterWorld.x;
+    emitterPositions[offset + 7] = emitterWorld.y;
+    emitterPositions[offset + 8] = emitterWorld.z;
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  const indices = new Uint32Array(contourCount * 3);
-  for (let index = 0; index < contourCount; index += 1) {
-    const offset = index * 3;
-    indices[offset] = 0;
-    indices[offset + 1] = index + 1;
-    indices[offset + 2] = index + 1 === contourCount ? 1 : index + 2;
-  }
-  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setAttribute("beamEmitterPosition", new THREE.BufferAttribute(emitterPositions, 3));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   return geometry;
@@ -371,18 +393,13 @@ export function buildCombinedBeamGeometryWorld(
   beamLength: number,
   rootWorldInverse: THREE.Matrix4
 ): THREE.BufferGeometry {
-  const totalVertices = placements.reduce((sum, placement) => sum + placement.contourWorld.length + 1, 0);
   const totalTriangles = placements.reduce((sum, placement) => sum + placement.contourWorld.length, 0);
-  const positions = new Float32Array(totalVertices * 3);
-  const indices = new Uint32Array(totalTriangles * 3);
+  const positions = new Float32Array(totalTriangles * 9);
+  const emitterPositions = new Float32Array(totalTriangles * 9);
 
-  let vertexBase = 0;
   let triangleBase = 0;
   for (const placement of placements) {
     const apexLocal = placement.emitterWorld.clone().applyMatrix4(rootWorldInverse);
-    positions[vertexBase * 3] = apexLocal.x;
-    positions[vertexBase * 3 + 1] = apexLocal.y;
-    positions[vertexBase * 3 + 2] = apexLocal.z;
     for (let contourIndex = 0; contourIndex < placement.contourWorld.length; contourIndex += 1) {
       const contourPoint = placement.contourWorld[contourIndex];
       if (!contourPoint) {
@@ -394,24 +411,50 @@ export function buildCombinedBeamGeometryWorld(
       } else {
         direction.normalize();
       }
+      const nextContourPoint =
+        placement.contourWorld[contourIndex + 1 === placement.contourWorld.length ? 0 : contourIndex + 1];
+      if (!nextContourPoint) {
+        continue;
+      }
+      const nextDirection = nextContourPoint.clone().sub(placement.emitterWorld);
+      if (nextDirection.lengthSq() <= EPSILON) {
+        nextDirection.set(0, 0, 1);
+      } else {
+        nextDirection.normalize();
+      }
       const farPointLocal = placement.emitterWorld.clone().addScaledVector(direction, beamLength).applyMatrix4(rootWorldInverse);
-      const vertexIndex = vertexBase + contourIndex + 1;
-      positions[vertexIndex * 3] = farPointLocal.x;
-      positions[vertexIndex * 3 + 1] = farPointLocal.y;
-      positions[vertexIndex * 3 + 2] = farPointLocal.z;
+      const nextFarPointLocal = placement.emitterWorld
+        .clone()
+        .addScaledVector(nextDirection, beamLength)
+        .applyMatrix4(rootWorldInverse);
 
-      const triangleOffset = (triangleBase + contourIndex) * 3;
-      indices[triangleOffset] = vertexBase;
-      indices[triangleOffset + 1] = vertexIndex;
-      indices[triangleOffset + 2] = contourIndex + 1 === placement.contourWorld.length ? vertexBase + 1 : vertexIndex + 1;
+      const triangleOffset = (triangleBase + contourIndex) * 9;
+      positions[triangleOffset] = apexLocal.x;
+      positions[triangleOffset + 1] = apexLocal.y;
+      positions[triangleOffset + 2] = apexLocal.z;
+      positions[triangleOffset + 3] = farPointLocal.x;
+      positions[triangleOffset + 4] = farPointLocal.y;
+      positions[triangleOffset + 5] = farPointLocal.z;
+      positions[triangleOffset + 6] = nextFarPointLocal.x;
+      positions[triangleOffset + 7] = nextFarPointLocal.y;
+      positions[triangleOffset + 8] = nextFarPointLocal.z;
+
+      emitterPositions[triangleOffset] = placement.emitterWorld.x;
+      emitterPositions[triangleOffset + 1] = placement.emitterWorld.y;
+      emitterPositions[triangleOffset + 2] = placement.emitterWorld.z;
+      emitterPositions[triangleOffset + 3] = placement.emitterWorld.x;
+      emitterPositions[triangleOffset + 4] = placement.emitterWorld.y;
+      emitterPositions[triangleOffset + 5] = placement.emitterWorld.z;
+      emitterPositions[triangleOffset + 6] = placement.emitterWorld.x;
+      emitterPositions[triangleOffset + 7] = placement.emitterWorld.y;
+      emitterPositions[triangleOffset + 8] = placement.emitterWorld.z;
     }
     triangleBase += placement.contourWorld.length;
-    vertexBase += placement.contourWorld.length + 1;
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setAttribute("beamEmitterPosition", new THREE.BufferAttribute(emitterPositions, 3));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   return geometry;

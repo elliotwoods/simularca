@@ -22,6 +22,8 @@ import type {
   ActorNode,
   ActorRuntimeStatus,
   ActorVisibilityMode,
+  AppState,
+  ComponentNode,
   FileParameterDefinition,
   Material,
   ParameterDefinition,
@@ -454,6 +456,454 @@ function actorRefOptionsForDefinition(
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+interface SceneInspectorViewProps {
+  appState: AppState;
+  readOnly: boolean;
+  sceneBackgroundInput: string;
+  setSceneBackgroundInput: (next: string) => void;
+  kernel: ReturnType<typeof useKernel>;
+}
+
+function SceneInspectorView(props: SceneInspectorViewProps) {
+  const environmentActor = Object.values(props.appState.actors).find((actor) => actor.actorType === "environment");
+  const hasEnvironmentBackground =
+    typeof environmentActor?.params.assetId === "string" && environmentActor.params.assetId.length > 0;
+  const canResetBackground = props.appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND;
+  const canResetEngine = props.appState.scene.renderEngine !== "webgl2";
+  const canResetAntialiasing = props.appState.scene.antialiasing !== true;
+  const canResetKeyboardNavigation =
+    props.appState.scene.cameraKeyboardNavigation !== DEFAULT_CAMERA_KEYBOARD_NAVIGATION;
+  const canResetNavigationSpeed =
+    Math.abs(props.appState.scene.cameraNavigationSpeed - DEFAULT_CAMERA_NAVIGATION_SPEED) > 1e-9;
+  const canResetCameraFov = Math.abs(props.appState.camera.fov - DEFAULT_CAMERA_FOV_DEGREES) > 1e-9;
+  const sceneStatsRows = [
+    { label: "FPS", value: Number.isFinite(props.appState.stats.fps) ? props.appState.stats.fps.toFixed(1) : "0.0" },
+    {
+      label: "Frame (ms)",
+      value: Number.isFinite(props.appState.stats.frameMs) ? props.appState.stats.frameMs.toFixed(2) : "0.00"
+    },
+    {
+      label: "Camera Mode",
+      value: props.appState.camera.mode === "orthographic" ? "Orthographic" : "Perspective"
+    },
+    {
+      label: "Camera Position (m)",
+      value: `${props.appState.camera.position[0].toFixed(3)}, ${props.appState.camera.position[1].toFixed(3)}, ${props.appState.camera.position[2].toFixed(3)}`
+    },
+    {
+      label: "Camera Target (m)",
+      value: `${props.appState.camera.target[0].toFixed(3)}, ${props.appState.camera.target[1].toFixed(3)}, ${props.appState.camera.target[2].toFixed(3)}`
+    },
+    {
+      label: props.appState.camera.mode === "orthographic" ? "Camera Zoom" : "Camera FOV",
+      value:
+        props.appState.camera.mode === "orthographic"
+          ? props.appState.camera.zoom.toFixed(3)
+          : `${props.appState.camera.fov.toFixed(2)} deg`
+    },
+    {
+      label: "Camera Distance (m)",
+      value: Number.isFinite(props.appState.stats.cameraDistance) ? props.appState.stats.cameraDistance.toFixed(3) : "0.000"
+    },
+    { label: "Controls Enabled", value: props.appState.stats.cameraControlsEnabled ? "Yes" : "No" },
+    { label: "Zoom Enabled", value: props.appState.stats.cameraZoomEnabled ? "Yes" : "No" },
+    { label: "Draw Calls", value: Math.max(0, Math.floor(props.appState.stats.drawCalls)).toLocaleString() },
+    { label: "Triangles", value: Math.max(0, Math.floor(props.appState.stats.triangles)).toLocaleString() },
+    { label: "Splat Draw Calls", value: Math.max(0, Math.floor(props.appState.stats.splatDrawCalls)).toLocaleString() },
+    { label: "Splat Triangles", value: Math.max(0, Math.floor(props.appState.stats.splatTriangles)).toLocaleString() },
+    { label: "Visible Splats", value: Math.max(0, Math.floor(props.appState.stats.splatVisibleCount)).toLocaleString() },
+    { label: "Resource (MB)", value: Number.isFinite(props.appState.stats.resourceMb) ? props.appState.stats.resourceMb.toFixed(1) : "0.0" },
+    { label: "Heap (MB)", value: Number.isFinite(props.appState.stats.heapMb) ? props.appState.stats.heapMb.toFixed(1) : "0.0" },
+    { label: "Actor Count", value: Math.max(0, Math.floor(props.appState.stats.actorCount)).toLocaleString() },
+    { label: "Enabled Actors", value: Math.max(0, Math.floor(props.appState.stats.actorCountEnabled)).toLocaleString() },
+    {
+      label: "Project Size",
+      value: `${Math.max(0, Math.floor(props.appState.stats.projectFileBytes)).toLocaleString()} B`
+    },
+    {
+      label: "Saved Size",
+      value: `${Math.max(0, Math.floor(props.appState.stats.projectFileBytesSaved)).toLocaleString()} B`
+    }
+  ];
+
+  return (
+    <div className="inspector-pane-root custom-inspector">
+      <section className="inspector-common-card">
+        <header>
+          <h4>Scene</h4>
+        </header>
+        <div className="inspector-common-grid">
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Name</span>
+            <span className="inspector-scene-value">{props.appState.scene.name}</span>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Background</span>
+            <div className="inspector-common-control-wrap">
+              <div className="inspector-scene-color-row">
+                <input
+                  type="color"
+                  className="inspector-color-input"
+                  value={props.appState.scene.backgroundColor}
+                  disabled={props.readOnly || hasEnvironmentBackground}
+                  onChange={(event) => {
+                    const color = event.target.value;
+                    props.setSceneBackgroundInput(color);
+                    props.kernel.store.getState().actions.setSceneBackgroundColor(color);
+                  }}
+                />
+                <input
+                  type="text"
+                  className="widget-text"
+                  value={props.sceneBackgroundInput}
+                  disabled={props.readOnly || hasEnvironmentBackground}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    props.setSceneBackgroundInput(next);
+                    if (/^#[0-9a-fA-F]{6}$/.test(next) || /^#[0-9a-fA-F]{3}$/.test(next)) {
+                      props.kernel.store.getState().actions.setSceneBackgroundColor(next);
+                    }
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                className={`widget-reset-button${canResetBackground ? "" : " is-hidden"}`}
+                title="Reset Background"
+                disabled={props.readOnly || hasEnvironmentBackground || !canResetBackground}
+                onClick={() => {
+                  props.setSceneBackgroundInput(DEFAULT_SCENE_BACKGROUND);
+                  props.kernel.store.getState().actions.setSceneBackgroundColor(DEFAULT_SCENE_BACKGROUND);
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+        </div>
+        {hasEnvironmentBackground ? (
+          <p className="panel-empty">Background color is overridden while an Environment texture is active.</p>
+        ) : null}
+      </section>
+      <section className="inspector-common-card">
+        <header>
+          <h4>Renderer</h4>
+        </header>
+        <div className="inspector-common-grid">
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Engine</span>
+            <div className="inspector-common-control-wrap">
+              <select
+                className="widget-select"
+                value={props.appState.scene.renderEngine}
+                disabled={props.readOnly}
+                onChange={(event) => {
+                  const value = event.target.value === "webgpu" ? "webgpu" : "webgl2";
+                  props.kernel.store.getState().actions.setSceneRenderSettings({ renderEngine: value });
+                }}
+              >
+                {SCENE_ENGINE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={`widget-reset-button${canResetEngine ? "" : " is-hidden"}`}
+                title="Reset Engine"
+                disabled={props.readOnly || !canResetEngine}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({ renderEngine: "webgl2" });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Anti-Aliasing</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                checked={props.appState.scene.antialiasing}
+                disabled={props.readOnly}
+                embedded
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    antialiasing: next
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAntialiasing ? "" : " is-hidden"}`}
+                title="Reset Anti-Aliasing"
+                disabled={props.readOnly || !canResetAntialiasing}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    antialiasing: true
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Keyboard Camera Nav</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                checked={props.appState.scene.cameraKeyboardNavigation}
+                disabled={props.readOnly}
+                embedded
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    cameraKeyboardNavigation: next
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetKeyboardNavigation ? "" : " is-hidden"}`}
+                title="Reset Keyboard Navigation"
+                disabled={props.readOnly || !canResetKeyboardNavigation}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    cameraKeyboardNavigation: DEFAULT_CAMERA_KEYBOARD_NAVIGATION
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Camera Nav Speed (m/s)</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.cameraNavigationSpeed}
+                min={0}
+                step={0.1}
+                precision={2}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    cameraNavigationSpeed: next
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetNavigationSpeed ? "" : " is-hidden"}`}
+                title="Reset Camera Navigation Speed"
+                disabled={props.readOnly || !canResetNavigationSpeed}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    cameraNavigationSpeed: DEFAULT_CAMERA_NAVIGATION_SPEED
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Camera FOV (deg)</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.camera.fov}
+                min={5}
+                max={170}
+                step={0.1}
+                precision={1}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setCameraState({
+                    fov: next
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetCameraFov ? "" : " is-hidden"}`}
+                title="Reset Camera FOV"
+                disabled={props.readOnly || !canResetCameraFov}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setCameraState({
+                    fov: DEFAULT_CAMERA_FOV_DEGREES
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <StatsBlock
+        title="Status"
+        className="inspector-debug-card"
+        titleLevel="h4"
+        emptyText="No status available."
+        rows={sceneStatsRows}
+        onCopySuccess={(label) => {
+          props.kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
+        }}
+        onCopyError={(label, message) => {
+          props.kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
+        }}
+      />
+    </div>
+  );
+}
+
+interface ComponentSelectionInspectorViewProps {
+  componentSelection: ComponentNode[];
+  componentDefinitions: ParameterDefinition[];
+  readOnly: boolean;
+  updateSelectedComponentParams: (key: string, nextValue: BindingValue) => void;
+}
+
+function ComponentSelectionInspectorView(props: ComponentSelectionInspectorViewProps) {
+  return (
+    <div className="inspector-pane-root custom-inspector">
+      <section className="inspector-common-card">
+        <header>
+          <h4>Component</h4>
+        </header>
+        <div className="inspector-common-grid">
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Selection</span>
+            <span className="inspector-scene-value">{props.componentSelection.length} component(s)</span>
+          </div>
+        </div>
+      </section>
+      {props.componentDefinitions.length === 0 ? (
+        <div className="inspector-empty">No common editable params in current selection</div>
+      ) : null}
+      {props.componentDefinitions.map((definition) => {
+        const values = props.componentSelection.map((component) => {
+          const value = component.params[definition.key];
+          return value !== undefined ? value : defaultValueForDefinition(definition);
+        });
+        const mixed = isMixedValue(values);
+        const current = values[0] ?? defaultValueForDefinition(definition);
+        const defaultValue = defaultValueForDefinition(definition);
+        const canReset = values.some((value) => !bindingValuesEqual(value, defaultValue));
+
+        if (definition.type === "number") {
+          return (
+            <NumberField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={typeof current === "number" ? current : 0}
+              mixed={mixed}
+              min={definition.min}
+              max={definition.max}
+              step={definition.step}
+              precision={definition.precision}
+              unit={definition.unit}
+              dragSpeed={definition.dragSpeed}
+              disabled={props.readOnly}
+              showReset={canReset}
+              onReset={() => {
+                props.updateSelectedComponentParams(definition.key, defaultValue);
+              }}
+              onChange={(next) => {
+                props.updateSelectedComponentParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "boolean") {
+          return (
+            <ToggleField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              checked={Boolean(current)}
+              mixed={mixed}
+              disabled={props.readOnly}
+              showReset={canReset}
+              onReset={() => {
+                props.updateSelectedComponentParams(definition.key, Boolean(defaultValue));
+              }}
+              onChange={(next) => {
+                props.updateSelectedComponentParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "color") {
+          return (
+            <ColorField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={typeof current === "string" ? current : "#000000"}
+              mixed={mixed}
+              disabled={props.readOnly}
+              showReset={canReset}
+              onReset={() => {
+                props.updateSelectedComponentParams(definition.key, String(defaultValue));
+              }}
+              onChange={(next) => {
+                props.updateSelectedComponentParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "select") {
+          return (
+            <SelectField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={typeof current === "string" ? current : ""}
+              mixed={mixed}
+              options={definition.options}
+              disabled={props.readOnly}
+              showReset={canReset}
+              onReset={() => {
+                props.updateSelectedComponentParams(definition.key, String(defaultValue));
+              }}
+              onChange={(next) => {
+                props.updateSelectedComponentParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        return (
+          <TextField
+            key={definition.key}
+            label={definition.label}
+            description={definition.description}
+            value={typeof current === "string" ? current : ""}
+            mixed={mixed}
+            disabled={props.readOnly}
+            showReset={canReset}
+            onReset={() => {
+              props.updateSelectedComponentParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
+            }}
+            onChange={(next) => {
+              props.updateSelectedComponentParams(definition.key, next);
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 export function InspectorPane() {
   const kernel = useKernel();
   const appState = useAppStore((store) => store.state);
@@ -733,416 +1183,8 @@ export function InspectorPane() {
     scheduleAutosave();
   };
 
-  if (actorSelection.length === 0 && componentSelection.length === 0) {
-    const environmentActor = Object.values(appState.actors).find((actor) => actor.actorType === "environment");
-    const hasEnvironmentBackground = typeof environmentActor?.params.assetId === "string" && environmentActor.params.assetId.length > 0;
-    const canResetBackground = appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND;
-    const canResetEngine = appState.scene.renderEngine !== "webgl2";
-    const canResetAntialiasing = appState.scene.antialiasing !== true;
-    const canResetKeyboardNavigation = appState.scene.cameraKeyboardNavigation !== DEFAULT_CAMERA_KEYBOARD_NAVIGATION;
-    const canResetNavigationSpeed =
-      Math.abs(appState.scene.cameraNavigationSpeed - DEFAULT_CAMERA_NAVIGATION_SPEED) > 1e-9;
-    const canResetCameraFov = Math.abs(appState.camera.fov - DEFAULT_CAMERA_FOV_DEGREES) > 1e-9;
-    const sceneStatsRows = [
-      { label: "FPS", value: Number.isFinite(appState.stats.fps) ? appState.stats.fps.toFixed(1) : "0.0" },
-      { label: "Frame (ms)", value: Number.isFinite(appState.stats.frameMs) ? appState.stats.frameMs.toFixed(2) : "0.00" },
-      { label: "Camera Mode", value: appState.camera.mode === "orthographic" ? "Orthographic" : "Perspective" },
-      {
-        label: "Camera Position (m)",
-        value: `${appState.camera.position[0].toFixed(3)}, ${appState.camera.position[1].toFixed(3)}, ${appState.camera.position[2].toFixed(3)}`
-      },
-      {
-        label: "Camera Target (m)",
-        value: `${appState.camera.target[0].toFixed(3)}, ${appState.camera.target[1].toFixed(3)}, ${appState.camera.target[2].toFixed(3)}`
-      },
-      {
-        label: appState.camera.mode === "orthographic" ? "Camera Zoom" : "Camera FOV",
-        value:
-          appState.camera.mode === "orthographic"
-            ? appState.camera.zoom.toFixed(3)
-            : `${appState.camera.fov.toFixed(2)} deg`
-      },
-      {
-        label: "Camera Distance (m)",
-        value: Number.isFinite(appState.stats.cameraDistance) ? appState.stats.cameraDistance.toFixed(3) : "0.000"
-      },
-      { label: "Controls Enabled", value: appState.stats.cameraControlsEnabled ? "Yes" : "No" },
-      { label: "Zoom Enabled", value: appState.stats.cameraZoomEnabled ? "Yes" : "No" },
-      { label: "Draw Calls", value: Math.max(0, Math.floor(appState.stats.drawCalls)).toLocaleString() },
-      { label: "Triangles", value: Math.max(0, Math.floor(appState.stats.triangles)).toLocaleString() },
-      { label: "Splat Draw Calls", value: Math.max(0, Math.floor(appState.stats.splatDrawCalls)).toLocaleString() },
-      { label: "Splat Triangles", value: Math.max(0, Math.floor(appState.stats.splatTriangles)).toLocaleString() },
-      { label: "Visible Splats", value: Math.max(0, Math.floor(appState.stats.splatVisibleCount)).toLocaleString() },
-      { label: "Resource (MB)", value: Number.isFinite(appState.stats.resourceMb) ? appState.stats.resourceMb.toFixed(1) : "0.0" },
-      { label: "Heap (MB)", value: Number.isFinite(appState.stats.heapMb) ? appState.stats.heapMb.toFixed(1) : "0.0" },
-      { label: "Actor Count", value: Math.max(0, Math.floor(appState.stats.actorCount)).toLocaleString() },
-      { label: "Enabled Actors", value: Math.max(0, Math.floor(appState.stats.actorCountEnabled)).toLocaleString() },
-      { label: "Project Size", value: `${Math.max(0, Math.floor(appState.stats.projectFileBytes)).toLocaleString()} B` },
-      { label: "Saved Size", value: `${Math.max(0, Math.floor(appState.stats.projectFileBytesSaved)).toLocaleString()} B` }
-    ];
-    return (
-      <div className="inspector-pane-root custom-inspector">
-        <section className="inspector-common-card">
-          <header>
-            <h4>Scene</h4>
-          </header>
-          <div className="inspector-common-grid">
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Name</span>
-              <span className="inspector-scene-value">{appState.scene.name}</span>
-            </div>
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Background</span>
-              <div className="inspector-common-control-wrap">
-                <div className="inspector-scene-color-row">
-                  <input
-                    type="color"
-                    className="inspector-color-input"
-                    value={appState.scene.backgroundColor}
-                    disabled={readOnly || hasEnvironmentBackground}
-                    onChange={(event) => {
-                      const color = event.target.value;
-                      setSceneBackgroundInput(color);
-                      kernel.store.getState().actions.setSceneBackgroundColor(color);
-                    }}
-                  />
-                  <input
-                    type="text"
-                    className="widget-text"
-                    value={sceneBackgroundInput}
-                    disabled={readOnly || hasEnvironmentBackground}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      setSceneBackgroundInput(next);
-                      if (/^#[0-9a-fA-F]{6}$/.test(next) || /^#[0-9a-fA-F]{3}$/.test(next)) {
-                        kernel.store.getState().actions.setSceneBackgroundColor(next);
-                      }
-                    }}
-                  />
-                </div>
-                <button
-                  type="button"
-                  className={`widget-reset-button${canResetBackground ? "" : " is-hidden"}`}
-                  title="Reset Background"
-                  disabled={readOnly || hasEnvironmentBackground || !canResetBackground}
-                  onClick={() => {
-                    setSceneBackgroundInput(DEFAULT_SCENE_BACKGROUND);
-                    kernel.store.getState().actions.setSceneBackgroundColor(DEFAULT_SCENE_BACKGROUND);
-                  }}
-                >
-                  <FontAwesomeIcon icon={faRotateLeft} />
-                </button>
-              </div>
-            </div>
-          </div>
-          {hasEnvironmentBackground ? (
-            <p className="panel-empty">Background color is overridden while an Environment texture is active.</p>
-          ) : null}
-        </section>
-        <section className="inspector-common-card">
-          <header>
-            <h4>Renderer</h4>
-          </header>
-          <div className="inspector-common-grid">
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Engine</span>
-              <div className="inspector-common-control-wrap">
-                <select
-                  className="widget-select"
-                  value={appState.scene.renderEngine}
-                  disabled={readOnly}
-                  onChange={(event) => {
-                    const value = event.target.value === "webgpu" ? "webgpu" : "webgl2";
-                    kernel.store.getState().actions.setSceneRenderSettings({ renderEngine: value });
-                  }}
-                >
-                  {SCENE_ENGINE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className={`widget-reset-button${canResetEngine ? "" : " is-hidden"}`}
-                  title="Reset Engine"
-                  disabled={readOnly || !canResetEngine}
-                  onClick={() => {
-                    kernel.store.getState().actions.setSceneRenderSettings({ renderEngine: "webgl2" });
-                  }}
-                >
-                  <FontAwesomeIcon icon={faRotateLeft} />
-                </button>
-              </div>
-            </div>
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Anti-Aliasing</span>
-              <div className="inspector-common-control-wrap">
-                <ToggleField
-                  label=""
-                  checked={appState.scene.antialiasing}
-                  disabled={readOnly}
-                  embedded
-                  onChange={(next) => {
-                    kernel.store.getState().actions.setSceneRenderSettings({
-                      antialiasing: next
-                    });
-                  }}
-                />
-                <button
-                  type="button"
-                  className={`widget-reset-button${canResetAntialiasing ? "" : " is-hidden"}`}
-                  title="Reset Anti-Aliasing"
-                  disabled={readOnly || !canResetAntialiasing}
-                  onClick={() => {
-                    kernel.store.getState().actions.setSceneRenderSettings({
-                      antialiasing: true
-                    });
-                  }}
-                >
-                  <FontAwesomeIcon icon={faRotateLeft} />
-                </button>
-              </div>
-            </div>
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Keyboard Camera Nav</span>
-              <div className="inspector-common-control-wrap">
-                <ToggleField
-                  label=""
-                  checked={appState.scene.cameraKeyboardNavigation}
-                  disabled={readOnly}
-                  embedded
-                  onChange={(next) => {
-                    kernel.store.getState().actions.setSceneRenderSettings({
-                      cameraKeyboardNavigation: next
-                    });
-                  }}
-                />
-                <button
-                  type="button"
-                  className={`widget-reset-button${canResetKeyboardNavigation ? "" : " is-hidden"}`}
-                  title="Reset Keyboard Navigation"
-                  disabled={readOnly || !canResetKeyboardNavigation}
-                  onClick={() => {
-                    kernel.store.getState().actions.setSceneRenderSettings({
-                      cameraKeyboardNavigation: DEFAULT_CAMERA_KEYBOARD_NAVIGATION
-                    });
-                  }}
-                >
-                  <FontAwesomeIcon icon={faRotateLeft} />
-                </button>
-              </div>
-            </div>
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Camera Nav Speed (m/s)</span>
-              <div className="inspector-common-control-wrap">
-                <NumberField
-                  label=""
-                  value={appState.scene.cameraNavigationSpeed}
-                  min={0}
-                  step={0.1}
-                  precision={2}
-                  disabled={readOnly}
-                  onChange={(next) => {
-                    kernel.store.getState().actions.setSceneRenderSettings({
-                      cameraNavigationSpeed: next
-                    });
-                  }}
-                />
-                <button
-                  type="button"
-                  className={`widget-reset-button${canResetNavigationSpeed ? "" : " is-hidden"}`}
-                  title="Reset Camera Navigation Speed"
-                  disabled={readOnly || !canResetNavigationSpeed}
-                  onClick={() => {
-                    kernel.store.getState().actions.setSceneRenderSettings({
-                      cameraNavigationSpeed: DEFAULT_CAMERA_NAVIGATION_SPEED
-                    });
-                  }}
-                >
-                  <FontAwesomeIcon icon={faRotateLeft} />
-                </button>
-              </div>
-            </div>
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Camera FOV (deg)</span>
-              <div className="inspector-common-control-wrap">
-                <NumberField
-                  label=""
-                  value={appState.camera.fov}
-                  min={5}
-                  max={170}
-                  step={0.1}
-                  precision={1}
-                  disabled={readOnly}
-                  onChange={(next) => {
-                    kernel.store.getState().actions.setCameraState({
-                      fov: next
-                    });
-                  }}
-                />
-                <button
-                  type="button"
-                  className={`widget-reset-button${canResetCameraFov ? "" : " is-hidden"}`}
-                  title="Reset Camera FOV"
-                  disabled={readOnly || !canResetCameraFov}
-                  onClick={() => {
-                    kernel.store.getState().actions.setCameraState({
-                      fov: DEFAULT_CAMERA_FOV_DEGREES
-                    });
-                  }}
-                >
-                  <FontAwesomeIcon icon={faRotateLeft} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-        <StatsBlock
-          title="Status"
-          className="inspector-debug-card"
-          titleLevel="h4"
-          emptyText="No status available."
-          rows={sceneStatsRows}
-          onCopySuccess={(label) => {
-            kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
-          }}
-          onCopyError={(label, message) => {
-            kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
-          }}
-        />
-      </div>
-    );
-  }
-
-  if (actorSelection.length === 0 && componentSelection.length > 0) {
-    return (
-      <div className="inspector-pane-root custom-inspector">
-        <section className="inspector-common-card">
-          <header>
-            <h4>Component</h4>
-          </header>
-          <div className="inspector-common-grid">
-            <div className="inspector-common-row">
-              <span className="inspector-common-label">Selection</span>
-              <span className="inspector-scene-value">{componentSelection.length} component(s)</span>
-            </div>
-          </div>
-        </section>
-        {componentDefinitions.length === 0 ? <div className="inspector-empty">No common editable params in current selection</div> : null}
-        {componentDefinitions.map((definition) => {
-          const values = componentSelection.map((component) => {
-            const value = component.params[definition.key];
-            return value !== undefined ? value : defaultValueForDefinition(definition);
-          });
-          const mixed = isMixedValue(values);
-          const current = values[0] ?? defaultValueForDefinition(definition);
-          const defaultValue = defaultValueForDefinition(definition);
-          const canReset = values.some((value) => !bindingValuesEqual(value, defaultValue));
-
-          if (definition.type === "number") {
-            return (
-              <NumberField
-                key={definition.key}
-                label={definition.label}
-                value={typeof current === "number" ? current : 0}
-                mixed={mixed}
-                min={definition.min}
-                max={definition.max}
-                step={definition.step}
-                precision={definition.precision}
-                unit={definition.unit}
-                dragSpeed={definition.dragSpeed}
-                disabled={readOnly}
-                showReset={canReset}
-                onReset={() => {
-                  updateSelectedComponentParams(definition.key, defaultValue);
-                }}
-                onChange={(next) => {
-                  updateSelectedComponentParams(definition.key, next);
-                }}
-              />
-            );
-          }
-
-          if (definition.type === "boolean") {
-            return (
-              <ToggleField
-                key={definition.key}
-                label={definition.label}
-                checked={Boolean(current)}
-                mixed={mixed}
-                disabled={readOnly}
-                showReset={canReset}
-                onReset={() => {
-                  updateSelectedComponentParams(definition.key, Boolean(defaultValue));
-                }}
-                onChange={(next) => {
-                  updateSelectedComponentParams(definition.key, next);
-                }}
-              />
-            );
-          }
-
-          if (definition.type === "color") {
-            return (
-              <ColorField
-                key={definition.key}
-                label={definition.label}
-                value={typeof current === "string" ? current : "#000000"}
-                mixed={mixed}
-                disabled={readOnly}
-                showReset={canReset}
-                onReset={() => {
-                  updateSelectedComponentParams(definition.key, String(defaultValue));
-                }}
-                onChange={(next) => {
-                  updateSelectedComponentParams(definition.key, next);
-                }}
-              />
-            );
-          }
-
-          if (definition.type === "select") {
-            return (
-              <SelectField
-                key={definition.key}
-                label={definition.label}
-                value={typeof current === "string" ? current : ""}
-                mixed={mixed}
-                options={definition.options}
-                disabled={readOnly}
-                showReset={canReset}
-                onReset={() => {
-                  updateSelectedComponentParams(definition.key, String(defaultValue));
-                }}
-                onChange={(next) => {
-                  updateSelectedComponentParams(definition.key, next);
-                }}
-              />
-            );
-          }
-
-          return (
-            <TextField
-              key={definition.key}
-              label={definition.label}
-              value={typeof current === "string" ? current : ""}
-              mixed={mixed}
-              disabled={readOnly}
-              showReset={canReset}
-              onReset={() => {
-                updateSelectedComponentParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
-              }}
-              onChange={(next) => {
-                updateSelectedComponentParams(definition.key, next);
-              }}
-            />
-          );
-        })}
-      </div>
-    );
-  }
+  const showSceneInspector = actorSelection.length === 0 && componentSelection.length === 0;
+  const showComponentSelectionInspector = actorSelection.length === 0 && componentSelection.length > 0;
 
   const descriptorForSingleSelection = singleSelection ? resolveActorDescriptor(singleSelection, actorDescriptors) : undefined;
   const runtimeStatus = singleSelection ? actorStatusByActorId[singleSelection.id] : undefined;
@@ -1556,6 +1598,29 @@ export function InspectorPane() {
     } else {
       setInspectorView({ kind: "actor-root" });
     }
+  }
+
+  if (showSceneInspector) {
+    return (
+      <SceneInspectorView
+        appState={appState}
+        readOnly={readOnly}
+        sceneBackgroundInput={sceneBackgroundInput}
+        setSceneBackgroundInput={setSceneBackgroundInput}
+        kernel={kernel}
+      />
+    );
+  }
+
+  if (showComponentSelectionInspector) {
+    return (
+      <ComponentSelectionInspectorView
+        componentSelection={componentSelection}
+        componentDefinitions={componentDefinitions}
+        readOnly={readOnly}
+        updateSelectedComponentParams={updateSelectedComponentParams}
+      />
+    );
   }
 
   const cameraPathCurrentKeyframeIndex =
@@ -2228,6 +2293,7 @@ export function InspectorPane() {
             <NumberField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               value={currentNumber}
               mixed={mixed}
               min={definition.min}
@@ -2253,6 +2319,7 @@ export function InspectorPane() {
             <ToggleField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               checked={Boolean(current)}
               mixed={mixed}
               disabled={readOnly}
@@ -2272,6 +2339,7 @@ export function InspectorPane() {
             <ColorField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               value={typeof current === "string" ? current : "#000000"}
               mixed={mixed}
               disabled={readOnly}
@@ -2291,6 +2359,7 @@ export function InspectorPane() {
             <SelectField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               value={typeof current === "string" ? current : ""}
               mixed={mixed}
               options={definition.options}
@@ -2312,6 +2381,7 @@ export function InspectorPane() {
             <ActorRefField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               value={typeof current === "string" ? current : ""}
               mixed={mixed}
               options={options}
@@ -2346,6 +2416,7 @@ export function InspectorPane() {
             <ActorRefListField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               values={Array.isArray(current) ? current.filter((entry): entry is string => typeof entry === "string") : []}
               mixed={mixed}
               options={options}
@@ -2416,6 +2487,7 @@ export function InspectorPane() {
             <FileField
               key={definition.key}
               label={definition.label}
+              description={definition.description}
               value={assetId}
               mixed={mixed}
               asset={asset}
@@ -2480,6 +2552,7 @@ export function InspectorPane() {
           <TextField
             key={definition.key}
             label={definition.label}
+            description={definition.description}
             value={typeof current === "string" ? current : ""}
             mixed={mixed}
             disabled={readOnly}

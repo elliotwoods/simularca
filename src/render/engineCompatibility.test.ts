@@ -44,4 +44,14 @@ describe("engine compatibility", () => {
     });
     expect(incompatibilityReason(actor, "webgpu")).toBeNull();
   });
+
+  test("marks Beam Crossover Scattering Shell mode incompatible with WebGPU", () => {
+    const actor = createActor({
+      pluginType: "plugin.beamCrossover.emitterArray",
+      params: {
+        beamType: "scatteringShell"
+      }
+    });
+    expect(incompatibilityReason(actor, "webgpu")).toBe("Beam Crossover Scattering Shell mode currently requires WebGL2.");
+  });
 });

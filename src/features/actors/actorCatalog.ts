@@ -145,7 +145,7 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
   }
   if (descriptorId === "actor.primitive") {
     kernel.store.getState().actions.updateActorParams(actorId, {
-      shape: "cube",
+      shape: "sphere",
       cubeSize: 1,
       sphereRadius: 0.5,
       cylinderRadius: 0.5,
