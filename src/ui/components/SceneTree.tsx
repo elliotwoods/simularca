@@ -54,11 +54,13 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
   const kernel = useKernel();
   const selection = useAppStore((store) => store.state.selection);
   const actors = useAppStore((store) => store.state.actors);
+  const rootActorIds = useAppStore((store) => store.state.scene.actorIds);
   const actorStatusByActorId = useAppStore((store) => store.state.actorStatusByActorId);
   const mode = useAppStore((store) => store.state.mode);
   const [expanded, setExpanded] = useState(true);
   const [isRenaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(props.actor.name);
+  const [dropPosition, setDropPosition] = useState<"before" | "child" | "after" | null>(null);
   const isActive = isSelected(selection, props.actor.id);
   const runtimeStatus = actorStatusByActorId[props.actor.id];
   const loadState = typeof runtimeStatus?.values?.loadState === "string" ? runtimeStatus.values.loadState : undefined;
@@ -71,12 +73,18 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
       : "Incompatible with current render engine.";
   const readOnly = mode === "web-ro";
   const visibilityMode = props.actor.visibilityMode ?? "visible";
+  const siblingIds = props.actor.parentActorId ? (actors[props.actor.parentActorId]?.childActorIds ?? []) : rootActorIds;
+  const siblingIndex = siblingIds.indexOf(props.actor.id);
 
   useEffect(() => {
     if (!isRenaming) {
       setDraftName(props.actor.name);
     }
   }, [isRenaming, props.actor.name]);
+
+  useEffect(() => {
+    setDropPosition(null);
+  }, [props.actor.id]);
 
   const onClickLabel = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (isRenaming) {
@@ -107,7 +115,62 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
       return;
     }
     event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", props.actor.id);
+  };
+
+  const onDropRow = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const draggedActorId = event.dataTransfer.getData("text/plain");
+    const nextDropPosition = dropPosition;
+    setDropPosition(null);
+    if (!draggedActorId || draggedActorId === props.actor.id || !nextDropPosition) {
+      return;
+    }
+    const draggedActor = actors[draggedActorId];
+    if (nextDropPosition === "child") {
+      const targetChildren = props.actor.childActorIds.length;
+      kernel.store.getState().actions.reorderActor(draggedActorId, props.actor.id, targetChildren);
+      return;
+    }
+    const targetParentId = props.actor.parentActorId ?? null;
+    if (siblingIndex < 0) {
+      return;
+    }
+    let targetIndex = nextDropPosition === "before" ? siblingIndex : siblingIndex + 1;
+    const draggedSiblingIds = draggedActor?.parentActorId ? (actors[draggedActor.parentActorId]?.childActorIds ?? []) : rootActorIds;
+    const draggedSiblingIndex = draggedSiblingIds.indexOf(draggedActorId);
+    if ((draggedActor?.parentActorId ?? null) === targetParentId && draggedSiblingIndex !== -1 && draggedSiblingIndex < targetIndex) {
+      targetIndex -= 1;
+    }
+    kernel.store.getState().actions.reorderActor(draggedActorId, targetParentId, targetIndex);
+  };
+
+  const onDragOverRow = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const topThreshold = rect.height / 3;
+    const bottomThreshold = rect.height * (2 / 3);
+    if (y < topThreshold) {
+      setDropPosition("before");
+      return;
+    }
+    if (y > bottomThreshold) {
+      setDropPosition("after");
+      return;
+    }
+    setDropPosition("child");
+  };
+
+  const onDragLeaveRow = (event: React.DragEvent<HTMLDivElement>) => {
+    const related = event.relatedTarget;
+    if (related instanceof Node && event.currentTarget.contains(related)) {
+      return;
+    }
+    setDropPosition(null);
   };
 
   const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -128,7 +191,15 @@ function ActorItem(props: { actor: ActorNode; depth: number }) {
 
   return (
     <div className="scene-tree-item" onDrop={onDrop} onDragOver={onDragOver}>
-      <div className="scene-tree-item-row" draggable={!isRenaming} onDragStart={onDragStart} style={{ paddingLeft: `${8 + props.depth * 12}px` }}>
+      <div
+        className={`scene-tree-item-row${dropPosition === "before" ? " is-drop-before" : ""}${dropPosition === "child" ? " is-drop-child" : ""}${dropPosition === "after" ? " is-drop-after" : ""}`}
+        draggable={!isRenaming}
+        onDragStart={onDragStart}
+        onDrop={onDropRow}
+        onDragOver={onDragOverRow}
+        onDragLeave={onDragLeaveRow}
+        style={{ paddingLeft: `${8 + props.depth * 12}px` }}
+      >
         <button
           className={`scene-tree-expand${props.actor.childActorIds.length === 0 ? " placeholder" : ""}`}
           type="button"

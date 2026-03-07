@@ -9,7 +9,6 @@ import { ActorTransformController, type ActorTransformMode } from "./actorTransf
 import { SceneController } from "./sceneController";
 import { incompatibilityReason } from "./engineCompatibility";
 import { FramePacer } from "./framePacing";
-import { clearSplatQueryProvider, registerSplatQueryProvider } from "./splatQueryRegistry";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 import { CurveEditController } from "./curveEditController";
 import { reportSlowFrame } from "./slowFrameDiagnostics";
@@ -50,8 +49,6 @@ export class WebGpuViewport {
   private lastAppliedCameraSignature = "";
   private readonly geometryByteCache = new WeakMap<object, number>();
   private readonly textureByteCache = new WeakMap<object, number>();
-  private readonly queryVisibleSplats = (args?: Parameters<SceneController["queryVisibleSplats"]>[0]) =>
-    this.sceneController.queryVisibleSplats(args);
   private started = false;
   private disposed = false;
   private initialized = false;
@@ -60,10 +57,6 @@ export class WebGpuViewport {
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
   private previousMainRenderSample: RenderStatsSample | null = null;
-  private lastGaussianSortAt = 0;
-  private lastGaussianSortCameraQuaternion = new THREE.Quaternion();
-  private lastGaussianSortCameraPosition = new THREE.Vector3();
-  private hasGaussianSortCameraState = false;
   private readonly wheelZoomSpeed = 0.12;
   private readonly navigationKeysDown = new Set<string>();
   private navigationLastAtMs = performance.now();
@@ -136,7 +129,6 @@ export class WebGpuViewport {
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("keyup", this.onKeyUp, { capture: true });
     window.addEventListener("blur", this.onWindowBlur);
-    registerSplatQueryProvider(this.queryVisibleSplats);
   }
 
   public async start(): Promise<void> {
@@ -181,7 +173,6 @@ export class WebGpuViewport {
     window.removeEventListener("wheel", this.onViewportWheel, true);
     this.actorTransformController.dispose();
     this.curveEditController.dispose();
-    clearSplatQueryProvider(this.queryVisibleSplats);
     this.clearCompatibilityStatus();
     if (this.initialized) {
       try {
@@ -237,7 +228,6 @@ export class WebGpuViewport {
     this.actorTransformController.update();
     this.controls.update();
     this.enforceActorCompatibility("webgpu");
-    this.updateGaussianDepthSortingIfNeeded();
     this.syncCameraToState();
     this.syncToneMappingOutput();
     const _rf2 = performance.now();
@@ -432,7 +422,6 @@ export class WebGpuViewport {
         framesInWindow
       );
       this.previousMainRenderSample = mainRenderStatsCumulative;
-      const splatStats = this.sceneController.getGaussianRenderStats();
       const actorCounts = countActorStats(this.kernel.store.getState().state.actors);
       const currentStats = this.kernel.store.getState().state.stats;
 
@@ -441,9 +430,9 @@ export class WebGpuViewport {
         frameMs,
         drawCalls: Math.max(0, Math.floor(mainRenderStats.drawCalls)),
         triangles: Math.max(0, Math.floor(mainRenderStats.triangles)),
-        splatDrawCalls: splatStats.drawCalls,
-        splatTriangles: splatStats.triangles,
-        splatVisibleCount: splatStats.visibleCount,
+        splatDrawCalls: 0,
+        splatTriangles: 0,
+        splatVisibleCount: 0,
         actorCount: actorCounts.actorCount,
         actorCountEnabled: actorCounts.actorCountEnabled,
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
@@ -618,37 +607,6 @@ export class WebGpuViewport {
       ...currentCamera,
       ...cameraUpdate
     });
-  }
-
-  private updateGaussianDepthSortingIfNeeded(): void {
-    const now = performance.now();
-    const minSortIntervalMs = 80;
-    if (now - this.lastGaussianSortAt < minSortIntervalMs) {
-      return;
-    }
-
-    const currentQuaternion = new THREE.Quaternion();
-    this.activeCamera.getWorldQuaternion(currentQuaternion);
-    const currentPosition = new THREE.Vector3(
-      this.activeCamera.position.x,
-      this.activeCamera.position.y,
-      this.activeCamera.position.z
-    );
-
-    if (this.hasGaussianSortCameraState) {
-      const rotationDot = Math.abs(currentQuaternion.dot(this.lastGaussianSortCameraQuaternion));
-      const rotationChangedEnough = 1 - rotationDot > 0.00006;
-      const positionChangedEnough = currentPosition.distanceToSquared(this.lastGaussianSortCameraPosition) > 1e-6;
-      if (!rotationChangedEnough && !positionChangedEnough) {
-        return;
-      }
-    }
-
-    this.sceneController.updateGaussianDepthSorting(this.activeCamera);
-    this.lastGaussianSortAt = now;
-    this.lastGaussianSortCameraQuaternion.copy(currentQuaternion);
-    this.lastGaussianSortCameraPosition.copy(currentPosition);
-    this.hasGaussianSortCameraState = true;
   }
 
   private syncToneMappingOutput(): void {

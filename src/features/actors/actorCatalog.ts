@@ -135,19 +135,13 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
     name: option.label
   });
   // Seed known core actor defaults so inspector bindings start with stable values.
-  if (descriptorId === "actor.gaussianSplat") {
-    kernel.store.getState().actions.updateActorParams(actorId, {
-      scaleFactor: 1,
-      splatSize: 1,
-      opacity: 1,
-      filterMode: "off",
-      filterRegionActorIds: []
-    });
-  }
   if (descriptorId === "actor.gaussianSplatSpark") {
     kernel.store.getState().actions.updateActorParams(actorId, {
       scaleFactor: 1,
-      opacity: 1
+      opacity: 1,
+      brightness: 1,
+      colorInputSpace: "srgb",
+      stochasticDepth: false
     });
   }
   if (descriptorId === "actor.mesh") {

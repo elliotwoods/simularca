@@ -49,20 +49,6 @@ function createStorageMocks(overrides: Partial<StorageAdapter> = {}): StorageAda
     importDae: vi.fn(async () => {
       throw new Error("not implemented");
     }),
-    importGaussianSplat: vi.fn(async () => {
-      throw new Error("not implemented");
-    }),
-    convertGaussianAsset: vi.fn(
-      async (args: { projectName: string; assetId: string; relativePath: string; sourceFileName: string }) =>
-        ({
-          id: args.assetId,
-          kind: "gaussian-splat",
-          encoding: "splatbin-v1",
-          relativePath: "assets/gaussian-splat/converted.splatbin",
-          sourceFileName: args.sourceFileName,
-          byteSize: 1024
-        }) satisfies ProjectAssetRef
-    ),
     transcodeHdriToKtx2: vi.fn(async () => {
       throw new Error("not implemented");
     }),
@@ -92,28 +78,6 @@ describe("project service", () => {
     const payload = saved?.[2] ?? "";
     expect(parseProjectSnapshot(payload).projectName).toBe("new-name");
     expect(parseProjectSnapshot(payload).snapshotName).toBe("main");
-  });
-
-  it("runs gaussian asset migration against canonical requested project name", async () => {
-    const legacyAsset: ProjectAssetRef = {
-      id: "legacy-asset-1",
-      kind: "gaussian-splat",
-      encoding: "raw",
-      relativePath: "assets/gaussian-splat/legacy.ply",
-      sourceFileName: "legacy.ply",
-      byteSize: 42
-    };
-    const storage = createStorageMocks({
-      loadProjectSnapshot: vi.fn(async () => serializeProjectSnapshot(buildManifest("old-name", "main", [legacyAsset])))
-    });
-    const store = createAppStore("electron-rw");
-    const service = new ProjectService(storage, store);
-
-    await service.loadProject("new-name", "main");
-
-    expect(storage.convertGaussianAsset).toHaveBeenCalledTimes(1);
-    const args = vi.mocked(storage.convertGaussianAsset).mock.calls[0]?.[0];
-    expect(args?.projectName).toBe("new-name");
   });
 
   it("auto-saves before and after active-project rename", async () => {
@@ -235,7 +199,6 @@ describe("project service", () => {
     await service.loadProject("demo", "main");
 
     expect(storage.saveProjectSnapshot).not.toHaveBeenCalled();
-    expect(storage.convertGaussianAsset).not.toHaveBeenCalled();
   });
 
   it("can set defaults for a specific snapshot without loading it first", async () => {

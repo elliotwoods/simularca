@@ -29,51 +29,9 @@ export const ENVIRONMENT_ACTOR_SCHEMA: ParameterSchema = {
   ]
 };
 
-export const GAUSSIAN_SPLAT_SCHEMA: ParameterSchema = {
-  id: "actor.gaussianSplat",
-  title: "Gaussian Splat",
-  params: [
-    {
-      key: "assetId",
-      label: "PLY Asset",
-      type: "file",
-      accept: [".ply"],
-      dialogTitle: "Select Gaussian splat PLY",
-      import: {
-        mode: "import-asset",
-        kind: "gaussian-splat"
-      }
-    },
-    {
-      key: "scaleFactor",
-      label: "Scale",
-      type: "number",
-      step: 0.001,
-      precision: 3,
-      defaultValue: 1
-    },
-    { key: "splatSize", label: "Splat Size", type: "number", min: 0.05, max: 20, step: 0.05, defaultValue: 1 },
-    { key: "opacity", label: "Opacity", type: "number", min: 0, max: 1, step: 0.01, defaultValue: 1 },
-    {
-      key: "filterMode",
-      label: "Filter Mode",
-      type: "select",
-      options: ["off", "inside", "outside"],
-      defaultValue: "off"
-    },
-    {
-      key: "filterRegionActorIds",
-      label: "Filter Regions",
-      type: "actor-ref-list",
-      allowedActorTypes: ["primitive"],
-      defaultValue: []
-    }
-  ]
-};
-
 export const GAUSSIAN_SPLAT_SPARK_SCHEMA: ParameterSchema = {
   id: "actor.gaussianSplatSpark",
-  title: "Gaussian Splat (Spark)",
+  title: "Gaussian Splat",
   params: [
     {
       key: "assetId",
@@ -88,7 +46,7 @@ export const GAUSSIAN_SPLAT_SPARK_SCHEMA: ParameterSchema = {
     },
     {
       key: "scaleFactor",
-      label: "Import Scale (src->m)",
+      label: "Scale",
       type: "number",
       step: 0.001,
       precision: 3,
@@ -110,6 +68,13 @@ export const GAUSSIAN_SPLAT_SPARK_SCHEMA: ParameterSchema = {
       type: "select",
       options: ["srgb", "iphone-sdr", "linear"],
       defaultValue: "srgb"
+    },
+    {
+      key: "stochasticDepth",
+      label: "Depth-Correct Transparency",
+      description: "Uses Spark's stochastic depth-writing mode. Transparent objects interact with splats more correctly, but the splats become dithered.",
+      type: "boolean",
+      defaultValue: false
     }
   ]
 };

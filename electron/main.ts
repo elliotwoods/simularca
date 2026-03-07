@@ -13,7 +13,6 @@ import type {
   ProjectAssetRef,
   ProjectSnapshotListEntry
 } from "../src/types/ipc";
-import { createSplatBinaryV1 } from "./splatBinaryFormat.js";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"]);
 // 1×1 transparent PNG
@@ -1490,75 +1489,6 @@ function registerIpcHandlers(): void {
       }
 
       return { asset: daeAsset, imageAssets, materialDefs, materialSlots };
-    }
-  );
-
-  ipcMain.handle(
-    "asset:import-gaussian",
-    async (
-      _event,
-      args: {
-        projectName: string;
-        sourcePath: string;
-      }
-    ) => {
-      await ensureProjectDirectory(args.projectName);
-      const sourceFileName = path.basename(args.sourcePath);
-      const payload = Uint8Array.from(await fs.readFile(args.sourcePath));
-      const binary = createSplatBinaryV1(payload, "ply");
-      const targetName = `${Date.now()}-${randomUUID()}.splatbin`;
-      const assetDirectory = getAssetDirectory(args.projectName, "gaussian-splat");
-      await fs.mkdir(assetDirectory, { recursive: true });
-      const targetPath = path.join(assetDirectory, targetName);
-      await fs.writeFile(targetPath, binary);
-      const stat = await fs.stat(targetPath);
-      const relativePath = path.relative(getProjectDirectory(args.projectName), targetPath).replaceAll("\\", "/");
-      const assetRef: ProjectAssetRef = {
-        id: randomUUID(),
-        kind: "gaussian-splat",
-        encoding: "splatbin-v1",
-        relativePath,
-        sourceFileName,
-        byteSize: stat.size
-      };
-      return assetRef;
-    }
-  );
-
-  ipcMain.handle(
-    "asset:convert-gaussian",
-    async (
-      _event,
-      args: {
-        projectName: string;
-        assetId: string;
-        relativePath: string;
-        sourceFileName: string;
-      }
-    ) => {
-      await ensureProjectDirectory(args.projectName);
-      const projectRoot = path.resolve(getProjectDirectory(args.projectName));
-      const sourcePath = path.resolve(projectRoot, args.relativePath);
-      if (!sourcePath.startsWith(projectRoot)) {
-        throw new Error("Invalid asset path");
-      }
-      const payload = Uint8Array.from(await fs.readFile(sourcePath));
-      const binary = createSplatBinaryV1(payload, "ply");
-      const targetName = `${Date.now()}-${randomUUID()}.splatbin`;
-      const assetDirectory = getAssetDirectory(args.projectName, "gaussian-splat");
-      await fs.mkdir(assetDirectory, { recursive: true });
-      const targetPath = path.join(assetDirectory, targetName);
-      await fs.writeFile(targetPath, binary);
-      const stat = await fs.stat(targetPath);
-      const relativePath = path.relative(getProjectDirectory(args.projectName), targetPath).replaceAll("\\", "/");
-      return {
-        id: args.assetId,
-        kind: "gaussian-splat",
-        encoding: "splatbin-v1",
-        relativePath,
-        sourceFileName: args.sourceFileName,
-        byteSize: stat.size
-      } satisfies ProjectAssetRef;
     }
   );
 

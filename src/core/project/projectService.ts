@@ -3,7 +3,7 @@ import { buildProjectSnapshotManifest } from "@/core/project/projectSnapshotMani
 import { parseProjectSnapshot, serializeProjectSnapshot } from "@/core/project/projectSnapshotSchema";
 import type { StorageAdapter } from "@/features/storage/storageAdapter";
 import type { AppStoreApi } from "@/core/store/appStore";
-import type { DefaultProjectPointer, ProjectAssetRef, ProjectSnapshotListEntry } from "@/types/ipc";
+import type { DefaultProjectPointer, ProjectSnapshotListEntry } from "@/types/ipc";
 import type { ProjectSnapshotManifest } from "@/core/types";
 
 const DEFAULT_SNAPSHOT_NAME = "main";
@@ -35,8 +35,7 @@ export class ProjectService {
       parsed.projectName === projectName && parsed.snapshotName === snapshotName
         ? parsed
         : { ...parsed, projectName, snapshotName };
-    const migrated = await this.migrateLegacyGaussianAssets(canonicalizedManifest);
-    const manifest = migrated.manifest;
+    const manifest = canonicalizedManifest;
     const projectBytes = new Blob([raw]).size;
     this.store.getState().actions.hydrate({
       ...createInitialState(this.storage.mode, projectName, snapshotName),
@@ -56,14 +55,8 @@ export class ProjectService {
       projectFileBytes: projectBytes,
       projectFileBytesSaved: projectBytes
     });
-    if (
-      (migrated.changed || parsed.projectName !== projectName || parsed.snapshotName !== snapshotName) &&
-      !this.storage.isReadOnly
-    ) {
+    if ((parsed.projectName !== projectName || parsed.snapshotName !== snapshotName) && !this.storage.isReadOnly) {
       await this.saveProject();
-      if (migrated.changed) {
-        this.store.getState().actions.setStatus("Converted legacy Gaussian assets to native splat binary.");
-      }
     }
   }
 
@@ -302,37 +295,6 @@ export class ProjectService {
   public get isReadOnly(): boolean {
     return this.storage.isReadOnly;
   }
-
-  private async migrateLegacyGaussianAssets(
-    manifest: ProjectSnapshotManifest
-  ): Promise<{ manifest: ProjectSnapshotManifest; changed: boolean }> {
-    if (this.storage.isReadOnly) {
-      return { manifest, changed: false };
-    }
-    let changed = false;
-    const nextAssets: ProjectAssetRef[] = [];
-    for (const asset of manifest.assets) {
-      const isGaussian = asset.kind === "gaussian-splat";
-      const alreadyNative = asset.encoding === "splatbin-v1" || asset.relativePath.toLowerCase().endsWith(".splatbin");
-      if (!isGaussian || alreadyNative) {
-        nextAssets.push(asset);
-        continue;
-      }
-      const converted = await this.storage.convertGaussianAsset({
-        projectName: manifest.projectName,
-        assetId: asset.id,
-        relativePath: asset.relativePath,
-        sourceFileName: asset.sourceFileName
-      });
-      nextAssets.push(converted);
-      changed = true;
-    }
-    return {
-      manifest: changed ? { ...manifest, assets: nextAssets } : manifest,
-      changed
-    };
-  }
-
   private async saveDefaultsForCurrentState(): Promise<void> {
     const state = this.store.getState().state;
     await this.storage.saveDefaults({

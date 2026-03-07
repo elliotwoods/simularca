@@ -18,6 +18,33 @@ interface SparkActorEntry {
   colorControls: SparkColorControls;
 }
 
+export function isSparkStochasticDepthEnabled(actor: Pick<ActorNode, "params">): boolean {
+  return actor.params.stochasticDepth === true;
+}
+
+export function applySparkStochasticDepthMode(mesh: any, enabled: boolean): void {
+  if (mesh?.defaultView && typeof mesh.defaultView === "object") {
+    mesh.defaultView.stochastic = enabled;
+    if (typeof mesh.defaultView.sortUpdate === "function") {
+      void mesh.defaultView.sortUpdate({});
+    }
+  }
+  if (mesh?.viewpoint && typeof mesh.viewpoint === "object") {
+    mesh.viewpoint.stochastic = enabled;
+    if (typeof mesh.viewpoint.sortUpdate === "function") {
+      void mesh.viewpoint.sortUpdate({});
+    }
+  }
+  if (typeof mesh?.prepareViewpoint === "function") {
+    mesh.prepareViewpoint(mesh.viewpoint ?? mesh.defaultView);
+  }
+  if (mesh?.material) {
+    mesh.material.transparent = !enabled;
+    mesh.material.depthWrite = enabled;
+    mesh.material.needsUpdate = true;
+  }
+}
+
 function parseSparkColorInputSpace(value: unknown): SplatColorInputSpace {
   return value === "linear" || value === "iphone-sdr" || value === "srgb" ? value : "srgb";
 }
@@ -119,7 +146,8 @@ export class SparkSplatController {
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
           backend: "spark-webgl",
-          loadState: "failed"
+          loadState: "failed",
+          transparencyMode: isSparkStochasticDepthEnabled(actor) ? "stochastic-depth" : "alpha-blended"
         },
         error: "Asset reference not found in project state.",
         updatedAtIso: new Date().toISOString()
@@ -140,7 +168,8 @@ export class SparkSplatController {
       values: {
         backend: "spark-webgl",
         loadState: "loading",
-        assetFileName: asset.sourceFileName
+        assetFileName: asset.sourceFileName,
+        transparencyMode: isSparkStochasticDepthEnabled(actor) ? "stochastic-depth" : "alpha-blended"
       },
       updatedAtIso: new Date().toISOString()
     });
@@ -191,6 +220,7 @@ export class SparkSplatController {
           loadState: "loaded",
           assetFileName: asset.sourceFileName,
           pointCount,
+          transparencyMode: isSparkStochasticDepthEnabled(actor) ? "stochastic-depth" : "alpha-blended",
           boundsMin: bounds ? [bounds.min.x, bounds.min.y, bounds.min.z] : undefined,
           boundsMax: bounds ? [bounds.max.x, bounds.max.y, bounds.max.z] : undefined
         },
@@ -209,7 +239,8 @@ export class SparkSplatController {
         values: {
           backend: "spark-webgl",
           loadState: "failed",
-          assetFileName: asset.sourceFileName
+          assetFileName: asset.sourceFileName,
+          transparencyMode: isSparkStochasticDepthEnabled(actor) ? "stochastic-depth" : "alpha-blended"
         },
         error: message,
         updatedAtIso: new Date().toISOString()
@@ -232,6 +263,8 @@ export class SparkSplatController {
 
   private applySparkRuntimeParams(entry: SparkActorEntry, actor: ActorNode): void {
     const { mesh, colorControls } = entry;
+    applySparkStochasticDepthMode(mesh, isSparkStochasticDepthEnabled(actor));
+
     const scaleFactor = Number(actor.params.scaleFactor ?? 1);
     const safeScale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
     mesh.scale?.setScalar?.(safeScale);
@@ -251,15 +284,17 @@ export class SparkSplatController {
     const safeOpacity = Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1;
     if (typeof mesh.setOpacity === "function") {
       mesh.setOpacity(safeOpacity);
-      return;
+    } else {
+      if (typeof mesh.opacity === "number") {
+        mesh.opacity = safeOpacity;
+      }
+      if (mesh.material && "opacity" in mesh.material) {
+        mesh.material.opacity = safeOpacity;
+        mesh.material.needsUpdate = true;
+      }
     }
-    if (typeof mesh.opacity === "number") {
-      mesh.opacity = safeOpacity;
-    }
-    if (mesh.material && "opacity" in mesh.material) {
-      mesh.material.opacity = safeOpacity;
-      mesh.material.transparent = safeOpacity < 1;
-      mesh.material.needsUpdate = true;
+    if (typeof mesh.prepareViewpoint === "function") {
+      mesh.prepareViewpoint(mesh.viewpoint ?? mesh.defaultView);
     }
   }
 }

@@ -10,7 +10,6 @@ export type SplatColorInputSpace = "linear" | "srgb" | "iphone-sdr";
 export type ActorType =
   | "empty"
   | "environment"
-  | "gaussian-splat"
   | "gaussian-splat-spark"
   | "mesh"
   | "primitive"

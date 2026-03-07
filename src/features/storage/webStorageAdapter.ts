@@ -75,12 +75,6 @@ export function createWebStorageAdapter(): StorageAdapter {
     async importDae() {
       throw new Error("Read-only mode: DAE assets cannot be imported.");
     },
-    async importGaussianSplat() {
-      throw new Error("Read-only mode: Gaussian splats cannot be imported.");
-    },
-    async convertGaussianAsset() {
-      throw new Error("Read-only mode: Gaussian splats cannot be converted.");
-    },
     async transcodeHdriToKtx2() {
       throw new Error("Read-only mode: HDRI transcoding is disabled.");
     },

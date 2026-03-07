@@ -21,16 +21,6 @@ export interface StorageAdapter {
     kind: ProjectAssetRef["kind"];
   }): Promise<ProjectAssetRef>;
   importDae(args: { projectName: string; sourcePath: string }): Promise<DaeImportResult>;
-  importGaussianSplat(args: {
-    projectName: string;
-    sourcePath: string;
-  }): Promise<ProjectAssetRef>;
-  convertGaussianAsset(args: {
-    projectName: string;
-    assetId: string;
-    relativePath: string;
-    sourceFileName: string;
-  }): Promise<ProjectAssetRef>;
   transcodeHdriToKtx2(args: {
     projectName: string;
     sourcePath: string;

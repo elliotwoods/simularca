@@ -75,17 +75,11 @@ export async function importFileForActorParam(
     return { asset: result.asset, extraParams: { materialSlots, localMaterials } };
   }
 
-  const asset =
-    args.definition.import.kind === "gaussian-splat"
-      ? await kernel.storage.importGaussianSplat({
-          projectName: args.projectName,
-          sourcePath: args.sourcePath
-        })
-      : await kernel.storage.importAsset({
-          projectName: args.projectName,
-          sourcePath: args.sourcePath,
-          kind: args.definition.import.kind
-        });
+  const asset = await kernel.storage.importAsset({
+    projectName: args.projectName,
+    sourcePath: args.sourcePath,
+    kind: args.definition.import.kind
+  });
   appendAsset(kernel, asset);
   kernel.projectService.queueAutosave();
   return { asset };

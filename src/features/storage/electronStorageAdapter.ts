@@ -25,8 +25,6 @@ export function createElectronStorageAdapter(): StorageAdapter {
     deleteSnapshot: (projectName, snapshotName) => window.electronAPI!.deleteSnapshot({ projectName, snapshotName }),
     importAsset: (args) => window.electronAPI!.importAsset(args),
     importDae: (args) => window.electronAPI!.importDae(args),
-    importGaussianSplat: (args) => window.electronAPI!.importGaussianSplat(args),
-    convertGaussianAsset: (args) => window.electronAPI!.convertGaussianAsset(args),
     transcodeHdriToKtx2: (args) => window.electronAPI!.transcodeHdriToKtx2(args),
     deleteAsset: (args) => window.electronAPI!.deleteAsset(args),
     resolveAssetPath: (args) => window.electronAPI!.resolveAssetPath(args),

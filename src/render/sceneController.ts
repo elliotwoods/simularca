@@ -14,7 +14,7 @@ import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/fe
 import { estimateCurveLength, sampleCurvePositionAndTangent } from "@/features/curves/sampler";
 import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
-import type { SplatQueryArgs, VisibleSplatSample } from "@/render/splatQueryRegistry";
+import { collectActorRenderOrder } from "@/render/sceneRenderOrder";
 
 const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
 const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
@@ -368,9 +368,6 @@ export class SceneController {
       const _ta2 = performance.now();
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
       const _ta3 = performance.now();
-      if (actor.actorType === "gaussian-splat") {
-        await this.syncGaussianSplatAsset(actor);
-      }
       let _ta4 = _ta3, _ta5 = _ta3;
       if (actor.actorType === "mesh") {
         // Avoid an unconditional `await` every frame. `syncMeshAsset` early-exits
@@ -417,6 +414,9 @@ export class SceneController {
       this.syncActorParentAttachment(actor.id, actor.parentActorId);
     }
     const tC = performance.now();
+    this.syncActorSiblingOrder(state);
+    this.applyActorRenderOrder(state);
+    const tC2 = performance.now();
     for (const actor of Object.values(state.actors)) {
       this.syncPluginSceneActor(actor, state, simTimeSeconds, dtSeconds);
     }
@@ -430,7 +430,8 @@ export class SceneController {
         "[simularca] syncFromState slow:", dt.toFixed(0), "ms |",
         "actorLoop:", (tB - tA).toFixed(0), "ms |",
         "parentSync:", (tC - tB).toFixed(0), "ms |",
-        "pluginLoop:", (tD - tC).toFixed(0), "ms |",
+        "orderSync:", (tC2 - tC).toFixed(0), "ms |",
+        "pluginLoop:", (tD - tC2).toFixed(0), "ms |",
         "envTex:", (performance.now() - tD).toFixed(0), "ms"
       );
     }
@@ -638,67 +639,6 @@ export class SceneController {
     this.gaussianSortDirty = false;
   }
 
-  public queryVisibleSplats(args?: SplatQueryArgs): VisibleSplatSample[] {
-    const state = this.kernel.store.getState().state;
-    const maxResults = Math.max(1, Math.min(50000, Math.floor(args?.maxResults ?? 5000)));
-    const actorIdFilter = args?.actorIds ? new Set(args.actorIds) : null;
-    const bounds = args?.bounds
-      ? new THREE.Box3(
-          new THREE.Vector3(args.bounds.min[0], args.bounds.min[1], args.bounds.min[2]),
-          new THREE.Vector3(args.bounds.max[0], args.bounds.max[1], args.bounds.max[2])
-        )
-      : null;
-    const results: VisibleSplatSample[] = [];
-    const sampleLocal = new THREE.Vector3();
-    const sampleWorld = new THREE.Vector3();
-    const sampleInRegion = new THREE.Vector3();
-
-    for (const actor of Object.values(state.actors)) {
-      if (actor.actorType !== "gaussian-splat" || !actor.enabled) {
-        continue;
-      }
-      if (actorIdFilter && !actorIdFilter.has(actor.id)) {
-        continue;
-      }
-      const geometry = this.gaussianGeometryByActorId.get(actor.id);
-      const actorObject = this.actorObjects.get(actor.id);
-      if (!geometry || !(actorObject instanceof THREE.Group) || actorObject.visible === false) {
-        continue;
-      }
-      const correctedRoot = actorObject.getObjectByName(GAUSSIAN_RENDER_ROOT_NAME);
-      if (!(correctedRoot instanceof THREE.Group)) {
-        continue;
-      }
-      const position = geometry.getAttribute("position");
-      if (!position || typeof position.count !== "number") {
-        continue;
-      }
-      const filterSpec = this.buildGaussianFilterSpec(actor);
-      const opacity = Number(actor.params.opacity ?? 1);
-      for (let index = 0; index < position.count; index += 1) {
-        sampleLocal.set(position.getX(index), position.getY(index), position.getZ(index));
-        if (filterSpec && !this.isGaussianPointVisible(sampleLocal, filterSpec, sampleInRegion)) {
-          continue;
-        }
-        sampleWorld.copy(sampleLocal);
-        correctedRoot.localToWorld(sampleWorld);
-        if (bounds && !bounds.containsPoint(sampleWorld)) {
-          continue;
-        }
-        results.push({
-          actorId: actor.id,
-          splatIndex: index,
-          position: [sampleWorld.x, sampleWorld.y, sampleWorld.z],
-          opacity
-        });
-        if (results.length >= maxResults) {
-          return results;
-        }
-      }
-    }
-    return results;
-  }
-
   private async ensureActorObject(actor: ActorNode): Promise<void> {
     if (!this.actorObjects.has(actor.id)) {
       const object = await this.createObjectForActor(actor);
@@ -720,23 +660,62 @@ export class SceneController {
     targetParent.add(object);
   }
 
+  private syncActorSiblingOrder(state: AppState): void {
+    this.syncOrderedChildren(this.scene, state.scene.actorIds.map((actorId) => this.actorObjects.get(actorId)).filter(Boolean));
+    for (const actor of Object.values(state.actors)) {
+      const parentObject = this.actorObjects.get(actor.id);
+      if (!parentObject) {
+        continue;
+      }
+      this.syncOrderedChildren(
+        parentObject,
+        actor.childActorIds.map((childId) => this.actorObjects.get(childId)).filter(Boolean)
+      );
+    }
+  }
+
+  private syncOrderedChildren(parentObject: any, desiredChildren: any[]): void {
+    if (!parentObject || desiredChildren.length === 0) {
+      return;
+    }
+    const desiredSet = new Set(desiredChildren);
+    const currentActorChildren = (parentObject.children as any[]).filter((child) => desiredSet.has(child));
+    const orderMatches =
+      currentActorChildren.length === desiredChildren.length &&
+      currentActorChildren.every((child, index) => child === desiredChildren[index]);
+    if (orderMatches) {
+      return;
+    }
+    for (const child of desiredChildren) {
+      if (child.parent === parentObject) {
+        parentObject.remove(child);
+      }
+    }
+    for (const child of desiredChildren) {
+      parentObject.add(child);
+    }
+  }
+
+  private applyActorRenderOrder(state: AppState): void {
+    const orderedActorIds = collectActorRenderOrder(state.scene.actorIds, state.actors);
+    const stride = 10;
+    orderedActorIds.forEach((actorId, index) => {
+      const object = this.actorObjects.get(actorId);
+      if (!object) {
+        return;
+      }
+      const renderOrder = index * stride;
+      object.traverse((node: any) => {
+        node.renderOrder = renderOrder;
+      });
+    });
+  }
+
   private async createObjectForActor(actor: ActorNode): Promise<any> {
     const pluginCreated = this.createPluginSceneObject(actor);
     if (pluginCreated) {
       return pluginCreated;
     }
-    if (actor.actorType === "gaussian-splat") {
-      const container = new THREE.Group();
-      container.name = "gaussian-splat-container";
-
-      const correctedRoot = new THREE.Group();
-      correctedRoot.name = GAUSSIAN_RENDER_ROOT_NAME;
-      correctedRoot.rotation.copy(SPLAT_COORDINATE_CORRECTION_EULER);
-
-      container.add(correctedRoot);
-      return container;
-    }
-
     if (actor.actorType === "mesh") {
       const container = new THREE.Group();
       container.name = "mesh-container";
@@ -1275,14 +1254,6 @@ export class SceneController {
     object.position.set(...actor.transform.position);
     object.rotation.set(...actor.transform.rotation);
     object.scale.set(...actor.transform.scale);
-    if (actor.actorType === "gaussian-splat" && object instanceof THREE.Group) {
-      const correctedRoot = object.getObjectByName(GAUSSIAN_RENDER_ROOT_NAME);
-      if (correctedRoot instanceof THREE.Group) {
-        const scaleFactor = Number(actor.params.scaleFactor ?? 1);
-        const safe = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
-        correctedRoot.scale.setScalar(safe);
-      }
-    }
     if (actor.actorType === "mesh" && object instanceof THREE.Group) {
       const renderRoot = object.getObjectByName(MESH_RENDER_ROOT_NAME);
       if (renderRoot instanceof THREE.Group) {
@@ -1293,7 +1264,7 @@ export class SceneController {
     }
   }
 
-  private async syncGaussianSplatAsset(actor: ActorNode): Promise<void> {
+  public async syncGaussianSplatAsset(actor: ActorNode): Promise<void> {
     const object = this.actorObjects.get(actor.id);
     if (!(object instanceof THREE.Group)) {
       return;

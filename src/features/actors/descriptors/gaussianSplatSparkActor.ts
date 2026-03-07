@@ -7,6 +7,7 @@ interface GaussianSplatSparkRuntime {
   opacity: number;
   brightness: number;
   colorInputSpace: string;
+  stochasticDepth: boolean;
 }
 
 export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSplatSparkRuntime> = {
@@ -16,8 +17,8 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
   schema: GAUSSIAN_SPLAT_SPARK_SCHEMA,
   spawn: {
     actorType: "gaussian-splat-spark",
-    label: "Gaussian Splat (Spark)",
-    description: "Renders imported PLY Gaussian splats using Spark/WebGL.",
+    label: "Gaussian Splat",
+    description: "Renders imported PLY Gaussian splats using the Spark/WebGL pipeline.",
     iconGlyph: "GS",
     fileExtensions: [".ply"]
   },
@@ -26,7 +27,8 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
     scaleFactor: typeof params.scaleFactor === "number" ? params.scaleFactor : 1,
     opacity: typeof params.opacity === "number" ? params.opacity : 1,
     brightness: typeof params.brightness === "number" ? params.brightness : 1,
-    colorInputSpace: typeof params.colorInputSpace === "string" ? params.colorInputSpace : "srgb"
+    colorInputSpace: typeof params.colorInputSpace === "string" ? params.colorInputSpace : "srgb",
+    stochasticDepth: params.stochasticDepth === true
   }),
   updateRuntime(runtime, { params }) {
     runtime.assetId = typeof params.assetId === "string" ? params.assetId : runtime.assetId;
@@ -34,13 +36,14 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
     runtime.opacity = typeof params.opacity === "number" ? params.opacity : runtime.opacity;
     runtime.brightness = typeof params.brightness === "number" ? params.brightness : runtime.brightness;
     runtime.colorInputSpace = typeof params.colorInputSpace === "string" ? params.colorInputSpace : runtime.colorInputSpace;
+    runtime.stochasticDepth = params.stochasticDepth === true;
   },
   status: {
     build({ actor, state, runtimeStatus }) {
       const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
       const asset = state.assets.find((entry) => entry.id === assetId);
       return [
-        { label: "Type", value: "Gaussian Splat (Spark)" },
+        { label: "Type", value: "Gaussian Splat" },
         { label: "Asset", value: asset?.sourceFileName ?? (assetId ? "Missing asset reference" : "Not set") },
         {
           label: "Scale",
@@ -58,7 +61,15 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
           label: "Captured Color Space",
           value: typeof actor.params.colorInputSpace === "string" ? actor.params.colorInputSpace : "srgb"
         },
+        {
+          label: "Depth-Correct Transparency",
+          value: typeof actor.params.stochasticDepth === "boolean" ? actor.params.stochasticDepth : false
+        },
         { label: "Backend", value: runtimeStatus?.values.backend ?? "n/a" },
+        {
+          label: "Transparency Mode",
+          value: runtimeStatus?.values.transparencyMode ?? ((actor.params.stochasticDepth === true) ? "stochastic-depth" : "alpha-blended")
+        },
         { label: "Load State", value: runtimeStatus?.values.loadState ?? "n/a" },
         { label: "Point Count", value: runtimeStatus?.values.pointCount ?? "n/a" },
         { label: "Bounds Min (m)", value: runtimeStatus?.values.boundsMin ?? "n/a" },

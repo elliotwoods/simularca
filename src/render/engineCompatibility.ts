@@ -1,11 +1,8 @@
 import type { ActorNode, RenderEngine } from "@/core/types";
 
 export function incompatibilityReason(actor: ActorNode, engine: RenderEngine): string | null {
-  if (engine === "webgl2" && actor.actorType === "gaussian-splat") {
-    return "Native Gaussian actor requires WebGPU.";
-  }
   if (engine === "webgpu" && actor.actorType === "gaussian-splat-spark") {
-    return "Gaussian Splat (Spark) actor requires WebGL2.";
+    return "Gaussian Splat actor requires WebGL2.";
   }
   if (
     engine === "webgpu" &&

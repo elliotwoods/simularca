@@ -2,7 +2,6 @@ import type { AppKernel } from "@/app/kernel";
 import type { ActorNode, ActorVisibilityMode, ComponentNode, ParameterValues, SelectionEntry } from "@/core/types";
 import { createActorFromDescriptor, listActorCreationOptions } from "@/features/actors/actorCatalog";
 import { loadPluginFromModule } from "@/features/plugins/pluginLoader";
-import { queryVisibleSplats } from "@/render/splatQueryRegistry";
 
 export interface ConsoleMethodDoc {
   path: string;
@@ -42,12 +41,6 @@ const METHOD_DOCS: ConsoleMethodDoc[] = [
     signature: "scene.listActors(filter?)",
     description: "List actors with optional filter.",
     examples: ["scene.listActors()", "scene.listActors({ type: 'mesh' })"]
-  },
-  {
-    path: "scene.querySplats",
-    signature: "scene.querySplats(filter?)",
-    description: "Query currently visible Gaussian splats.",
-    examples: ["scene.querySplats()", "scene.querySplats({ maxResults: 1000 })"]
   },
   {
     path: "scene.clear",
@@ -398,13 +391,6 @@ function buildRuntimeApi(kernel: AppKernel) {
         }
         return true;
       });
-    },
-    querySplats(filter?: {
-      actorIds?: string[];
-      bounds?: { min: [number, number, number]; max: [number, number, number] };
-      maxResults?: number;
-    }) {
-      return queryVisibleSplats(filter);
     },
     clear(options?: { confirm?: boolean }) {
       assertWritable(kernel);

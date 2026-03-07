@@ -55,7 +55,7 @@ For runtime KTX2 decode, place basis transcoder files in `public/basis/` (e.g. `
 
 ## Notes
 - Web mode (`public/sessions/...`) is read-only and intended for future Vercel deploys.
-- Gaussian splat actor renders in-scene from `splatbin-v1` project assets.
+- Gaussian splat support uses the Spark/WebGL path.
 - Plugin sample package: `plugins/example-wave-plugin`.
 - Plugin template package: `plugins/template-artwork-actor-plugin`.
 - Local external plugin workspace (gitignored): `plugins-local/`.
@@ -69,6 +69,7 @@ For runtime KTX2 decode, place basis transcoder files in `public/basis/` (e.g. `
   - In Electron+Vite dev (`http://localhost:5180`), `file:///...` plugin paths are normalized to Vite `@fs` imports by the plugin loader.
   - If a plugin does not appear in the `+` menu, check the Plugins dialog and status message for the first load failure reason.
 
-## Gaussian Asset Migration
-- Legacy project snapshots referencing raw `.ply` Gaussian assets are auto-converted to `splatbin-v1` when loaded in Electron mode.
+## Gaussian Asset Compatibility
+- The removed native Gaussian Splat system is no longer supported.
+- Legacy projects that still reference native `gaussian-splat` actors or `splatbin-v1` assets now fail load with an explicit compatibility error.
 - Legacy single-manifest session folders are treated as projects whose `session.json` is the `main` snapshot.

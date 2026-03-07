@@ -12,8 +12,8 @@ export interface ProjectSnapshotListEntry {
 
 export interface ProjectAssetRef {
   id: string;
-  kind: "hdri" | "gaussian-splat" | "generic" | "image";
-  encoding?: "raw" | "ktx2" | "splatbin-v1";
+  kind: "hdri" | "generic" | "image";
+  encoding?: "raw" | "ktx2";
   relativePath: string;
   sourceFileName: string;
   byteSize: number;
@@ -80,16 +80,6 @@ export interface ElectronApi {
     kind: ProjectAssetRef["kind"];
   }): Promise<ProjectAssetRef>;
   importDae(args: { projectName: string; sourcePath: string }): Promise<DaeImportResult>;
-  importGaussianSplat(args: {
-    projectName: string;
-    sourcePath: string;
-  }): Promise<ProjectAssetRef>;
-  convertGaussianAsset(args: {
-    projectName: string;
-    assetId: string;
-    relativePath: string;
-    sourceFileName: string;
-  }): Promise<ProjectAssetRef>;
   transcodeHdriToKtx2(args: {
     projectName: string;
     sourcePath: string;

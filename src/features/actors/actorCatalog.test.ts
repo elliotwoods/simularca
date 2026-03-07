@@ -4,6 +4,7 @@ import { createAppStore } from "@/core/store/appStore";
 import { createActorFromDescriptor, listActorCreationOptions } from "@/features/actors/actorCatalog";
 import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraPathActor";
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
+import { gaussianSplatSparkActorDescriptor } from "@/features/actors/descriptors/gaussianSplatSparkActor";
 import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
 
 function createKernelStub(): AppKernel {
@@ -17,7 +18,7 @@ function createKernelStub(): AppKernel {
       listPlugins: () => []
     } as unknown as AppKernel["pluginApi"],
     descriptorRegistry: {
-      listByKind: () => [cameraPathActorDescriptor, curveActorDescriptor, primitiveActorDescriptor]
+      listByKind: () => [cameraPathActorDescriptor, curveActorDescriptor, gaussianSplatSparkActorDescriptor, primitiveActorDescriptor]
     } as unknown as AppKernel["descriptorRegistry"],
     clock: {} as AppKernel["clock"]
   };
@@ -85,5 +86,17 @@ describe("actorCatalog camera path creation", () => {
     expect(actor?.params.curveType).toBe("circle");
     expect(actor?.params.radius).toBe(1);
     expect(actor?.params.samplesPerSegment).toBe(64);
+  });
+
+  it("seeds new Spark gaussian actors with stochastic depth disabled", () => {
+    const kernel = createKernelStub();
+
+    const actorId = createActorFromDescriptor(kernel, "actor.gaussianSplatSpark");
+    expect(actorId).toBeTruthy();
+
+    const actor = actorId ? kernel.store.getState().state.actors[actorId] : null;
+    expect(actor?.actorType).toBe("gaussian-splat-spark");
+    expect(actor?.params.stochasticDepth).toBe(false);
+    expect(actor?.params.opacity).toBe(1);
   });
 });

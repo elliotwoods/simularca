@@ -133,4 +133,45 @@ describe("project snapshot schema", () => {
       targetFps: 60
     });
   });
+
+  it("rejects removed native gaussian splat content with a clear error", () => {
+    const payload = {
+      schemaVersion: PROJECT_SCHEMA_VERSION,
+      appMode: "electron-rw",
+      projectName: "demo",
+      snapshotName: "main",
+      createdAtIso: "2026-03-02T00:00:00.000Z",
+      updatedAtIso: "2026-03-02T00:00:00.000Z",
+      scene: createInitialState("electron-rw", "demo", "main").scene,
+      actors: {
+        actor_1: {
+          id: "actor_1",
+          name: "Legacy Splat",
+          enabled: true,
+          kind: "actor",
+          actorType: "gaussian-splat",
+          visibilityMode: "visible",
+          parentActorId: null,
+          childActorIds: [],
+          componentIds: [],
+          transform: {
+            position: [0, 0, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1]
+          },
+          params: {}
+        }
+      },
+      components: {},
+      camera: createInitialState("electron-rw", "demo", "main").camera,
+      cameraBookmarks: [],
+      time: createInitialState("electron-rw", "demo", "main").time,
+      materials: {},
+      assets: []
+    };
+
+    expect(() => parseProjectSnapshot(JSON.stringify(payload))).toThrow(
+      "This project uses the removed native Gaussian Splat system."
+    );
+  });
 });

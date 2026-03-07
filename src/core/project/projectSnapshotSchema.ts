@@ -7,6 +7,28 @@ const parameterValueSchema: z.ZodTypeAny = z.lazy(() =>
   z.union([z.number(), z.string(), z.boolean(), z.null(), z.array(parameterValueSchema), z.record(parameterValueSchema)])
 );
 
+function assertNoRemovedNativeGaussianSplatContent(input: unknown): void {
+  if (!input || typeof input !== "object") {
+    return;
+  }
+  const payload = input as {
+    actors?: Record<string, { actorType?: unknown }>;
+    assets?: Array<{ kind?: unknown; encoding?: unknown; relativePath?: unknown }>;
+  };
+  const hasRemovedActor = Object.values(payload.actors ?? {}).some((actor) => actor?.actorType === "gaussian-splat");
+  const hasRemovedAsset = (payload.assets ?? []).some(
+    (asset) =>
+      asset?.kind === "gaussian-splat" ||
+      asset?.encoding === "splatbin-v1" ||
+      (typeof asset?.relativePath === "string" && asset.relativePath.toLowerCase().endsWith(".splatbin"))
+  );
+  if (hasRemovedActor || hasRemovedAsset) {
+    throw new Error(
+      "This project uses the removed native Gaussian Splat system. Recreate those actors/assets with the current Gaussian Splat actor."
+    );
+  }
+}
+
 const actorSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -15,7 +37,6 @@ const actorSchema = z.object({
   actorType: z.enum([
     "empty",
     "environment",
-    "gaussian-splat",
     "gaussian-splat-spark",
     "mesh",
     "primitive",
@@ -215,8 +236,8 @@ const projectSnapshotSchema = z.object({
   assets: z.array(
     z.object({
       id: z.string(),
-      kind: z.enum(["hdri", "gaussian-splat", "generic", "image"]),
-      encoding: z.enum(["raw", "ktx2", "splatbin-v1"]).optional(),
+      kind: z.enum(["hdri", "generic", "image"]),
+      encoding: z.enum(["raw", "ktx2"]).optional(),
       relativePath: z.string(),
       sourceFileName: z.string(),
       byteSize: z.number()
@@ -226,6 +247,7 @@ const projectSnapshotSchema = z.object({
 
 export function parseProjectSnapshot(payload: string): ProjectSnapshotManifest {
   const input = JSON.parse(payload) as unknown;
+  assertNoRemovedNativeGaussianSplatContent(input);
   const parsed = projectSnapshotSchema.safeParse(input);
   if (!parsed.success) {
     throw new Error(`Project snapshot parse failed: ${parsed.error.message}`);

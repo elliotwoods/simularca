@@ -96,9 +96,8 @@ Build a pre-visualization simulation environment for kinetic artworks with a lar
   - HDRI preprocessing to KTX2 pipeline
 - `Gaussian Splat` actor:
   - `.ply` import
-  - import-time conversion to native `splatbin-v1` asset format
   - copy into project assets
-  - in-scene native renderer path with scene depth integration
+  - Spark/WebGL runtime path
 - `Mesh` actor:
   - local import (`.glb`, `.gltf`, `.fbx`, `.dae`, `.obj`)
   - copy into project assets

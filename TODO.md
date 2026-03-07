@@ -64,18 +64,3 @@ Perhaps we can combine things, e.g.:
 * middle click or both button drag = pan
 
 whilst in right click drag, WASD keys are active (they are not active otherwise)
-
-# Refactor splats
-
-* Remove the WebGPU implementation completely (we will start from scratch if we try this again in future)
-* Make the existing splat implementation into a 'core plugin'
-* Remove any core functionality that is splat specific
-* Implement a general 'render draw order priority' for actor draw objects (e.g. some have alpha and need to be drawn late)
-(This is risky and needs testing)
-
-# Gizmos for all
-
-Currently we have gizmos only for curve controls, we should have them for all actors
-Let's by default snap these controls (e.g. 0.1m, 15 degree snaps) and holding shift turns snapping off
-
-# Non-
