@@ -20,7 +20,7 @@ import { KeyboardMapModal } from "@/ui/components/KeyboardMapModal";
 import { TextInputModal } from "@/ui/components/TextInputModal";
 import { RenderSettingsModal } from "@/ui/components/RenderSettingsModal";
 import { RenderOverlay } from "@/ui/components/RenderOverlay";
-import type { CameraState } from "@/core/types";
+import type { CameraState, SelectionEntry } from "@/core/types";
 import type { RenderProgress, RenderSettings } from "@/features/render/types";
 import { computeFrameCount, frameSimTime } from "@/features/render/timeline";
 import { solveRenderCamera } from "@/features/render/cameraSolver";
@@ -46,6 +46,28 @@ function isEditableTarget(target: EventTarget | null): boolean {
     return true;
   }
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+}
+
+const NAVIGATE_BACK_REQUEST_EVENT = "simularca:navigate-back-request";
+const NAVIGATE_FORWARD_REQUEST_EVENT = "simularca:navigate-forward-request";
+
+function cloneSelection(selection: SelectionEntry[]): SelectionEntry[] {
+  return selection.map((entry) => ({ ...entry }));
+}
+
+function selectionStatesEqual(a: SelectionEntry[], b: SelectionEntry[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((entry, index) => entry.kind === b[index]?.kind && entry.id === b[index]?.id);
+}
+
+function isMouseBackEvent(event: MouseEvent | PointerEvent): boolean {
+  return event.button === 3 || (typeof event.buttons === "number" && (event.buttons & 8) === 8);
+}
+
+function isMouseForwardEvent(event: MouseEvent | PointerEvent): boolean {
+  return event.button === 4 || (typeof event.buttons === "number" && (event.buttons & 16) === 16);
 }
 
 export function App() {
@@ -93,7 +115,12 @@ export function App() {
   const sceneRenderEngine = useAppStore((store) => store.state.scene.renderEngine);
   const sceneAntialiasing = useAppStore((store) => store.state.scene.antialiasing);
   const actors = useAppStore((store) => store.state.actors);
+  const selection = useAppStore((store) => store.state.selection);
   const readOnly = mode === "web-ro";
+  const selectionHistoryBackRef = useRef<SelectionEntry[][]>([]);
+  const selectionHistoryForwardRef = useRef<SelectionEntry[][]>([]);
+  const selectionHistorySuppressRef = useRef(false);
+  const previousSelectionRef = useRef<SelectionEntry[]>(cloneSelection(selection));
 
   const fileExtensionFromName = (fileName: string): string => {
     const dotIndex = fileName.lastIndexOf(".");
@@ -470,6 +497,158 @@ export function App() {
     },
     [stopCameraTween]
   );
+
+  useEffect(() => {
+    const previousSelection = previousSelectionRef.current;
+    if (selectionStatesEqual(previousSelection, selection)) {
+      return;
+    }
+    if (selectionHistorySuppressRef.current) {
+      selectionHistorySuppressRef.current = false;
+      previousSelectionRef.current = cloneSelection(selection);
+      return;
+    }
+    const backHistory = selectionHistoryBackRef.current;
+    if (!selectionStatesEqual(backHistory[backHistory.length - 1] ?? [], previousSelection)) {
+      backHistory.push(cloneSelection(previousSelection));
+    }
+    selectionHistoryForwardRef.current = [];
+    previousSelectionRef.current = cloneSelection(selection);
+  }, [selection]);
+
+  const handleNavigateBack = useCallback((): boolean => {
+    const backRequest = new CustomEvent<{ handled: boolean }>(NAVIGATE_BACK_REQUEST_EVENT, {
+      detail: { handled: false }
+    });
+    window.dispatchEvent(backRequest);
+    if (backRequest.detail.handled) {
+      return true;
+    }
+
+    const history = selectionHistoryBackRef.current;
+    let previousSelection: SelectionEntry[] | undefined;
+    while (history.length > 0) {
+      const candidate = history.pop();
+      if (!candidate) {
+        continue;
+      }
+      if (!selectionStatesEqual(candidate, selection)) {
+        previousSelection = candidate;
+        break;
+      }
+    }
+    if (!previousSelection) {
+      return false;
+    }
+
+    selectionHistorySuppressRef.current = true;
+    const actions = kernel.store.getState().actions;
+    const currentSelection = cloneSelection(selection);
+    if (!selectionStatesEqual(selectionHistoryForwardRef.current[selectionHistoryForwardRef.current.length - 1] ?? [], currentSelection)) {
+      selectionHistoryForwardRef.current.push(currentSelection);
+    }
+    if (previousSelection.length === 0) {
+      actions.clearSelection();
+      return true;
+    }
+    actions.select(previousSelection, false);
+    return true;
+  }, [kernel, selection]);
+
+  const handleNavigateForward = useCallback((): boolean => {
+    const forwardRequest = new CustomEvent<{ handled: boolean }>(NAVIGATE_FORWARD_REQUEST_EVENT, {
+      detail: { handled: false }
+    });
+    window.dispatchEvent(forwardRequest);
+    if (forwardRequest.detail.handled) {
+      return true;
+    }
+
+    const history = selectionHistoryForwardRef.current;
+    let nextSelection: SelectionEntry[] | undefined;
+    while (history.length > 0) {
+      const candidate = history.pop();
+      if (!candidate) {
+        continue;
+      }
+      if (!selectionStatesEqual(candidate, selection)) {
+        nextSelection = candidate;
+        break;
+      }
+    }
+    if (!nextSelection) {
+      return false;
+    }
+
+    selectionHistorySuppressRef.current = true;
+    const currentSelection = cloneSelection(selection);
+    if (!selectionStatesEqual(selectionHistoryBackRef.current[selectionHistoryBackRef.current.length - 1] ?? [], currentSelection)) {
+      selectionHistoryBackRef.current.push(currentSelection);
+    }
+    const actions = kernel.store.getState().actions;
+    if (nextSelection.length === 0) {
+      actions.clearSelection();
+      return true;
+    }
+    actions.select(nextSelection, false);
+    return true;
+  }, [kernel, selection]);
+
+  useEffect(() => {
+    let backGestureConsumed = false;
+    let forwardGestureConsumed = false;
+
+    const onPointerDown = (event: MouseEvent | PointerEvent) => {
+      if (!isMouseBackEvent(event) && !isMouseForwardEvent(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (isMouseBackEvent(event)) {
+        backGestureConsumed = false;
+      }
+      if (isMouseForwardEvent(event)) {
+        forwardGestureConsumed = false;
+      }
+    };
+
+    const onPointerTrigger = (event: MouseEvent | PointerEvent) => {
+      if (isMouseBackEvent(event)) {
+        if (backGestureConsumed) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        backGestureConsumed = true;
+        handleNavigateBack();
+        return;
+      }
+      if (!isMouseForwardEvent(event) || forwardGestureConsumed) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      forwardGestureConsumed = true;
+      handleNavigateForward();
+    };
+
+    const onAuxClick = (event: MouseEvent) => {
+      onPointerTrigger(event);
+    };
+
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("mousedown", onPointerDown, true);
+    window.addEventListener("pointerup", onPointerTrigger, true);
+    window.addEventListener("mouseup", onPointerTrigger, true);
+    window.addEventListener("auxclick", onAuxClick, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("mousedown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerTrigger, true);
+      window.removeEventListener("mouseup", onPointerTrigger, true);
+      window.removeEventListener("auxclick", onAuxClick, true);
+    };
+  }, [handleNavigateBack, handleNavigateForward]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

@@ -87,6 +87,8 @@ const DEFAULT_CAMERA_FOV_DEGREES = 50;
 const DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED = false;
 const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
 const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
+const NAVIGATE_BACK_REQUEST_EVENT = "simularca:navigate-back-request";
+const NAVIGATE_FORWARD_REQUEST_EVENT = "simularca:navigate-forward-request";
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
 const CURVE_HANDLE_MODE_OPTIONS = [
   {
@@ -518,7 +520,25 @@ interface SceneInspectorViewProps {
   kernel: ReturnType<typeof useKernel>;
 }
 
+type SceneInspectorRoute = "root" | "engine" | "camera" | "post-processing" | "diagnostics";
+
+function cloneInspectorView<T>(view: T): T {
+  return { ...view };
+}
+
+function inspectorViewsEqual(
+  a: { kind: "actor-root" } | { kind: "component"; componentId: string; componentLabel: string } | { kind: "param-group"; paramKey: string; paramLabel: string; fromComponentId: string | null },
+  b: { kind: "actor-root" } | { kind: "component"; componentId: string; componentLabel: string } | { kind: "param-group"; paramKey: string; paramLabel: string; fromComponentId: string | null }
+): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function SceneInspectorView(props: SceneInspectorViewProps) {
+  const [sceneInspectorView, setSceneInspectorView] = useState<SceneInspectorRoute>("root");
+  const sceneBackHistoryRef = useRef<SceneInspectorRoute[]>([]);
+  const sceneForwardHistoryRef = useRef<SceneInspectorRoute[]>([]);
+  const sceneHistorySuppressRef = useRef(false);
+  const previousSceneInspectorViewRef = useRef<SceneInspectorRoute>("root");
   const environmentActor = Object.values(props.appState.actors).find((actor) => actor.actorType === "environment");
   const hasEnvironmentBackground =
     typeof environmentActor?.params.assetId === "string" && environmentActor.params.assetId.length > 0;
@@ -561,6 +581,47 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     Math.abs(
       props.appState.runtimeDebug.slowFrameDiagnosticsThresholdMs - DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS
     ) > 1e-9;
+  const postProcessingEnabledCount = [
+    props.appState.scene.postProcessing.bloom.enabled,
+    props.appState.scene.postProcessing.vignette.enabled,
+    props.appState.scene.postProcessing.chromaticAberration.enabled,
+    props.appState.scene.postProcessing.grain.enabled
+  ].filter(Boolean).length;
+  const engineSummary = `${props.appState.scene.renderEngine === "webgl2" ? "WebGL2" : "WebGPU"} · ${
+    props.appState.scene.tonemapping.mode === "aces" ? "ACES" : "Tone Off"
+  }`;
+  const cameraSummary =
+    props.appState.camera.mode === "orthographic"
+      ? `Zoom ${props.appState.camera.zoom.toFixed(2)}`
+      : `FOV ${props.appState.camera.fov.toFixed(1)}°`;
+  const postProcessingSummary = postProcessingEnabledCount > 0 ? `${postProcessingEnabledCount} enabled` : "All off";
+  const diagnosticsSummary = props.appState.runtimeDebug.slowFrameDiagnosticsEnabled
+    ? `Slow frames on · ${props.appState.runtimeDebug.slowFrameDiagnosticsThresholdMs.toFixed(0)} ms`
+    : "Slow frames off";
+  const handleSceneBack = useCallback((): boolean => {
+    const previousRoute = sceneBackHistoryRef.current.pop();
+    if (!previousRoute) {
+      return false;
+    }
+    if ((sceneForwardHistoryRef.current.at(-1) ?? null) !== sceneInspectorView) {
+      sceneForwardHistoryRef.current.push(sceneInspectorView);
+    }
+    sceneHistorySuppressRef.current = true;
+    setSceneInspectorView(previousRoute);
+    return true;
+  }, [sceneInspectorView]);
+  const handleSceneForward = useCallback((): boolean => {
+    const nextRoute = sceneForwardHistoryRef.current.pop();
+    if (!nextRoute) {
+      return false;
+    }
+    if ((sceneBackHistoryRef.current.at(-1) ?? null) !== sceneInspectorView) {
+      sceneBackHistoryRef.current.push(sceneInspectorView);
+    }
+    sceneHistorySuppressRef.current = true;
+    setSceneInspectorView(nextRoute);
+    return true;
+  }, [sceneInspectorView]);
   const sceneStatsRows = [
     { label: "FPS", value: Number.isFinite(props.appState.stats.fps) ? props.appState.stats.fps.toFixed(1) : "0.0" },
     {
@@ -611,8 +672,82 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     }
   ];
 
+  useEffect(() => {
+    const previousRoute = previousSceneInspectorViewRef.current;
+    if (previousRoute === sceneInspectorView) {
+      return;
+    }
+    if (sceneHistorySuppressRef.current) {
+      sceneHistorySuppressRef.current = false;
+      previousSceneInspectorViewRef.current = sceneInspectorView;
+      return;
+    }
+    if ((sceneBackHistoryRef.current.at(-1) ?? null) !== previousRoute) {
+      sceneBackHistoryRef.current.push(previousRoute);
+    }
+    sceneForwardHistoryRef.current = [];
+    previousSceneInspectorViewRef.current = sceneInspectorView;
+  }, [sceneInspectorView]);
+
+  useEffect(() => {
+    const onBackRequest = (event: Event) => {
+      const customEvent = event as CustomEvent<{ handled?: boolean }>;
+      if (customEvent.detail?.handled) {
+        return;
+      }
+      if (handleSceneBack()) {
+        if (customEvent.detail) {
+          customEvent.detail.handled = true;
+        }
+      }
+    };
+    window.addEventListener(NAVIGATE_BACK_REQUEST_EVENT, onBackRequest);
+    return () => {
+      window.removeEventListener(NAVIGATE_BACK_REQUEST_EVENT, onBackRequest);
+    };
+  }, [handleSceneBack]);
+
+  useEffect(() => {
+    const onForwardRequest = (event: Event) => {
+      const customEvent = event as CustomEvent<{ handled?: boolean }>;
+      if (customEvent.detail?.handled) {
+        return;
+      }
+      if (handleSceneForward()) {
+        if (customEvent.detail) {
+          customEvent.detail.handled = true;
+        }
+      }
+    };
+    window.addEventListener(NAVIGATE_FORWARD_REQUEST_EVENT, onForwardRequest);
+    return () => {
+      window.removeEventListener(NAVIGATE_FORWARD_REQUEST_EVENT, onForwardRequest);
+    };
+  }, [handleSceneForward]);
+
   return (
     <div className="inspector-pane-root custom-inspector">
+      {sceneInspectorView !== "root" ? (
+        <div className="inspector-nav-header">
+          <button className="inspector-nav-back" onClick={() => setSceneInspectorView("root")}>‹</button>
+          <nav className="inspector-breadcrumb">
+            <button className="inspector-breadcrumb-segment" onClick={() => setSceneInspectorView("root")}>
+              Scene
+            </button>
+            <span className="inspector-breadcrumb-sep">›</span>
+            <span className="inspector-breadcrumb-current">
+              {sceneInspectorView === "engine"
+                ? "Engine"
+                : sceneInspectorView === "camera"
+                  ? "Camera"
+                  : sceneInspectorView === "post-processing"
+                    ? "Post Processing"
+                    : "Diagnostics"}
+            </span>
+          </nav>
+        </div>
+      ) : null}
+      {sceneInspectorView === "root" ? (
       <section className="inspector-common-card">
         <header>
           <h4>Scene</h4>
@@ -670,9 +805,30 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
           <p className="panel-empty">Background color is overridden while an Environment texture is active.</p>
         ) : null}
       </section>
+      ) : null}
+      {sceneInspectorView === "root" ? (
+        <section className="inspector-common-card">
+          <header>
+            <h4>Settings</h4>
+          </header>
+          <DrillInRow label="Engine" summary={engineSummary} onClick={() => setSceneInspectorView("engine")} />
+          <DrillInRow label="Camera" summary={cameraSummary} onClick={() => setSceneInspectorView("camera")} />
+          <DrillInRow
+            label="Post Processing"
+            summary={postProcessingSummary}
+            onClick={() => setSceneInspectorView("post-processing")}
+          />
+          <DrillInRow
+            label="Diagnostics"
+            summary={diagnosticsSummary}
+            onClick={() => setSceneInspectorView("diagnostics")}
+          />
+        </section>
+      ) : null}
+      {sceneInspectorView === "engine" ? (
       <section className="inspector-common-card">
         <header>
-          <h4>Renderer</h4>
+          <h4>Engine</h4>
         </header>
         <div className="inspector-common-grid">
           <div className="inspector-common-row">
@@ -807,6 +963,15 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
               </button>
             </div>
           </div>
+        </div>
+      </section>
+      ) : null}
+      {sceneInspectorView === "post-processing" ? (
+      <section className="inspector-common-card">
+        <header>
+          <h4>Post Processing</h4>
+        </header>
+        <div className="inspector-common-grid">
           <div className="inspector-common-row">
             <span className="inspector-common-label">Bloom</span>
             <div className="inspector-common-control-wrap">
@@ -1229,6 +1394,15 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
               </button>
             </div>
           </div>
+        </div>
+      </section>
+      ) : null}
+      {sceneInspectorView === "camera" ? (
+      <section className="inspector-common-card">
+        <header>
+          <h4>Camera</h4>
+        </header>
+        <div className="inspector-common-grid">
           <div className="inspector-common-row">
             <span className="inspector-common-label">Keyboard Camera Nav</span>
             <div className="inspector-common-control-wrap">
@@ -1323,6 +1497,8 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
           </div>
         </div>
       </section>
+      ) : null}
+      {sceneInspectorView === "diagnostics" ? (
       <section className="inspector-common-card">
         <header>
           <h4>Diagnostics</h4>
@@ -1391,6 +1567,8 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
         </div>
         <p className="panel-empty">Slow frames are logged to the app console when enabled. Browser devtools stay quiet by default.</p>
       </section>
+      ) : null}
+      {sceneInspectorView === "root" ? (
       <StatsBlock
         title="Status"
         className="inspector-debug-card"
@@ -1404,6 +1582,7 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
           props.kernel.store.getState().actions.setStatus(`Unable to copy ${label}: ${message}`);
         }}
       />
+      ) : null}
     </div>
   );
 }
@@ -1635,6 +1814,10 @@ export function InspectorPane() {
     | { kind: "component"; componentId: string; componentLabel: string }
     | { kind: "param-group"; paramKey: string; paramLabel: string; fromComponentId: string | null };
   const [inspectorView, setInspectorView] = useState<InspectorView>({ kind: "actor-root" });
+  const inspectorBackHistoryRef = useRef<InspectorView[]>([]);
+  const inspectorForwardHistoryRef = useRef<InspectorView[]>([]);
+  const inspectorHistorySuppressRef = useRef(false);
+  const previousInspectorViewRef = useRef<InspectorView>({ kind: "actor-root" });
 
   useEffect(() => {
     setSceneBackgroundInput(appState.scene.backgroundColor);
@@ -1768,7 +1951,32 @@ export function InspectorPane() {
   }, [singleSelection?.actorType, singleSelection?.id]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setInspectorView({ kind: "actor-root" }); }, [selection.map((s) => s.id).join(",")]);
+  useEffect(() => {
+    inspectorBackHistoryRef.current = [];
+    inspectorForwardHistoryRef.current = [];
+    inspectorHistorySuppressRef.current = false;
+    previousInspectorViewRef.current = { kind: "actor-root" };
+    setInspectorView({ kind: "actor-root" });
+  }, [selection.map((s) => `${s.kind}:${s.id}`).join(",")]);
+
+  useEffect(() => {
+    const previousView = previousInspectorViewRef.current;
+    if (inspectorViewsEqual(previousView, inspectorView)) {
+      return;
+    }
+    if (inspectorHistorySuppressRef.current) {
+      inspectorHistorySuppressRef.current = false;
+      previousInspectorViewRef.current = cloneInspectorView(inspectorView);
+      return;
+    }
+    const previousClone = cloneInspectorView(previousView);
+    const lastBackView = inspectorBackHistoryRef.current.at(-1);
+    if (!lastBackView || !inspectorViewsEqual(lastBackView, previousClone)) {
+      inspectorBackHistoryRef.current.push(previousClone);
+    }
+    inspectorForwardHistoryRef.current = [];
+    previousInspectorViewRef.current = cloneInspectorView(inspectorView);
+  }, [inspectorView]);
 
   const updateSelectedActorParams = (key: string, nextValue: BindingValue): void => {
     for (const actor of actorSelection) {
@@ -2262,14 +2470,73 @@ export function InspectorPane() {
     updateCameraPathKeyframeTime
   ]);
 
-  function handleBack() {
-    if (inspectorView.kind === "param-group" && inspectorView.fromComponentId !== null) {
-      const comp = components[inspectorView.fromComponentId];
-      setInspectorView({ kind: "component", componentId: inspectorView.fromComponentId, componentLabel: comp?.name ?? "" });
-    } else {
-      setInspectorView({ kind: "actor-root" });
+  const handleBack = useCallback(() => {
+    const previousView = inspectorBackHistoryRef.current.pop();
+    if (!previousView) {
+      return false;
     }
-  }
+    const currentView = cloneInspectorView(inspectorView);
+    const lastForwardView = inspectorForwardHistoryRef.current.at(-1);
+    if (!lastForwardView || !inspectorViewsEqual(lastForwardView, currentView)) {
+      inspectorForwardHistoryRef.current.push(currentView);
+    }
+    inspectorHistorySuppressRef.current = true;
+    setInspectorView(previousView);
+    return true;
+  }, [inspectorView]);
+
+  const handleForward = useCallback(() => {
+    const nextView = inspectorForwardHistoryRef.current.pop();
+    if (!nextView) {
+      return false;
+    }
+    const currentView = cloneInspectorView(inspectorView);
+    const lastBackView = inspectorBackHistoryRef.current.at(-1);
+    if (!lastBackView || !inspectorViewsEqual(lastBackView, currentView)) {
+      inspectorBackHistoryRef.current.push(currentView);
+    }
+    inspectorHistorySuppressRef.current = true;
+    setInspectorView(nextView);
+    return true;
+  }, [inspectorView]);
+
+  useEffect(() => {
+    const onBackRequest = (event: Event) => {
+      const customEvent = event as CustomEvent<{ handled?: boolean }>;
+      if (customEvent.detail?.handled) {
+        return;
+      }
+      if (selection.length === 0 || inspectorView.kind === "actor-root") {
+        return;
+      }
+      if (handleBack() && customEvent.detail) {
+        customEvent.detail.handled = true;
+      }
+    };
+    window.addEventListener(NAVIGATE_BACK_REQUEST_EVENT, onBackRequest);
+    return () => {
+      window.removeEventListener(NAVIGATE_BACK_REQUEST_EVENT, onBackRequest);
+    };
+  }, [handleBack, inspectorView.kind, selection.length]);
+
+  useEffect(() => {
+    const onForwardRequest = (event: Event) => {
+      const customEvent = event as CustomEvent<{ handled?: boolean }>;
+      if (customEvent.detail?.handled) {
+        return;
+      }
+      if (selection.length === 0) {
+        return;
+      }
+      if (handleForward() && customEvent.detail) {
+        customEvent.detail.handled = true;
+      }
+    };
+    window.addEventListener(NAVIGATE_FORWARD_REQUEST_EVENT, onForwardRequest);
+    return () => {
+      window.removeEventListener(NAVIGATE_FORWARD_REQUEST_EVENT, onForwardRequest);
+    };
+  }, [handleForward, selection.length]);
 
   if (showSceneInspector) {
     return (

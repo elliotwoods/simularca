@@ -35,7 +35,7 @@ Test deploying scenes to Vercel.
 
 # Presentation mode
 
-* A series of 'slides' where documents (e.g. Notion/other) are attached to scene positions and/or actors
+* A series of 'slides' where documents (e.g. Notion/markdown/other) are attached to scene positions and/or actors
 * Forwards/backwards between slides
 * Customise camera angles / document rendering position per slide
 * Handle slightly various 
@@ -64,3 +64,11 @@ Perhaps we can combine things, e.g.:
 * middle click or both button drag = pan
 
 whilst in right click drag, WASD keys are active (they are not active otherwise)
+
+# Housekeeping
+
+* Check for where multiple patterns exist to perform the same function e.g.
+    * components
+    * sub-menus
+    * blocks in the inspector
+    * 
