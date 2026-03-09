@@ -111,6 +111,18 @@ export const mistVolumeActorDescriptor: ReloadableDescriptor<MistVolumeRuntime> 
           value: runtimeStatus?.values.edgeBreakup ?? readNumber(actor.params.edgeBreakup, 0)
         },
         {
+          label: "Lookup Noise Preset",
+          value: runtimeStatus?.values.lookupNoisePreset ?? (typeof actor.params.lookupNoisePreset === "string" ? actor.params.lookupNoisePreset : "cloudy")
+        },
+        {
+          label: "Lookup Noise Active",
+          value: runtimeStatus?.values.lookupNoiseActive ?? (readNumber(actor.params.lookupNoiseStrength, 0) > 0)
+        },
+        {
+          label: "Boundary Modes",
+          value: runtimeStatus?.values.boundaryModes ?? "n/a"
+        },
+        {
           label: "Source Collect Ms",
           value: runtimeStatus?.values.sourceCollectMs ?? "n/a"
         },

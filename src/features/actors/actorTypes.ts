@@ -1,4 +1,5 @@
 import type { ParameterSchema } from "@/core/types";
+import { MIST_LOOKUP_NOISE_PRESETS } from "@/features/actors/mistVolumeLookupNoise";
 
 export const EMPTY_ACTOR_SCHEMA: ParameterSchema = {
   id: "actor.empty",
@@ -352,6 +353,143 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
       step: 0.01,
       description: "Irregular extra decay applied around plume boundaries so the silhouette feels less smooth and uniform.",
       defaultValue: 0
+    },
+    {
+      key: "lookupNoisePreset",
+      label: "Lookup Noise Preset",
+      type: "select",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      options: ["off", "cloudy", "wispy", "rolling", "custom"],
+      description: "Applies a preset for analytic lookup-time noise layered on top of the voxel density. Manual edits switch this to custom.",
+      defaultValue: "cloudy"
+    },
+    {
+      key: "lookupNoiseStrength",
+      label: "Lookup Noise Strength",
+      type: "number",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      description: "How strongly analytic noise modulates the mist density at sampling time without changing the stored voxels.",
+      defaultValue: MIST_LOOKUP_NOISE_PRESETS.cloudy.strength
+    },
+    {
+      key: "lookupNoiseScale",
+      label: "Lookup Noise Scale",
+      type: "number",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      min: 0.01,
+      step: 0.01,
+      description: "Spatial size of the analytic lookup-noise field. Lower values make broad cloudy structure; higher values make finer breakup.",
+      defaultValue: MIST_LOOKUP_NOISE_PRESETS.cloudy.scale
+    },
+    {
+      key: "lookupNoiseSpeed",
+      label: "Lookup Noise Speed",
+      type: "number",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      min: 0,
+      step: 0.01,
+      description: "How quickly the analytic lookup-noise pattern evolves over time.",
+      defaultValue: MIST_LOOKUP_NOISE_PRESETS.cloudy.speed
+    },
+    {
+      key: "lookupNoiseScroll",
+      label: "Lookup Noise Scroll",
+      type: "vector3",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      description: "Directional drift applied to the analytic lookup-noise field over time.",
+      defaultValue: MIST_LOOKUP_NOISE_PRESETS.cloudy.scroll,
+      precision: 3
+    },
+    {
+      key: "lookupNoiseContrast",
+      label: "Lookup Noise Contrast",
+      type: "number",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      min: 0.1,
+      step: 0.05,
+      description: "Shape control for the analytic lookup-noise response. Higher values sharpen the noisy density modulation.",
+      defaultValue: MIST_LOOKUP_NOISE_PRESETS.cloudy.contrast
+    },
+    {
+      key: "lookupNoiseBias",
+      label: "Lookup Noise Bias",
+      type: "number",
+      groupKey: "lookup-noise",
+      groupLabel: "Lookup Noise",
+      min: -1,
+      max: 1,
+      step: 0.01,
+      description: "Bias applied after analytic lookup-noise evaluation to favor denser or thinner mist regions.",
+      defaultValue: MIST_LOOKUP_NOISE_PRESETS.cloudy.bias
+    },
+    {
+      key: "surfaceNegXMode",
+      label: "Left Face",
+      type: "select",
+      groupKey: "surfaces",
+      groupLabel: "Surfaces",
+      options: ["open", "closed"],
+      description: "Whether mist can leave the volume through the negative X face.",
+      defaultValue: "open"
+    },
+    {
+      key: "surfacePosXMode",
+      label: "Right Face",
+      type: "select",
+      groupKey: "surfaces",
+      groupLabel: "Surfaces",
+      options: ["open", "closed"],
+      description: "Whether mist can leave the volume through the positive X face.",
+      defaultValue: "open"
+    },
+    {
+      key: "surfaceNegYMode",
+      label: "Bottom Face",
+      type: "select",
+      groupKey: "surfaces",
+      groupLabel: "Surfaces",
+      options: ["open", "closed"],
+      description: "Whether mist can leave the volume through the negative Y face.",
+      defaultValue: "open"
+    },
+    {
+      key: "surfacePosYMode",
+      label: "Top Face",
+      type: "select",
+      groupKey: "surfaces",
+      groupLabel: "Surfaces",
+      options: ["open", "closed"],
+      description: "Whether mist can leave the volume through the positive Y face.",
+      defaultValue: "open"
+    },
+    {
+      key: "surfaceNegZMode",
+      label: "Back Face",
+      type: "select",
+      groupKey: "surfaces",
+      groupLabel: "Surfaces",
+      options: ["open", "closed"],
+      description: "Whether mist can leave the volume through the negative Z face.",
+      defaultValue: "open"
+    },
+    {
+      key: "surfacePosZMode",
+      label: "Front Face",
+      type: "select",
+      groupKey: "surfaces",
+      groupLabel: "Surfaces",
+      options: ["open", "closed"],
+      description: "Whether mist can leave the volume through the positive Z face.",
+      defaultValue: "open"
     },
     {
       key: "previewMode",

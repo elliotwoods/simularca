@@ -2,6 +2,7 @@ import type { AppKernel } from "@/app/kernel";
 import type { ActorType } from "@/core/types";
 import { buildDefaultCameraPathKeyframes, buildSinglePointCurveData } from "@/features/cameraPath/model";
 import { createDefaultCurveData } from "@/features/curves/types";
+import { buildMistLookupNoiseParams } from "@/features/actors/mistVolumeLookupNoise";
 
 const CIRCLE_ACTOR_DESCRIPTOR_ID = "actor.curve.circle";
 
@@ -175,6 +176,13 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
       windNoiseSpeed: 0.25,
       wispiness: 0,
       edgeBreakup: 0,
+      ...buildMistLookupNoiseParams("cloudy"),
+      surfaceNegXMode: "open",
+      surfacePosXMode: "open",
+      surfaceNegYMode: "open",
+      surfacePosYMode: "open",
+      surfaceNegZMode: "open",
+      surfacePosZMode: "open",
       previewMode: "volume",
       previewTint: "#d9eef7",
       previewOpacity: 1.1,

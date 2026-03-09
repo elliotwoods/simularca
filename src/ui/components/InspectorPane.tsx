@@ -59,6 +59,11 @@ import {
   sampleCameraPathPoseAtTime
 } from "@/features/cameraPath/model";
 import { importFileForActorParam } from "@/features/imports/fileParameterImport";
+import {
+  MIST_LOOKUP_NOISE_PRESET_KEYS,
+  buildMistLookupNoiseParams,
+  type MistLookupNoisePreset
+} from "@/features/actors/mistVolumeLookupNoise";
 import { StatsBlock } from "@/ui/components/StatsBlock";
 import type { StatsGroup, StatsRow } from "@/ui/components/StatsBlock";
 import {
@@ -2131,6 +2136,25 @@ export function InspectorPane() {
     }
     scheduleAutosave();
   };
+  const updateSelectedActorParamsPartial = (partial: ParameterValues): void => {
+    for (const actor of actorSelection) {
+      kernel.store.getState().actions.updateActorParams(actor.id, partial);
+    }
+    scheduleAutosave();
+  };
+  const shouldMarkMistLookupPresetCustom =
+    actorSelection.length > 0
+    && actorSelection.every((actor) => actor.actorType === "mist-volume");
+  const updateSelectedMistLookupParam = (key: string, nextValue: BindingValue): void => {
+    const partial: ParameterValues = { [key]: nextValue };
+    if (shouldMarkMistLookupPresetCustom && MIST_LOOKUP_NOISE_PRESET_KEYS.includes(key as typeof MIST_LOOKUP_NOISE_PRESET_KEYS[number])) {
+      partial.lookupNoisePreset = "custom";
+    }
+    updateSelectedActorParamsPartial(partial);
+  };
+  const applySelectedMistLookupPreset = (preset: MistLookupNoisePreset): void => {
+    updateSelectedActorParamsPartial(buildMistLookupNoiseParams(preset));
+  };
   const updateSelectedComponentParams = (key: string, nextValue: BindingValue): void => {
     for (const component of componentSelection) {
       kernel.store.getState().actions.updateComponentParams(component.id, {
@@ -3488,9 +3512,17 @@ export function InspectorPane() {
               disabled={readOnly}
               showReset={canReset}
               onReset={() => {
+                if (shouldMarkMistLookupPresetCustom && MIST_LOOKUP_NOISE_PRESET_KEYS.includes(definition.key as typeof MIST_LOOKUP_NOISE_PRESET_KEYS[number])) {
+                  updateSelectedMistLookupParam(definition.key, defaultNumber);
+                  return;
+                }
                 updateSelectedActorParams(definition.key, defaultNumber);
               }}
               onChange={(next) => {
+                if (shouldMarkMistLookupPresetCustom && MIST_LOOKUP_NOISE_PRESET_KEYS.includes(definition.key as typeof MIST_LOOKUP_NOISE_PRESET_KEYS[number])) {
+                  updateSelectedMistLookupParam(definition.key, next);
+                  return;
+                }
                 updateSelectedActorParams(definition.key, next);
               }}
             />
@@ -3551,9 +3583,18 @@ export function InspectorPane() {
               showReset={canReset}
               defaultValue={defaultValue}
               onReset={() => {
-                updateSelectedActorParams(definition.key, getVector3Value(defaultValue, [0, 0, 0]));
+                const resetValue = getVector3Value(defaultValue, [0, 0, 0]);
+                if (shouldMarkMistLookupPresetCustom && MIST_LOOKUP_NOISE_PRESET_KEYS.includes(definition.key as typeof MIST_LOOKUP_NOISE_PRESET_KEYS[number])) {
+                  updateSelectedMistLookupParam(definition.key, resetValue);
+                  return;
+                }
+                updateSelectedActorParams(definition.key, resetValue);
               }}
               onChange={(next) => {
+                if (shouldMarkMistLookupPresetCustom && MIST_LOOKUP_NOISE_PRESET_KEYS.includes(definition.key as typeof MIST_LOOKUP_NOISE_PRESET_KEYS[number])) {
+                  updateSelectedMistLookupParam(definition.key, next);
+                  return;
+                }
                 updateSelectedActorParams(definition.key, next);
               }}
             />
@@ -3572,9 +3613,17 @@ export function InspectorPane() {
               disabled={readOnly}
               showReset={canReset}
               onReset={() => {
+                if (definition.key === "lookupNoisePreset") {
+                  applySelectedMistLookupPreset((typeof defaultValue === "string" ? defaultValue : "cloudy") as MistLookupNoisePreset);
+                  return;
+                }
                 updateSelectedActorParams(definition.key, String(defaultValue));
               }}
               onChange={(next) => {
+                if (definition.key === "lookupNoisePreset") {
+                  applySelectedMistLookupPreset(next as MistLookupNoisePreset);
+                  return;
+                }
                 updateSelectedActorParams(definition.key, next);
               }}
             />

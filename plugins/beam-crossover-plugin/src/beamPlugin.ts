@@ -551,6 +551,14 @@ type ScatteringShellUniforms = {
   uMistDensityTex: { value: THREE.Data3DTexture };
   uMistWorldToLocal: { value: THREE.Matrix4 };
   uMistDensityScale: { value: number };
+  uMistTimeSeconds: { value: number };
+  uMistNoiseStrength: { value: number };
+  uMistNoiseScale: { value: number };
+  uMistNoiseSpeed: { value: number };
+  uMistNoiseScroll: { value: THREE.Vector3 };
+  uMistNoiseContrast: { value: number };
+  uMistNoiseBias: { value: number };
+  uMistNoiseSeed: { value: number };
 };
 
 type ScatteringShell2Uniforms = {
@@ -563,7 +571,76 @@ type ScatteringShell2Uniforms = {
   uMistDensityTex: { value: THREE.Data3DTexture };
   uMistWorldToLocal: { value: THREE.Matrix4 };
   uMistDensityScale: { value: number };
+  uMistTimeSeconds: { value: number };
+  uMistNoiseStrength: { value: number };
+  uMistNoiseScale: { value: number };
+  uMistNoiseSpeed: { value: number };
+  uMistNoiseScroll: { value: THREE.Vector3 };
+  uMistNoiseContrast: { value: number };
+  uMistNoiseBias: { value: number };
+  uMistNoiseSeed: { value: number };
 };
+
+const MIST_LOOKUP_GLSL = `
+      float hash31(vec3 p) {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+      }
+
+      vec3 grad3(vec3 cell) {
+        float x = hash31(cell + vec3(11.3, 0.0, 0.0)) * 2.0 - 1.0;
+        float y = hash31(cell + vec3(0.0, 17.1, 0.0)) * 2.0 - 1.0;
+        float z = hash31(cell + vec3(0.0, 0.0, 23.7)) * 2.0 - 1.0;
+        return normalize(vec3(x, y, z) + vec3(1e-4));
+      }
+
+      float gradientNoise3D(vec3 p) {
+        vec3 cell = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+
+        float n000 = dot(grad3(cell + vec3(0.0, 0.0, 0.0)), f - vec3(0.0, 0.0, 0.0));
+        float n100 = dot(grad3(cell + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));
+        float n010 = dot(grad3(cell + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));
+        float n110 = dot(grad3(cell + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));
+        float n001 = dot(grad3(cell + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));
+        float n101 = dot(grad3(cell + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));
+        float n011 = dot(grad3(cell + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));
+        float n111 = dot(grad3(cell + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));
+
+        float nx00 = mix(n000, n100, u.x);
+        float nx10 = mix(n010, n110, u.x);
+        float nx01 = mix(n001, n101, u.x);
+        float nx11 = mix(n011, n111, u.x);
+        float nxy0 = mix(nx00, nx10, u.y);
+        float nxy1 = mix(nx01, nx11, u.y);
+        return mix(nxy0, nxy1, u.z);
+      }
+
+      float sampleMistLookupNoise(
+        vec3 localPosition,
+        float timeSeconds,
+        float strength,
+        float scale,
+        float speed,
+        vec3 scroll,
+        float contrast,
+        float bias,
+        float seed
+      ) {
+        if (strength <= 1e-4) {
+          return 1.0;
+        }
+        vec3 noisePosition =
+          (localPosition + vec3(0.5) + scroll * timeSeconds * speed)
+          * scale
+          + vec3(seed * 0.031);
+        float noiseA = gradientNoise3D(noisePosition);
+        float noiseB = gradientNoise3D(noisePosition * 2.03 + vec3(17.1, -9.4, 5.2));
+        float noise = clamp(0.5 + 0.5 * (noiseA * 0.7 + noiseB * 0.3), 0.0, 1.0);
+        float contrasted = clamp((noise - 0.5) * contrast + 0.5 + bias, 0.0, 1.0);
+        return mix(1.0, contrasted, clamp(strength, 0.0, 1.0));
+      }
+`;
 
 function createScatteringShellMaterial(): THREE.ShaderMaterial {
   const material = new THREE.ShaderMaterial({
@@ -594,7 +671,15 @@ function createScatteringShellMaterial(): THREE.ShaderMaterial {
       uMistEnabled: { value: false },
       uMistDensityTex: { value: EMPTY_MIST_TEXTURE },
       uMistWorldToLocal: { value: new THREE.Matrix4() },
-      uMistDensityScale: { value: 1 }
+      uMistDensityScale: { value: 1 },
+      uMistTimeSeconds: { value: 0 },
+      uMistNoiseStrength: { value: 0 },
+      uMistNoiseScale: { value: 1 },
+      uMistNoiseSpeed: { value: 0 },
+      uMistNoiseScroll: { value: new THREE.Vector3() },
+      uMistNoiseContrast: { value: 1 },
+      uMistNoiseBias: { value: 0 },
+      uMistNoiseSeed: { value: 1 }
     },
     vertexShader: `
       attribute vec3 beamEmitterPosition;
@@ -636,6 +721,14 @@ function createScatteringShellMaterial(): THREE.ShaderMaterial {
       uniform sampler3D uMistDensityTex;
       uniform mat4 uMistWorldToLocal;
       uniform float uMistDensityScale;
+      uniform float uMistTimeSeconds;
+      uniform float uMistNoiseStrength;
+      uniform float uMistNoiseScale;
+      uniform float uMistNoiseSpeed;
+      uniform vec3 uMistNoiseScroll;
+      uniform float uMistNoiseContrast;
+      uniform float uMistNoiseBias;
+      uniform float uMistNoiseSeed;
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
@@ -648,6 +741,8 @@ function createScatteringShellMaterial(): THREE.ShaderMaterial {
         return x / (1.0 + x * knee);
       }
 
+${MIST_LOOKUP_GLSL}
+
       float sampleMistDensity(vec3 worldPosition) {
         if (!uMistEnabled) {
           return 1.0;
@@ -657,7 +752,19 @@ function createScatteringShellMaterial(): THREE.ShaderMaterial {
         if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) {
           return 0.0;
         }
-        return texture(uMistDensityTex, uvw).r * uMistDensityScale;
+        float density = texture(uMistDensityTex, uvw).r * uMistDensityScale;
+        float lookupNoise = sampleMistLookupNoise(
+          local,
+          uMistTimeSeconds,
+          uMistNoiseStrength,
+          uMistNoiseScale,
+          uMistNoiseSpeed,
+          uMistNoiseScroll,
+          uMistNoiseContrast,
+          uMistNoiseBias,
+          uMistNoiseSeed
+        );
+        return clamp(density * lookupNoise, 0.0, 1.0);
       }
 
       void main() {
@@ -738,7 +845,15 @@ function createScatteringShell2Material(): THREE.ShaderMaterial {
       uMistEnabled: { value: false },
       uMistDensityTex: { value: EMPTY_MIST_TEXTURE },
       uMistWorldToLocal: { value: new THREE.Matrix4() },
-      uMistDensityScale: { value: 1 }
+      uMistDensityScale: { value: 1 },
+      uMistTimeSeconds: { value: 0 },
+      uMistNoiseStrength: { value: 0 },
+      uMistNoiseScale: { value: 1 },
+      uMistNoiseSpeed: { value: 0 },
+      uMistNoiseScroll: { value: new THREE.Vector3() },
+      uMistNoiseContrast: { value: 1 },
+      uMistNoiseBias: { value: 0 },
+      uMistNoiseSeed: { value: 1 }
     },
     vertexShader: `
       attribute vec3 beamEmitterPosition;
@@ -767,10 +882,20 @@ function createScatteringShell2Material(): THREE.ShaderMaterial {
       uniform sampler3D uMistDensityTex;
       uniform mat4 uMistWorldToLocal;
       uniform float uMistDensityScale;
+      uniform float uMistTimeSeconds;
+      uniform float uMistNoiseStrength;
+      uniform float uMistNoiseScale;
+      uniform float uMistNoiseSpeed;
+      uniform vec3 uMistNoiseScroll;
+      uniform float uMistNoiseContrast;
+      uniform float uMistNoiseBias;
+      uniform float uMistNoiseSeed;
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
       varying vec3 vEmitterPosition;
+
+${MIST_LOOKUP_GLSL}
 
       float sampleMistDensity(vec3 worldPosition) {
         if (!uMistEnabled) {
@@ -781,7 +906,19 @@ function createScatteringShell2Material(): THREE.ShaderMaterial {
         if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) {
           return 0.0;
         }
-        return texture(uMistDensityTex, uvw).r * uMistDensityScale;
+        float density = texture(uMistDensityTex, uvw).r * uMistDensityScale;
+        float lookupNoise = sampleMistLookupNoise(
+          local,
+          uMistTimeSeconds,
+          uMistNoiseStrength,
+          uMistNoiseScale,
+          uMistNoiseSpeed,
+          uMistNoiseScroll,
+          uMistNoiseContrast,
+          uMistNoiseBias,
+          uMistNoiseSeed
+        );
+        return clamp(density * lookupNoise, 0.0, 1.0);
       }
 
       void main() {
@@ -824,7 +961,8 @@ function readCameraPosition(state: SceneHookContext["state"]): THREE.Vector3 {
 
 function applyMistUniforms(
   material: THREE.ShaderMaterial,
-  mistResource: ReturnType<SceneHookContext["getMistVolumeResource"]>
+  mistResource: ReturnType<SceneHookContext["getMistVolumeResource"]>,
+  simTimeSeconds: number
 ): void {
   const uniforms = material.uniforms as Partial<ScatteringShellUniforms & ScatteringShell2Uniforms>;
   const enabled = Boolean(
@@ -839,12 +977,22 @@ function applyMistUniforms(
     : EMPTY_MIST_TEXTURE;
   uniforms.uMistWorldToLocal!.value.fromArray(enabled ? mistResource!.worldToLocalElements : new THREE.Matrix4().elements);
   uniforms.uMistDensityScale!.value = enabled ? mistResource!.densityScale : 1;
+  uniforms.uMistTimeSeconds!.value = simTimeSeconds;
+  uniforms.uMistNoiseStrength!.value = enabled ? mistResource!.lookupNoiseStrength : 0;
+  uniforms.uMistNoiseScale!.value = enabled ? mistResource!.lookupNoiseScale : 1;
+  uniforms.uMistNoiseSpeed!.value = enabled ? mistResource!.lookupNoiseSpeed : 0;
+  const noiseScroll = enabled ? mistResource!.lookupNoiseScroll : [0, 0, 0];
+  uniforms.uMistNoiseScroll!.value.set(noiseScroll[0] ?? 0, noiseScroll[1] ?? 0, noiseScroll[2] ?? 0);
+  uniforms.uMistNoiseContrast!.value = enabled ? mistResource!.lookupNoiseContrast : 1;
+  uniforms.uMistNoiseBias!.value = enabled ? mistResource!.lookupNoiseBias : 0;
+  uniforms.uMistNoiseSeed!.value = enabled ? mistResource!.lookupNoiseSeed : 1;
 }
 
 function updateMaterial(
   state: BeamObjectState,
   params: BeamParams,
-  _cameraPosition: THREE.Vector3,
+  cameraPosition: THREE.Vector3,
+  simTimeSeconds: number,
   mistResource: ReturnType<SceneHookContext["getMistVolumeResource"]>
 ): void {
   const materialSignature = JSON.stringify({
@@ -920,9 +1068,9 @@ function updateMaterial(
     uniforms.uNearFadeStart.value = params.nearFadeStart;
     uniforms.uNearFadeEnd.value = params.nearFadeEnd;
     uniforms.uSoftClampKnee.value = params.softClampKnee;
-    uniforms.uCameraPos.value.copy(_cameraPosition);
+    uniforms.uCameraPos.value.copy(cameraPosition);
     uniforms.uEmitterPos.value.set(0, 0, 0);
-    applyMistUniforms(material, mistResource);
+    applyMistUniforms(material, mistResource, simTimeSeconds);
     material.transparent = true;
     material.depthWrite = false;
     material.depthTest = true;
@@ -941,8 +1089,8 @@ function updateMaterial(
     uniforms.uBaseAlpha.value = params.beamAlpha;
     uniforms.uAlongBeamPower.value = params.alongBeamPower;
     uniforms.uScatteringFactor.value = params.scatteringFactor;
-    uniforms.uCameraPos.value.copy(_cameraPosition);
-    applyMistUniforms(material, mistResource);
+    uniforms.uCameraPos.value.copy(cameraPosition);
+    applyMistUniforms(material, mistResource, simTimeSeconds);
     material.transparent = true;
     material.depthWrite = false;
     material.depthTest = true;
@@ -1067,7 +1215,7 @@ function syncSingleEmitter(context: SceneHookContext, root: THREE.Group, state: 
     return;
   }
 
-  updateMaterial(state, params, readCameraPosition(context.state), mistResource);
+  updateMaterial(state, params, readCameraPosition(context.state), context.simTimeSeconds, mistResource);
 
   const signature = buildSingleGeometrySignature(params, root, targetObject, targetActor);
   if (signature === state.lastGeometrySignature) {
@@ -1162,7 +1310,7 @@ function syncEmitterArray(context: SceneHookContext, root: THREE.Group, state: B
     return;
   }
 
-  updateMaterial(state, params, readCameraPosition(context.state), mistResource);
+  updateMaterial(state, params, readCameraPosition(context.state), context.simTimeSeconds, mistResource);
 
   const signature = buildArrayGeometrySignature(params, targetObject, targetActor, curveActor);
   if (signature === state.lastGeometrySignature) {

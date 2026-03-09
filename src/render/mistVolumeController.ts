@@ -5,6 +5,26 @@ import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/fe
 
 export type MistVolumeQualityMode = "interactive" | "export";
 type MistPreviewMode = "volume" | "bounds" | "slice-x" | "slice-y" | "slice-z" | "off";
+type MistSurfaceMode = "open" | "closed";
+
+interface MistLookupNoiseSettings {
+  strength: number;
+  scale: number;
+  speed: number;
+  scroll: THREE.Vector3;
+  contrast: number;
+  bias: number;
+  seed: number;
+}
+
+interface MistBoundarySettings {
+  negX: MistSurfaceMode;
+  posX: MistSurfaceMode;
+  negY: MistSurfaceMode;
+  posY: MistSurfaceMode;
+  negZ: MistSurfaceMode;
+  posZ: MistSurfaceMode;
+}
 
 interface MistVolumeSourceSample {
   positionLocal: THREE.Vector3;
@@ -58,6 +78,7 @@ interface MistVolumeEntry {
   resolution: [number, number, number];
   lastSignature: string;
   lastSimTimeSeconds: number | null;
+  lastLocalCameraInside: boolean;
 }
 
 function readNumber(value: unknown, fallback: number, min?: number, max?: number): number {
@@ -110,6 +131,52 @@ function readPreviewMode(value: unknown): MistPreviewMode {
 
 function roundMs(value: number): number {
   return Number(value.toFixed(3));
+}
+
+function readSurfaceMode(value: unknown): MistSurfaceMode {
+  return value === "closed" ? "closed" : "open";
+}
+
+function readLookupNoiseSettings(actor: Pick<ActorNode, "params">): MistLookupNoiseSettings {
+  return {
+    strength: clamp01(readNumber(actor.params.lookupNoiseStrength, 0.45, 0, 1)),
+    scale: readNumber(actor.params.lookupNoiseScale, 1.6, 0.01),
+    speed: readNumber(actor.params.lookupNoiseSpeed, 0.12, 0),
+    scroll: readVector3(actor.params.lookupNoiseScroll, [0.03, 0.06, 0.02]),
+    contrast: readNumber(actor.params.lookupNoiseContrast, 0.9, 0.1),
+    bias: readNumber(actor.params.lookupNoiseBias, 0.08, -1, 1),
+    seed: Math.floor(readNumber(actor.params.noiseSeed, 1))
+  };
+}
+
+function readBoundarySettings(actor: Pick<ActorNode, "params">): MistBoundarySettings {
+  return {
+    negX: readSurfaceMode(actor.params.surfaceNegXMode),
+    posX: readSurfaceMode(actor.params.surfacePosXMode),
+    negY: readSurfaceMode(actor.params.surfaceNegYMode),
+    posY: readSurfaceMode(actor.params.surfacePosYMode),
+    negZ: readSurfaceMode(actor.params.surfaceNegZMode),
+    posZ: readSurfaceMode(actor.params.surfacePosZMode)
+  };
+}
+
+function isLocalCameraInsideUnitCube(localCamera: THREE.Vector3): boolean {
+  return (
+    localCamera.x >= -0.5 && localCamera.x <= 0.5 &&
+    localCamera.y >= -0.5 && localCamera.y <= 0.5 &&
+    localCamera.z >= -0.5 && localCamera.z <= 0.5
+  );
+}
+
+function buildBoundarySummary(boundaries: MistBoundarySettings): string {
+  return [
+    `L:${boundaries.negX}`,
+    `R:${boundaries.posX}`,
+    `B:${boundaries.negY}`,
+    `T:${boundaries.posY}`,
+    `Bk:${boundaries.negZ}`,
+    `F:${boundaries.posZ}`
+  ].join(" ");
 }
 
 function matrixSignature(matrix: THREE.Matrix4): number[] {
@@ -277,21 +344,32 @@ function createVolumePreviewMaterial(texture: THREE.Data3DTexture): THREE.Shader
     transparent: true,
     depthWrite: false,
     depthTest: true,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     uniforms: {
       uDensityTex: { value: texture },
       uPreviewTint: { value: new THREE.Color("#d9eef7") },
       uOpacityScale: { value: 1.1 },
       uDensityThreshold: { value: 0.02 },
       uRaymarchSteps: { value: 48 },
-      uWorldToLocal: { value: new THREE.Matrix4() }
+      uWorldToLocal: { value: new THREE.Matrix4() },
+      uMistTimeSeconds: { value: 0 },
+      uMistNoiseStrength: { value: 0.45 },
+      uMistNoiseScale: { value: 1.6 },
+      uMistNoiseSpeed: { value: 0.12 },
+      uMistNoiseScroll: { value: new THREE.Vector3(0.03, 0.06, 0.02) },
+      uMistNoiseContrast: { value: 0.9 },
+      uMistNoiseBias: { value: 0.08 },
+      uMistNoiseSeed: { value: 1 }
     },
     vertexShader: `
       varying vec3 vLocalPosition;
+      varying vec3 vWorldPosition;
 
       void main() {
         vLocalPosition = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPosition;
       }
     `,
     fragmentShader: `
@@ -303,8 +381,17 @@ function createVolumePreviewMaterial(texture: THREE.Data3DTexture): THREE.Shader
       uniform float uDensityThreshold;
       uniform float uRaymarchSteps;
       uniform mat4 uWorldToLocal;
+      uniform float uMistTimeSeconds;
+      uniform float uMistNoiseStrength;
+      uniform float uMistNoiseScale;
+      uniform float uMistNoiseSpeed;
+      uniform vec3 uMistNoiseScroll;
+      uniform float uMistNoiseContrast;
+      uniform float uMistNoiseBias;
+      uniform float uMistNoiseSeed;
 
       varying vec3 vLocalPosition;
+      varying vec3 vWorldPosition;
 
       bool intersectBox(vec3 rayOrigin, vec3 rayDir, out float tNear, out float tFar) {
         vec3 boxMin = vec3(-0.5);
@@ -319,10 +406,68 @@ function createVolumePreviewMaterial(texture: THREE.Data3DTexture): THREE.Shader
         return tFar > max(tNear, 0.0);
       }
 
+      float hash31(vec3 p) {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+      }
+
+      vec3 grad3(vec3 cell) {
+        float x = hash31(cell + vec3(11.3, 0.0, 0.0)) * 2.0 - 1.0;
+        float y = hash31(cell + vec3(0.0, 17.1, 0.0)) * 2.0 - 1.0;
+        float z = hash31(cell + vec3(0.0, 0.0, 23.7)) * 2.0 - 1.0;
+        return normalize(vec3(x, y, z) + vec3(1e-4));
+      }
+
+      float gradientNoise3D(vec3 p) {
+        vec3 cell = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+
+        float n000 = dot(grad3(cell + vec3(0.0, 0.0, 0.0)), f - vec3(0.0, 0.0, 0.0));
+        float n100 = dot(grad3(cell + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));
+        float n010 = dot(grad3(cell + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));
+        float n110 = dot(grad3(cell + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));
+        float n001 = dot(grad3(cell + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));
+        float n101 = dot(grad3(cell + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));
+        float n011 = dot(grad3(cell + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));
+        float n111 = dot(grad3(cell + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));
+
+        float nx00 = mix(n000, n100, u.x);
+        float nx10 = mix(n010, n110, u.x);
+        float nx01 = mix(n001, n101, u.x);
+        float nx11 = mix(n011, n111, u.x);
+        float nxy0 = mix(nx00, nx10, u.y);
+        float nxy1 = mix(nx01, nx11, u.y);
+        return mix(nxy0, nxy1, u.z);
+      }
+
+      float sampleLookupNoise(vec3 localPosition) {
+        if (uMistNoiseStrength <= 1e-4) {
+          return 1.0;
+        }
+        vec3 noisePosition =
+          (localPosition + vec3(0.5) + uMistNoiseScroll * uMistTimeSeconds * uMistNoiseSpeed)
+          * uMistNoiseScale
+          + vec3(uMistNoiseSeed * 0.031);
+        float noiseA = gradientNoise3D(noisePosition);
+        float noiseB = gradientNoise3D(noisePosition * 2.03 + vec3(17.1, -9.4, 5.2));
+        float noise = clamp(0.5 + 0.5 * (noiseA * 0.7 + noiseB * 0.3), 0.0, 1.0);
+        float contrasted = clamp((noise - 0.5) * uMistNoiseContrast + 0.5 + uMistNoiseBias, 0.0, 1.0);
+        return mix(1.0, contrasted, clamp(uMistNoiseStrength, 0.0, 1.0));
+      }
+
+      float sampleMistDensityLocal(vec3 localPosition) {
+        vec3 uvw = localPosition + vec3(0.5);
+        if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) {
+          return 0.0;
+        }
+        float density = texture(uDensityTex, uvw).r;
+        return clamp(density * sampleLookupNoise(localPosition), 0.0, 1.0);
+      }
+
       void main() {
         vec3 localCamera = (uWorldToLocal * vec4(cameraPosition, 1.0)).xyz;
         vec3 rayOrigin = localCamera;
-        vec3 rayDir = normalize(vLocalPosition - localCamera);
+        vec3 rayDir = normalize((uWorldToLocal * vec4(vWorldPosition, 1.0)).xyz - localCamera);
         float tNear;
         float tFar;
         if (!intersectBox(rayOrigin, rayDir, tNear, tFar)) {
@@ -337,8 +482,7 @@ function createVolumePreviewMaterial(texture: THREE.Data3DTexture): THREE.Shader
           if (i >= steps || alpha >= 0.995) {
             break;
           }
-          vec3 uvw = samplePos + vec3(0.5);
-          float density = texture(uDensityTex, uvw).r;
+          float density = sampleMistDensityLocal(samplePos);
           if (density > uDensityThreshold) {
             float a = clamp(density * uOpacityScale * dt * 4.0, 0.0, 1.0);
             rgb += (1.0 - alpha) * uPreviewTint * a;
@@ -365,7 +509,15 @@ function createSlicePreviewMaterial(texture: THREE.Data3DTexture): THREE.ShaderM
       uDensityTex: { value: texture },
       uDensityGain: { value: 1.1 },
       uSliceAxis: { value: 2 },
-      uSlicePosition: { value: 0.5 }
+      uSlicePosition: { value: 0.5 },
+      uMistTimeSeconds: { value: 0 },
+      uMistNoiseStrength: { value: 0.45 },
+      uMistNoiseScale: { value: 1.6 },
+      uMistNoiseSpeed: { value: 0.12 },
+      uMistNoiseScroll: { value: new THREE.Vector3(0.03, 0.06, 0.02) },
+      uMistNoiseContrast: { value: 0.9 },
+      uMistNoiseBias: { value: 0.08 },
+      uMistNoiseSeed: { value: 1 }
     },
     vertexShader: `
       varying vec2 vUv;
@@ -382,8 +534,63 @@ function createSlicePreviewMaterial(texture: THREE.Data3DTexture): THREE.ShaderM
       uniform float uDensityGain;
       uniform int uSliceAxis;
       uniform float uSlicePosition;
+      uniform float uMistTimeSeconds;
+      uniform float uMistNoiseStrength;
+      uniform float uMistNoiseScale;
+      uniform float uMistNoiseSpeed;
+      uniform vec3 uMistNoiseScroll;
+      uniform float uMistNoiseContrast;
+      uniform float uMistNoiseBias;
+      uniform float uMistNoiseSeed;
 
       varying vec2 vUv;
+
+      float hash31(vec3 p) {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+      }
+
+      vec3 grad3(vec3 cell) {
+        float x = hash31(cell + vec3(11.3, 0.0, 0.0)) * 2.0 - 1.0;
+        float y = hash31(cell + vec3(0.0, 17.1, 0.0)) * 2.0 - 1.0;
+        float z = hash31(cell + vec3(0.0, 0.0, 23.7)) * 2.0 - 1.0;
+        return normalize(vec3(x, y, z) + vec3(1e-4));
+      }
+
+      float gradientNoise3D(vec3 p) {
+        vec3 cell = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = dot(grad3(cell + vec3(0.0, 0.0, 0.0)), f - vec3(0.0, 0.0, 0.0));
+        float n100 = dot(grad3(cell + vec3(1.0, 0.0, 0.0)), f - vec3(1.0, 0.0, 0.0));
+        float n010 = dot(grad3(cell + vec3(0.0, 1.0, 0.0)), f - vec3(0.0, 1.0, 0.0));
+        float n110 = dot(grad3(cell + vec3(1.0, 1.0, 0.0)), f - vec3(1.0, 1.0, 0.0));
+        float n001 = dot(grad3(cell + vec3(0.0, 0.0, 1.0)), f - vec3(0.0, 0.0, 1.0));
+        float n101 = dot(grad3(cell + vec3(1.0, 0.0, 1.0)), f - vec3(1.0, 0.0, 1.0));
+        float n011 = dot(grad3(cell + vec3(0.0, 1.0, 1.0)), f - vec3(0.0, 1.0, 1.0));
+        float n111 = dot(grad3(cell + vec3(1.0, 1.0, 1.0)), f - vec3(1.0, 1.0, 1.0));
+        float nx00 = mix(n000, n100, u.x);
+        float nx10 = mix(n010, n110, u.x);
+        float nx01 = mix(n001, n101, u.x);
+        float nx11 = mix(n011, n111, u.x);
+        float nxy0 = mix(nx00, nx10, u.y);
+        float nxy1 = mix(nx01, nx11, u.y);
+        return mix(nxy0, nxy1, u.z);
+      }
+
+      float sampleLookupNoise(vec3 localPosition) {
+        if (uMistNoiseStrength <= 1e-4) {
+          return 1.0;
+        }
+        vec3 noisePosition =
+          (localPosition + vec3(0.5) + uMistNoiseScroll * uMistTimeSeconds * uMistNoiseSpeed)
+          * uMistNoiseScale
+          + vec3(uMistNoiseSeed * 0.031);
+        float noiseA = gradientNoise3D(noisePosition);
+        float noiseB = gradientNoise3D(noisePosition * 2.03 + vec3(17.1, -9.4, 5.2));
+        float noise = clamp(0.5 + 0.5 * (noiseA * 0.7 + noiseB * 0.3), 0.0, 1.0);
+        float contrasted = clamp((noise - 0.5) * uMistNoiseContrast + 0.5 + uMistNoiseBias, 0.0, 1.0);
+        return mix(1.0, contrasted, clamp(uMistNoiseStrength, 0.0, 1.0));
+      }
 
       void main() {
         vec3 uvw = vec3(vUv, uSlicePosition);
@@ -393,6 +600,7 @@ function createSlicePreviewMaterial(texture: THREE.Data3DTexture): THREE.ShaderM
           uvw = vec3(vUv.x, uSlicePosition, vUv.y);
         }
         float density = texture(uDensityTex, uvw).r;
+        density *= sampleLookupNoise(uvw - vec3(0.5));
         float gray = clamp(density * uDensityGain, 0.0, 1.0);
         gl_FragColor = vec4(vec3(gray), 1.0);
       }
@@ -432,11 +640,19 @@ export class MistVolumeController {
     if (!binding) {
       return null;
     }
+    const lookupNoise = readLookupNoiseSettings(actor);
     return {
       densityTexture: entry.texture,
       worldToLocalElements: [...binding.worldToVolumeLocal.elements],
       resolution: [...entry.resolution] as [number, number, number],
-      densityScale: 1
+      densityScale: 1,
+      lookupNoiseStrength: lookupNoise.strength,
+      lookupNoiseScale: lookupNoise.scale,
+      lookupNoiseSpeed: lookupNoise.speed,
+      lookupNoiseScroll: [lookupNoise.scroll.x, lookupNoise.scroll.y, lookupNoise.scroll.z],
+      lookupNoiseContrast: lookupNoise.contrast,
+      lookupNoiseBias: lookupNoise.bias,
+      lookupNoiseSeed: lookupNoise.seed
     };
   }
 
@@ -459,6 +675,7 @@ export class MistVolumeController {
     const updateStart = performance.now();
     const previewMode = readPreviewMode(actor.params.previewMode);
     const binding = this.resolveVolumeBinding(actor);
+    const boundarySettings = readBoundarySettings(actor);
     if (!binding) {
       this.setPreviewVisibility(entry, false, previewMode);
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
@@ -469,6 +686,7 @@ export class MistVolumeController {
           previewMode,
           activeSourceCount: 0,
           densityRange: this.computeDensityRange(entry.density),
+          boundaryModes: buildBoundarySummary(boundarySettings),
           previewVisible: false,
           sourceCollectMs: 0,
           simulationMs: 0,
@@ -484,7 +702,7 @@ export class MistVolumeController {
 
     actorObject.updateWorldMatrix(true, false);
     this.updatePreviewTransform(entry, actorObject, binding.volumeMatrixWorld);
-    this.updatePreviewUniforms(entry, actor, quality, binding);
+    this.updatePreviewUniforms(entry, actor, quality, binding, simTimeSeconds);
     const signature = JSON.stringify({
       manualResetToken: readNumber(actor.params.simulationResetToken, 0),
       volumeActorId: binding.actorId,
@@ -527,6 +745,11 @@ export class MistVolumeController {
     const windNoiseStrength = readNumber(actor.params.windNoiseStrength, 0, 0);
     const wispiness = readNumber(actor.params.wispiness, 0, 0);
     const edgeBreakup = readNumber(actor.params.edgeBreakup, 0, 0);
+    const lookupNoisePreset =
+      typeof actor.params.lookupNoisePreset === "string" && actor.params.lookupNoisePreset.length > 0
+        ? actor.params.lookupNoisePreset
+        : "cloudy";
+    const lookupNoise = readLookupNoiseSettings(actor);
     this.kernel.store.getState().actions.setActorStatus(actor.id, {
       values: {
         volumeActorName: binding.actorName,
@@ -535,12 +758,15 @@ export class MistVolumeController {
         previewMode,
         activeSourceCount: sources.length,
         densityRange,
+        boundaryModes: buildBoundarySummary(boundarySettings),
         previewVisible,
         noiseSeed,
         emissionNoiseActive: emissionNoiseStrength > 1e-4,
         windNoiseActive: windNoiseStrength > 1e-4,
         wispiness: Number(wispiness.toFixed(3)),
         edgeBreakup: Number(edgeBreakup.toFixed(3)),
+        lookupNoisePreset,
+        lookupNoiseActive: lookupNoise.strength > 1e-4,
         sourceCollectMs: roundMs(sourceCollectMs),
         simulationMs: roundMs(simulationMs),
         uploadMs: roundMs(uploadMs),
@@ -606,7 +832,8 @@ export class MistVolumeController {
       count,
       resolution: [...resolution] as [number, number, number],
       lastSignature: "",
-      lastSimTimeSeconds: null
+      lastSimTimeSeconds: null,
+      lastLocalCameraInside: false
     };
     this.entriesByActorId.set(actorId, entry);
     return entry;
@@ -666,32 +893,74 @@ export class MistVolumeController {
     entry: MistVolumeEntry,
     actor: ActorNode,
     quality: MistVolumeQualitySettings,
-    binding: MistVolumeBinding
+    binding: MistVolumeBinding,
+    simTimeSeconds: number
   ): void {
     const previewTint = readColor(actor.params.previewTint, "#d9eef7");
     const previewMode = readPreviewMode(actor.params.previewMode);
     const slicePosition = readNumber(actor.params.slicePosition, 0.5, 0, 1);
+    const lookupNoise = readLookupNoiseSettings(actor);
+    const cameraPosition = this.kernel.store.getState().state.camera.position;
     const volumeUniforms = entry.volumeMaterial.uniforms as {
       uPreviewTint: { value: THREE.Color };
       uOpacityScale: { value: number };
       uDensityThreshold: { value: number };
       uRaymarchSteps: { value: number };
       uWorldToLocal: { value: THREE.Matrix4 };
+      uMistTimeSeconds: { value: number };
+      uMistNoiseStrength: { value: number };
+      uMistNoiseScale: { value: number };
+      uMistNoiseSpeed: { value: number };
+      uMistNoiseScroll: { value: THREE.Vector3 };
+      uMistNoiseContrast: { value: number };
+      uMistNoiseBias: { value: number };
+      uMistNoiseSeed: { value: number };
     };
     volumeUniforms.uPreviewTint.value.copy(previewTint);
     volumeUniforms.uOpacityScale.value = readNumber(actor.params.previewOpacity, 1.1, 0, 4);
     volumeUniforms.uDensityThreshold.value = readNumber(actor.params.previewThreshold, 0.02, 0, 1);
     volumeUniforms.uRaymarchSteps.value = quality.previewRaymarchSteps;
     volumeUniforms.uWorldToLocal.value.copy(binding.worldToVolumeLocal);
+    volumeUniforms.uMistTimeSeconds.value = simTimeSeconds;
+    volumeUniforms.uMistNoiseStrength.value = lookupNoise.strength;
+    volumeUniforms.uMistNoiseScale.value = lookupNoise.scale;
+    volumeUniforms.uMistNoiseSpeed.value = lookupNoise.speed;
+    volumeUniforms.uMistNoiseScroll.value.copy(lookupNoise.scroll);
+    volumeUniforms.uMistNoiseContrast.value = lookupNoise.contrast;
+    volumeUniforms.uMistNoiseBias.value = lookupNoise.bias;
+    volumeUniforms.uMistNoiseSeed.value = lookupNoise.seed;
     const sliceUniforms = entry.sliceMaterial.uniforms as {
       uDensityGain: { value: number };
       uSliceAxis: { value: number };
       uSlicePosition: { value: number };
+      uMistTimeSeconds: { value: number };
+      uMistNoiseStrength: { value: number };
+      uMistNoiseScale: { value: number };
+      uMistNoiseSpeed: { value: number };
+      uMistNoiseScroll: { value: THREE.Vector3 };
+      uMistNoiseContrast: { value: number };
+      uMistNoiseBias: { value: number };
+      uMistNoiseSeed: { value: number };
     };
     sliceUniforms.uDensityGain.value = readNumber(actor.params.previewOpacity, 1.1, 0, 8);
     sliceUniforms.uSliceAxis.value = previewMode === "slice-x" ? 0 : previewMode === "slice-y" ? 1 : 2;
     sliceUniforms.uSlicePosition.value = slicePosition;
+    sliceUniforms.uMistTimeSeconds.value = simTimeSeconds;
+    sliceUniforms.uMistNoiseStrength.value = lookupNoise.strength;
+    sliceUniforms.uMistNoiseScale.value = lookupNoise.scale;
+    sliceUniforms.uMistNoiseSpeed.value = lookupNoise.speed;
+    sliceUniforms.uMistNoiseScroll.value.copy(lookupNoise.scroll);
+    sliceUniforms.uMistNoiseContrast.value = lookupNoise.contrast;
+    sliceUniforms.uMistNoiseBias.value = lookupNoise.bias;
+    sliceUniforms.uMistNoiseSeed.value = lookupNoise.seed;
     entry.boundsMaterial.color.copy(previewTint);
+    const localCameraPosition = new THREE.Vector3(
+      cameraPosition[0] ?? 0,
+      cameraPosition[1] ?? 0,
+      cameraPosition[2] ?? 0
+    ).applyMatrix4(binding.worldToVolumeLocal);
+    entry.lastLocalCameraInside = isLocalCameraInsideUnitCube(localCameraPosition);
+    entry.volumeMaterial.side = entry.lastLocalCameraInside ? THREE.BackSide : THREE.FrontSide;
     entry.sliceMesh.position.set(0, 0, 0);
     entry.sliceMesh.rotation.set(0, 0, 0);
     if (previewMode === "slice-x") {
@@ -793,13 +1062,14 @@ export class MistVolumeController {
     const windNoiseSpeed = readNumber(actor.params.windNoiseSpeed, 0.25, 0);
     const wispiness = readNumber(actor.params.wispiness, 0, 0);
     const edgeBreakup = readNumber(actor.params.edgeBreakup, 0, 0);
+    const boundaries = readBoundarySettings(actor);
     const radiusCells = Math.max(
       1,
       Math.ceil(
         sourceRadius *
         Math.max(entry.resolution[0], entry.resolution[1], entry.resolution[2])
       )
-    );
+      );
 
     for (let step = 0; step < steps; step += 1) {
       const stepTime = simTimeSeconds - dtSeconds + stepDt * (step + 1);
@@ -817,10 +1087,10 @@ export class MistVolumeController {
       );
       this.applyNoiseForces(entry, stepDt, stepTime, noiseSeed, windVector, windNoiseStrength, windNoiseScale, windNoiseSpeed, wispiness);
       this.diffuseVelocity(entry, diffusion, stepDt);
-      this.advectDensity(entry, stepDt);
+      this.advectDensity(entry, stepDt, boundaries);
       this.applyDensityDiffusion(entry, diffusion);
       this.applyDecay(entry, densityDecay, stepDt, edgeBreakup, stepTime, noiseSeed);
-      this.applyVelocityForces(entry, buoyancy, velocityDrag, stepDt);
+      this.applyVelocityForces(entry, buoyancy, velocityDrag, stepDt, boundaries);
     }
   }
 
@@ -999,7 +1269,35 @@ export class MistVolumeController {
     entry.velocity.set(entry.velocityScratch);
   }
 
-  private advectDensity(entry: MistVolumeEntry, stepDt: number): void {
+  private sampleDensityWithBoundaries(
+    entry: MistVolumeEntry,
+    boundaries: MistBoundarySettings,
+    x: number,
+    y: number,
+    z: number
+  ): number {
+    const maxX = entry.resolution[0] - 1;
+    const maxY = entry.resolution[1] - 1;
+    const maxZ = entry.resolution[2] - 1;
+    if ((x < 0 && boundaries.negX === "open") || (x > maxX && boundaries.posX === "open")) {
+      return 0;
+    }
+    if ((y < 0 && boundaries.negY === "open") || (y > maxY && boundaries.posY === "open")) {
+      return 0;
+    }
+    if ((z < 0 && boundaries.negZ === "open") || (z > maxZ && boundaries.posZ === "open")) {
+      return 0;
+    }
+    return sampleTrilinear(
+      entry.density,
+      entry.resolution,
+      Math.max(0, Math.min(maxX, x)),
+      Math.max(0, Math.min(maxY, y)),
+      Math.max(0, Math.min(maxZ, z))
+    );
+  }
+
+  private advectDensity(entry: MistVolumeEntry, stepDt: number, boundaries: MistBoundarySettings): void {
     for (let z = 0; z < entry.resolution[2]; z += 1) {
       for (let y = 0; y < entry.resolution[1]; y += 1) {
         for (let x = 0; x < entry.resolution[0]; x += 1) {
@@ -1011,7 +1309,7 @@ export class MistVolumeController {
           const backX = x - vx * stepDt * entry.resolution[0];
           const backY = y - vy * stepDt * entry.resolution[1];
           const backZ = z - vz * stepDt * entry.resolution[2];
-          entry.densityScratch[index] = sampleTrilinear(entry.density, entry.resolution, backX, backY, backZ);
+          entry.densityScratch[index] = this.sampleDensityWithBoundaries(entry, boundaries, backX, backY, backZ);
         }
       }
     }
@@ -1096,17 +1394,46 @@ export class MistVolumeController {
     }
   }
 
-  private applyVelocityForces(entry: MistVolumeEntry, buoyancy: number, velocityDrag: number, stepDt: number): void {
+  private applyVelocityForces(
+    entry: MistVolumeEntry,
+    buoyancy: number,
+    velocityDrag: number,
+    stepDt: number,
+    boundaries: MistBoundarySettings
+  ): void {
     const dragFactor = Math.max(0, 1 - velocityDrag * stepDt);
-    for (let index = 0; index < entry.count; index += 1) {
-      const base = index * 3;
-      const density = entry.density[index] ?? 0;
-      const x = (entry.velocity[base] ?? 0) * dragFactor;
-      const y = ((entry.velocity[base + 1] ?? 0) + buoyancy * density * stepDt) * dragFactor;
-      const z = (entry.velocity[base + 2] ?? 0) * dragFactor;
-      entry.velocity[base] = x;
-      entry.velocity[base + 1] = y;
-      entry.velocity[base + 2] = z;
+    for (let z = 0; z < entry.resolution[2]; z += 1) {
+      for (let y = 0; y < entry.resolution[1]; y += 1) {
+        for (let x = 0; x < entry.resolution[0]; x += 1) {
+          const index = cellIndex(x, y, z, entry.resolution);
+          const base = index * 3;
+          const density = entry.density[index] ?? 0;
+          let vx = (entry.velocity[base] ?? 0) * dragFactor;
+          let vy = ((entry.velocity[base + 1] ?? 0) + buoyancy * density * stepDt) * dragFactor;
+          let vz = (entry.velocity[base + 2] ?? 0) * dragFactor;
+          if (x === 0 && boundaries.negX === "closed") {
+            vx = Math.max(0, vx);
+          }
+          if (x === entry.resolution[0] - 1 && boundaries.posX === "closed") {
+            vx = Math.min(0, vx);
+          }
+          if (y === 0 && boundaries.negY === "closed") {
+            vy = Math.max(0, vy);
+          }
+          if (y === entry.resolution[1] - 1 && boundaries.posY === "closed") {
+            vy = Math.min(0, vy);
+          }
+          if (z === 0 && boundaries.negZ === "closed") {
+            vz = Math.max(0, vz);
+          }
+          if (z === entry.resolution[2] - 1 && boundaries.posZ === "closed") {
+            vz = Math.min(0, vz);
+          }
+          entry.velocity[base] = vx;
+          entry.velocity[base + 1] = vy;
+          entry.velocity[base + 2] = vz;
+        }
+      }
     }
   }
 

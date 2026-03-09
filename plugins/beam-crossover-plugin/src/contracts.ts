@@ -53,6 +53,13 @@ export interface MistVolumeResource {
   worldToLocalElements: number[];
   resolution: [number, number, number];
   densityScale: number;
+  lookupNoiseStrength: number;
+  lookupNoiseScale: number;
+  lookupNoiseSpeed: number;
+  lookupNoiseScroll: [number, number, number];
+  lookupNoiseContrast: number;
+  lookupNoiseBias: number;
+  lookupNoiseSeed: number;
 }
 
 export interface ActorStatusEntry {
