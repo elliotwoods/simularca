@@ -296,6 +296,7 @@ function parseBeamParams(actor: ActorNode): BeamParams {
     targetActorId: typeof actor.params.targetActorId === "string" ? actor.params.targetActorId : null,
     mistVolumeActorId: typeof actor.params.mistVolumeActorId === "string" ? actor.params.mistVolumeActorId : null,
     beamType:
+      beamType === SOLID_BEAM_TYPE ||
       beamType === GHOST_BEAM_TYPE ||
       beamType === NORMALS_BEAM_TYPE ||
       beamType === SCATTERING_SHELL_BEAM_TYPE ||
@@ -372,6 +373,8 @@ function buildSingleStatus(actor: ActorNode, runtimeStatus?: ActorRuntimeStatus)
     { label: "WebGL-Only Mode", value: params.beamType === SCATTERING_SHELL_BEAM_TYPE || params.beamType === SCATTERING_SHELL2_BEAM_TYPE },
     { label: "Target Actor", value: runtimeStatus?.values.targetActorName ?? "n/a" },
     { label: "Mist Volume", value: runtimeStatus?.values.mistVolumeName ?? "n/a" },
+    { label: "Mist Applies In", value: "Scattering Shell, Scattering Shell 2" },
+    { label: "Mist Active", value: params.beamType === SCATTERING_SHELL_BEAM_TYPE || params.beamType === SCATTERING_SHELL2_BEAM_TYPE },
     { label: "Target Shape", value: runtimeStatus?.values.targetShape ?? "n/a" },
     { label: "Resolution", value: params.resolution },
     { label: "Beam Length (m)", value: params.beamLength },
@@ -406,6 +409,8 @@ function buildArrayStatus(actor: ActorNode, runtimeStatus?: ActorRuntimeStatus):
     { label: "Emitter Curve", value: runtimeStatus?.values.emitterCurveName ?? "n/a" },
     { label: "Target Actor", value: runtimeStatus?.values.targetActorName ?? "n/a" },
     { label: "Mist Volume", value: runtimeStatus?.values.mistVolumeName ?? "n/a" },
+    { label: "Mist Applies In", value: "Scattering Shell, Scattering Shell 2" },
+    { label: "Mist Active", value: params.beamType === SCATTERING_SHELL_BEAM_TYPE || params.beamType === SCATTERING_SHELL2_BEAM_TYPE },
     { label: "Target Shape", value: runtimeStatus?.values.targetShape ?? "n/a" },
     { label: "Requested Count", value: params.count },
     { label: "Along Beam Power", value: params.alongBeamPower },
@@ -1312,7 +1317,9 @@ const sharedBeamParams = [
     label: "Mist Volume",
     type: "actor-ref",
     allowedActorTypes: ["mist-volume"],
-    allowSelf: false
+    allowSelf: false,
+    description:
+      "Optional mist-density volume sampled per fragment world position in the shell beam modes. This only affects Scattering Shell and Scattering Shell 2."
   },
   {
     key: "alongBeamPower",

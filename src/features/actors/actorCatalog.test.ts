@@ -112,6 +112,11 @@ describe("actorCatalog camera path creation", () => {
     expect(actor?.params.volumeActorId).toBe("");
     expect(actor?.params.resolutionX).toBe(32);
     expect(actor?.params.emissionDirection).toEqual([0, -1, 0]);
+    expect(actor?.params.noiseSeed).toBe(1);
+    expect(actor?.params.emissionNoiseStrength).toBe(0);
+    expect(actor?.params.windVector).toEqual([0, 0, 0]);
+    expect(actor?.params.wispiness).toBe(0);
+    expect(actor?.params.edgeBreakup).toBe(0);
     expect(actor?.params.previewMode).toBe("volume");
     expect(actor?.params.slicePosition).toBe(0.5);
     expect(actor?.params.previewRaymarchSteps).toBe(48);

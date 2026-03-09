@@ -360,6 +360,7 @@ function isDefinitionVisibleForActor(
 
 const BEAM_SHADER_GROUP_KEY = "__beam-shader__";
 const BEAM_SHADER_GROUP_LABEL = "Shader Properties";
+const PARAM_GROUP_PREFIX = "__group__:";
 const BEAM_SHADER_PARAM_KEYS = new Set([
   "beamType",
   "beamColor",
@@ -391,6 +392,36 @@ function isBeamEmitterSelection(actorSelection: ActorNode[]): boolean {
 
 function isBeamShaderDefinition(definition: ParameterDefinition): boolean {
   return BEAM_SHADER_PARAM_KEYS.has(definition.key);
+}
+
+function isSchemaGroupedDefinition(definition: ParameterDefinition): boolean {
+  return typeof definition.groupKey === "string" && definition.groupKey.length > 0;
+}
+
+function schemaParamGroupViewKey(groupKey: string): string {
+  return `${PARAM_GROUP_PREFIX}${groupKey}`;
+}
+
+function parseSchemaParamGroupViewKey(paramKey: string): string | null {
+  return paramKey.startsWith(PARAM_GROUP_PREFIX) ? paramKey.slice(PARAM_GROUP_PREFIX.length) : null;
+}
+
+function buildDefinitionGroups(definitions: ParameterDefinition[]): Array<{ key: string; label: string; count: number }> {
+  const groups = new Map<string, { key: string; label: string; count: number }>();
+  for (const definition of definitions) {
+    if (!isSchemaGroupedDefinition(definition)) {
+      continue;
+    }
+    const key = definition.groupKey!;
+    const label = definition.groupLabel ?? definition.groupKey!;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      groups.set(key, { key, label, count: 1 });
+    }
+  }
+  return [...groups.values()];
 }
 
 function commonDefinitionsForGroup(
@@ -1888,6 +1919,7 @@ export function InspectorPane() {
     return commonDefinitionsForGroup(actorSelection, actorDescriptors);
   }, [actorSelection, actorDescriptors]);
   const hasBeamShaderGroup = isBeamEmitterSelection(actorSelection) && definitions.some(isBeamShaderDefinition);
+  const schemaDefinitionGroups = useMemo(() => buildDefinitionGroups(definitions), [definitions]);
   const beamTypeDefinition = definitions.find((definition) => definition.key === "beamType");
   const beamTypeValues = beamTypeDefinition ? actorSelection.map((actor) => bindingValueFor(beamTypeDefinition, actor)) : [];
   const beamShaderGroupSummary =
@@ -2124,6 +2156,24 @@ export function InspectorPane() {
     if (updatedCount > 0) {
       scheduleAutosave();
       kernel.store.getState().actions.setStatus(`Reload requested for ${updatedCount} file asset${updatedCount === 1 ? "" : "s"}.`);
+    }
+  };
+
+  const resetSelectedMistSimulations = (): void => {
+    let updatedCount = 0;
+    const tokenBase = Date.now();
+    for (const actor of actorSelection) {
+      if (actor.actorType !== "mist-volume") {
+        continue;
+      }
+      updatedCount += 1;
+      kernel.store.getState().actions.updateActorParams(actor.id, {
+        simulationResetToken: tokenBase + updatedCount
+      });
+    }
+    if (updatedCount > 0) {
+      scheduleAutosave();
+      kernel.store.getState().actions.setStatus(`Reset ${updatedCount} mist simulation${updatedCount === 1 ? "" : "s"}.`);
     }
   };
 
@@ -2836,6 +2886,18 @@ export function InspectorPane() {
           </div>
         </div>
       </section>
+      {actorSelection.length > 0 && actorSelection.every((actor) => actor.actorType === "mist-volume") ? (
+        <section className="widget-row">
+          <div className="widget-row-header">
+            <span className="widget-label">Mist Simulation</span>
+          </div>
+          <div className="camera-path-toolbar">
+            <button type="button" disabled={readOnly} onClick={resetSelectedMistSimulations}>
+              Reset Simulation
+            </button>
+          </div>
+        </section>
+      ) : null}
       {singleSelection?.actorType === "camera-path" ? (
         <section className="widget-row">
           <div className="widget-row-header">
@@ -3366,17 +3428,41 @@ export function InspectorPane() {
           onClick={() => setInspectorView({ kind: "param-group", paramKey: BEAM_SHADER_GROUP_KEY, paramLabel: BEAM_SHADER_GROUP_LABEL, fromComponentId: null })}
         />
       ) : null}
+      {inspectorView.kind === "actor-root" && schemaDefinitionGroups.length > 0
+        ? schemaDefinitionGroups.map((group) => (
+          <DrillInRow
+            key={group.key}
+            label={group.label}
+            summary={`${group.count} setting${group.count === 1 ? "" : "s"}`}
+            onClick={() =>
+              setInspectorView({
+                kind: "param-group",
+                paramKey: schemaParamGroupViewKey(group.key),
+                paramLabel: group.label,
+                fromComponentId: null
+              })
+            }
+          />
+        ))
+        : null}
       {definitions.map((definition) => {
         if (inspectorView.kind === "component") return null;
         if (inspectorView.kind === "param-group") {
           if (inspectorView.paramKey === BEAM_SHADER_GROUP_KEY) {
             if (!isBeamShaderDefinition(definition)) return null;
-          } else if (definition.key !== inspectorView.paramKey) {
+          } else {
+            const schemaGroupKey = parseSchemaParamGroupViewKey(inspectorView.paramKey);
+            if (schemaGroupKey) {
+              if (definition.groupKey !== schemaGroupKey) return null;
+            } else if (definition.key !== inspectorView.paramKey) {
+              return null;
+            }
+          }
+        } else if (schemaDefinitionGroups.length > 0 && isSchemaGroupedDefinition(definition)) {
+          return null;
+        } else if (hasBeamShaderGroup && isBeamShaderDefinition(definition)) {
             return null;
           }
-        } else if (hasBeamShaderGroup && isBeamShaderDefinition(definition)) {
-          return null;
-        }
         const values = actorSelection.map((actor) => bindingValueFor(definition, actor));
         const mixed = isMixedValue(values);
         const current = values[0] ?? defaultValueForDefinition(definition);

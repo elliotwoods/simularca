@@ -326,6 +326,17 @@ export class SceneController {
     }, qualityMode);
   }
 
+  private shouldLogPerformanceDiagnostics(): boolean {
+    return this.kernel.store.getState().state.runtimeDebug.slowFrameDiagnosticsEnabled;
+  }
+
+  private warnPerformance(...args: unknown[]): void {
+    if (!this.shouldLogPerformanceDiagnostics()) {
+      return;
+    }
+    console.warn(...args);
+  }
+
   public async syncFromState(): Promise<void> {
     const t0 = performance.now();
     const state = this.kernel.store.getState().state;
@@ -387,7 +398,7 @@ export class SceneController {
         const needsReload = assetId !== (this.meshAssetByActorId.get(actor.id) ?? "")
           || reloadToken !== (this.meshReloadTokenByActorId.get(actor.id) ?? 0);
         const _precheckDt = performance.now() - _tPrecheck;
-        if (_precheckDt > 5) console.warn("[simularca] mesh precheck slow:", _precheckDt.toFixed(1), "ms");
+        if (_precheckDt > 5) this.warnPerformance("[simularca] mesh precheck slow:", _precheckDt.toFixed(1), "ms");
         if (needsReload) {
           await this.syncMeshAsset(actor);
         }
@@ -404,7 +415,7 @@ export class SceneController {
       this.applyActorTransform(actor);
       const _ta6 = performance.now();
       if (_ta6 - _ta0 > 50) {
-        console.warn(
+        this.warnPerformance(
           "[simularca] actor slow:", actor.actorType, actor.id,
           "| clone:", (_ta1 - _ta0).toFixed(0), "ms",
           "| ensure:", (_ta2 - _ta1).toFixed(0), "ms",
@@ -435,7 +446,7 @@ export class SceneController {
     await this.updateEnvironmentTexture();
     const dt = performance.now() - t0;
     if (dt > 100) {
-      console.warn(
+      this.warnPerformance(
         "[simularca] syncFromState slow:", dt.toFixed(0), "ms |",
         "actorLoop:", (tB - tA).toFixed(0), "ms |",
         "parentSync:", (tC - tB).toFixed(0), "ms |",
@@ -1089,14 +1100,14 @@ export class SceneController {
       .join("|");
     const sig = JSON.stringify({ slots: materialSlots, override: materialId, mats: materialHash });
     const _tsm1 = performance.now();
-    if (_tsm1 - _tsm0 > 10) console.warn("[simularca] syncMeshMaterials sig slow:", (_tsm1 - _tsm0).toFixed(0), "ms | slots:", Object.keys(materialSlots as object ?? {}).length);
+    if (_tsm1 - _tsm0 > 10) this.warnPerformance("[simularca] syncMeshMaterials sig slow:", (_tsm1 - _tsm0).toFixed(0), "ms | slots:", Object.keys(materialSlots as object ?? {}).length);
 
     if (sig === this.meshMaterialSigByActorId.get(actor.id)) return;
     this.meshMaterialSigByActorId.set(actor.id, sig);
     const _tsm2 = performance.now();
     this.reapplyMeshMaterials(actor);
     const _tsm3 = performance.now();
-    if (_tsm3 - _tsm2 > 5) console.warn("[simularca] reapplyMeshMaterials slow:", (_tsm3 - _tsm2).toFixed(0), "ms");
+    if (_tsm3 - _tsm2 > 5) this.warnPerformance("[simularca] reapplyMeshMaterials slow:", (_tsm3 - _tsm2).toFixed(0), "ms");
   }
 
   private createPrimitiveMesh(actor: ActorNode): any {
@@ -1586,7 +1597,7 @@ export class SceneController {
       const _tAL0 = performance.now();
       this.applyMeshMaterials(actor, loadedObject, extension);
       const _tAL1 = performance.now();
-      if (_tAL1 - _tAL0 > 5) console.warn("[simularca] applyMeshMaterials slow:", (_tAL1 - _tAL0).toFixed(0), "ms");
+      if (_tAL1 - _tAL0 > 5) this.warnPerformance("[simularca] applyMeshMaterials slow:", (_tAL1 - _tAL0).toFixed(0), "ms");
       const bounds = new THREE.Box3().setFromObject(loadedObject);
       const size = new THREE.Vector3();
       bounds.getSize(size);

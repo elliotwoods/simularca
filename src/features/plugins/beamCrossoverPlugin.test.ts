@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { describe, expect, test } from "vitest";
+import type { ActorNode, AppState } from "../../../plugins/beam-crossover-plugin/src/contracts";
 import {
   beamEmitterArrayDescriptor,
   beamEmitterDescriptor,
@@ -13,6 +14,27 @@ import {
   sampleArcLengthCurveTs
 } from "../../../plugins/beam-crossover-plugin/src/index";
 
+function makePluginActor(id: string, name: string, pluginType: string, beamType: string): ActorNode {
+  return {
+    id,
+    name,
+    enabled: true,
+    actorType: "plugin",
+    pluginType,
+    parentActorId: null,
+    childActorIds: [],
+    componentIds: [],
+    transform: {
+      position: [0, 0, 0],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1]
+    },
+    params: { beamType }
+  };
+}
+
+const emptyPluginState: AppState = { actors: {} };
+
 describe("beam crossover plugin descriptors", () => {
   test("exports beam emitter descriptors with expected schema", () => {
     expect(beamEmitterDescriptor.spawn?.pluginType).toBe("plugin.beamCrossover.emitter");
@@ -20,6 +42,10 @@ describe("beam crossover plugin descriptors", () => {
     expect(beamEmitterArrayDescriptor.schema.params.some((param) => param.key === "emitterCurveId")).toBe(true);
     expect(beamEmitterArrayDescriptor.schema.params.some((param) => param.key === "targetActorId")).toBe(true);
     expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "mistVolumeActorId")).toMatchObject({
+      type: "actor-ref",
+      allowedActorTypes: ["mist-volume"]
+    });
+    expect(beamEmitterArrayDescriptor.schema.params.find((param) => param.key === "mistVolumeActorId")).toMatchObject({
       type: "actor-ref",
       allowedActorTypes: ["mist-volume"]
     });
@@ -38,6 +64,32 @@ describe("beam crossover plugin descriptors", () => {
     expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "scatteringFactor")?.description).toContain("water fog about 0.8 to 1.2");
     expect(beamEmitterDescriptor.schema.params.some((param) => param.key === "travelGain")).toBe(false);
     expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "beamAlpha")?.description).toContain("final shell intensity");
+    expect(beamEmitterDescriptor.schema.params.find((param) => param.key === "mistVolumeActorId")?.description).toContain("only affects Scattering Shell and Scattering Shell 2");
+    expect(beamEmitterArrayDescriptor.schema.params.find((param) => param.key === "mistVolumeActorId")?.description).toContain("only affects Scattering Shell and Scattering Shell 2");
+  });
+
+  test("reports mist support as shell-mode-only in status", () => {
+    const solidStatus = beamEmitterDescriptor.status?.build({
+      actor: makePluginActor("beam-solid", "Beam Solid", "plugin.beamCrossover.emitter", "solid"),
+      state: emptyPluginState,
+      runtimeStatus: {
+        values: { mistVolumeName: "Fog Box" },
+        updatedAtIso: "2026-03-08T00:00:00.000Z"
+      }
+    });
+    const shellStatus = beamEmitterArrayDescriptor.status?.build({
+      actor: makePluginActor("beam-shell", "Beam Shell", "plugin.beamCrossover.emitterArray", "scatteringShell2"),
+      state: emptyPluginState,
+      runtimeStatus: {
+        values: { mistVolumeName: "Fog Box" },
+        updatedAtIso: "2026-03-08T00:00:00.000Z"
+      }
+    });
+
+    expect(solidStatus?.find((entry) => entry.label === "Mist Applies In")?.value).toBe("Scattering Shell, Scattering Shell 2");
+    expect(solidStatus?.find((entry) => entry.label === "Mist Active")?.value).toBe(false);
+    expect(shellStatus?.find((entry) => entry.label === "Mist Applies In")?.value).toBe("Scattering Shell, Scattering Shell 2");
+    expect(shellStatus?.find((entry) => entry.label === "Mist Active")?.value).toBe(true);
   });
 });
 

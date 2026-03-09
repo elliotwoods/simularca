@@ -65,6 +65,7 @@ Perhaps we can combine things, e.g.:
 
 whilst in right click drag, WASD keys are active (they are not active otherwise)
 
+Also fix the current camera bookmark / up/down/left/etc system (e.g. better hotkeys)
 # Housekeeping
 
 * Check for where multiple patterns exist to perform the same function e.g.
@@ -76,3 +77,7 @@ whilst in right click drag, WASD keys are active (they are not active otherwise)
 
 * Speed up
 * Sometimes we don't even need the video, we just want to cache the frames
+
+# Timings
+
+* If an actor takes > 1/framerate for draw or update, then show that time in the scene graph

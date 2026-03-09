@@ -155,6 +155,109 @@ function sampleTrilinear(field: Float32Array, resolution: [number, number, numbe
   return c0 * (1 - tz) + c1 * tz;
 }
 
+function fract(value: number): number {
+  return value - Math.floor(value);
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function smoothStep01(value: number): number {
+  const clamped = clamp01(value);
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function hash4(x: number, y: number, z: number, w: number, seed: number): number {
+  const dot =
+    x * 127.1 +
+    y * 311.7 +
+    z * 74.7 +
+    w * 19.19 +
+    seed * 53.11;
+  return fract(Math.sin(dot) * 43758.5453123);
+}
+
+function sampleScalarNoise4D(x: number, y: number, z: number, w: number, seed: number): number {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const z0 = Math.floor(z);
+  const w0 = Math.floor(w);
+  const x1 = x0 + 1;
+  const y1 = y0 + 1;
+  const z1 = z0 + 1;
+  const w1 = w0 + 1;
+  const tx = smoothStep01(x - x0);
+  const ty = smoothStep01(y - y0);
+  const tz = smoothStep01(z - z0);
+  const tw = smoothStep01(w - w0);
+
+  const v0000 = hash4(x0, y0, z0, w0, seed);
+  const v1000 = hash4(x1, y0, z0, w0, seed);
+  const v0100 = hash4(x0, y1, z0, w0, seed);
+  const v1100 = hash4(x1, y1, z0, w0, seed);
+  const v0010 = hash4(x0, y0, z1, w0, seed);
+  const v1010 = hash4(x1, y0, z1, w0, seed);
+  const v0110 = hash4(x0, y1, z1, w0, seed);
+  const v1110 = hash4(x1, y1, z1, w0, seed);
+  const v0001 = hash4(x0, y0, z0, w1, seed);
+  const v1001 = hash4(x1, y0, z0, w1, seed);
+  const v0101 = hash4(x0, y1, z0, w1, seed);
+  const v1101 = hash4(x1, y1, z0, w1, seed);
+  const v0011 = hash4(x0, y0, z1, w1, seed);
+  const v1011 = hash4(x1, y0, z1, w1, seed);
+  const v0111 = hash4(x0, y1, z1, w1, seed);
+  const v1111 = hash4(x1, y1, z1, w1, seed);
+
+  const x00 = lerp(v0000, v1000, tx);
+  const x10 = lerp(v0100, v1100, tx);
+  const x20 = lerp(v0010, v1010, tx);
+  const x30 = lerp(v0110, v1110, tx);
+  const x01 = lerp(v0001, v1001, tx);
+  const x11 = lerp(v0101, v1101, tx);
+  const x21 = lerp(v0011, v1011, tx);
+  const x31 = lerp(v0111, v1111, tx);
+  const y00 = lerp(x00, x10, ty);
+  const y10 = lerp(x20, x30, ty);
+  const y01 = lerp(x01, x11, ty);
+  const y11 = lerp(x21, x31, ty);
+  const z0v = lerp(y00, y10, tz);
+  const z1v = lerp(y01, y11, tz);
+  return lerp(z0v, z1v, tw);
+}
+
+function sampleVectorNoise4D(
+  x: number,
+  y: number,
+  z: number,
+  w: number,
+  seed: number,
+  scale: number,
+  speed: number
+): [number, number, number] {
+  const sx = x * scale;
+  const sy = y * scale;
+  const sz = z * scale;
+  const sw = w * speed;
+  return [
+    sampleScalarNoise4D(sx + 11.3, sy + 17.1, sz + 23.7, sw + 3.1, seed * 17 + 1) * 2 - 1,
+    sampleScalarNoise4D(sx + 29.5, sy + 31.9, sz + 37.3, sw + 5.7, seed * 17 + 2) * 2 - 1,
+    sampleScalarNoise4D(sx + 41.2, sy + 43.8, sz + 47.6, sw + 8.9, seed * 17 + 3) * 2 - 1
+  ];
+}
+
+function sampleScalarNoiseFromLocalPosition(
+  x: number,
+  y: number,
+  z: number,
+  timeSeconds: number,
+  seed: number,
+  scale: number,
+  speed: number
+): number {
+  return sampleScalarNoise4D(x * scale, y * scale, z * scale, timeSeconds * speed, seed);
+}
+
 export function pickMistVolumeQuality(actor: Pick<ActorNode, "params">, qualityMode: MistVolumeQualityMode): MistVolumeQualitySettings {
   const useRender = qualityMode === "export" && actor.params.renderOverrideEnabled === true;
   return {
@@ -254,15 +357,13 @@ function createVolumePreviewMaterial(texture: THREE.Data3DTexture): THREE.Shader
 
 function createSlicePreviewMaterial(texture: THREE.Data3DTexture): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
+    transparent: false,
+    depthWrite: true,
     depthTest: true,
     side: THREE.DoubleSide,
     uniforms: {
       uDensityTex: { value: texture },
-      uPreviewTint: { value: new THREE.Color("#d9eef7") },
-      uOpacityScale: { value: 1.1 },
-      uDensityThreshold: { value: 0.02 },
+      uDensityGain: { value: 1.1 },
       uSliceAxis: { value: 2 },
       uSlicePosition: { value: 0.5 }
     },
@@ -278,9 +379,7 @@ function createSlicePreviewMaterial(texture: THREE.Data3DTexture): THREE.ShaderM
       precision highp sampler3D;
 
       uniform sampler3D uDensityTex;
-      uniform vec3 uPreviewTint;
-      uniform float uOpacityScale;
-      uniform float uDensityThreshold;
+      uniform float uDensityGain;
       uniform int uSliceAxis;
       uniform float uSlicePosition;
 
@@ -294,11 +393,8 @@ function createSlicePreviewMaterial(texture: THREE.Data3DTexture): THREE.ShaderM
           uvw = vec3(vUv.x, uSlicePosition, vUv.y);
         }
         float density = texture(uDensityTex, uvw).r;
-        if (density <= uDensityThreshold) {
-          discard;
-        }
-        float alpha = clamp(density * uOpacityScale, 0.0, 1.0);
-        gl_FragColor = vec4(uPreviewTint * alpha, alpha);
+        float gray = clamp(density * uDensityGain, 0.0, 1.0);
+        gl_FragColor = vec4(vec3(gray), 1.0);
       }
     `
   });
@@ -390,25 +486,10 @@ export class MistVolumeController {
     this.updatePreviewTransform(entry, actorObject, binding.volumeMatrixWorld);
     this.updatePreviewUniforms(entry, actor, quality, binding);
     const signature = JSON.stringify({
+      manualResetToken: readNumber(actor.params.simulationResetToken, 0),
       volumeActorId: binding.actorId,
       volumeBinding: binding.resetSignature,
-      sourceActorIds: parseActorIdList(actor.params.sourceActorIds),
-      emissionDirection: readVector3(actor.params.emissionDirection, [0, -1, 0]).toArray().map((value) => Number(value.toFixed(6))),
-      sourceRadius: readNumber(actor.params.sourceRadius, 0.2),
-      injectionRate: readNumber(actor.params.injectionRate, 1),
-      initialSpeed: readNumber(actor.params.initialSpeed, 0.6),
-      buoyancy: readNumber(actor.params.buoyancy, 0.35),
-      velocityDrag: readNumber(actor.params.velocityDrag, 0.12),
-      diffusion: readNumber(actor.params.diffusion, 0.04),
-      densityDecay: readNumber(actor.params.densityDecay, 0.08),
-      previewMode,
-      previewTint: actor.params.previewTint,
-      previewOpacity: actor.params.previewOpacity,
-      previewThreshold: actor.params.previewThreshold,
-      slicePosition: readNumber(actor.params.slicePosition, 0.5, 0, 1),
       resolution: quality.resolution,
-      previewRaymarchSteps: quality.previewRaymarchSteps,
-      override: actor.params.renderOverrideEnabled === true,
       qualityMode: quality.qualityMode
     });
     const shouldReset =
@@ -428,12 +509,12 @@ export class MistVolumeController {
     const sourceCollectMs = performance.now() - sourceCollectStart;
     const clampedDt = Math.max(0, Math.min(dtSeconds, 1 / 15));
     const simulationStart = performance.now();
-    if (clampedDt > 0 && sources.length > 0) {
-      this.simulate(entry, actor, sources, clampedDt, quality);
+    if (clampedDt > 0) {
+      this.simulate(entry, actor, sources, simTimeSeconds, clampedDt, quality);
     }
     const simulationMs = performance.now() - simulationStart;
     const uploadStart = performance.now();
-    if ((clampedDt > 0 && sources.length > 0) || shouldReset) {
+    if (clampedDt > 0 || shouldReset) {
       this.uploadDensity(entry);
     }
     const uploadMs = performance.now() - uploadStart;
@@ -441,6 +522,11 @@ export class MistVolumeController {
 
     const densityRange = this.computeDensityRange(entry.density);
     const previewVisible = this.setPreviewVisibility(entry, actorObject.visible === true, previewMode);
+    const noiseSeed = Math.floor(readNumber(actor.params.noiseSeed, 1));
+    const emissionNoiseStrength = readNumber(actor.params.emissionNoiseStrength, 0, 0);
+    const windNoiseStrength = readNumber(actor.params.windNoiseStrength, 0, 0);
+    const wispiness = readNumber(actor.params.wispiness, 0, 0);
+    const edgeBreakup = readNumber(actor.params.edgeBreakup, 0, 0);
     this.kernel.store.getState().actions.setActorStatus(actor.id, {
       values: {
         volumeActorName: binding.actorName,
@@ -450,6 +536,11 @@ export class MistVolumeController {
         activeSourceCount: sources.length,
         densityRange,
         previewVisible,
+        noiseSeed,
+        emissionNoiseActive: emissionNoiseStrength > 1e-4,
+        windNoiseActive: windNoiseStrength > 1e-4,
+        wispiness: Number(wispiness.toFixed(3)),
+        edgeBreakup: Number(edgeBreakup.toFixed(3)),
         sourceCollectMs: roundMs(sourceCollectMs),
         simulationMs: roundMs(simulationMs),
         uploadMs: roundMs(uploadMs),
@@ -593,15 +684,11 @@ export class MistVolumeController {
     volumeUniforms.uRaymarchSteps.value = quality.previewRaymarchSteps;
     volumeUniforms.uWorldToLocal.value.copy(binding.worldToVolumeLocal);
     const sliceUniforms = entry.sliceMaterial.uniforms as {
-      uPreviewTint: { value: THREE.Color };
-      uOpacityScale: { value: number };
-      uDensityThreshold: { value: number };
+      uDensityGain: { value: number };
       uSliceAxis: { value: number };
       uSlicePosition: { value: number };
     };
-    sliceUniforms.uPreviewTint.value.copy(previewTint);
-    sliceUniforms.uOpacityScale.value = readNumber(actor.params.previewOpacity, 1.1, 0, 4);
-    sliceUniforms.uDensityThreshold.value = readNumber(actor.params.previewThreshold, 0.02, 0, 1);
+    sliceUniforms.uDensityGain.value = readNumber(actor.params.previewOpacity, 1.1, 0, 8);
     sliceUniforms.uSliceAxis.value = previewMode === "slice-x" ? 0 : previewMode === "slice-y" ? 1 : 2;
     sliceUniforms.uSlicePosition.value = slicePosition;
     entry.boundsMaterial.color.copy(previewTint);
@@ -683,11 +770,13 @@ export class MistVolumeController {
     entry: MistVolumeEntry,
     actor: ActorNode,
     sources: MistVolumeSourceSample[],
+    simTimeSeconds: number,
     dtSeconds: number,
     quality: MistVolumeQualitySettings
   ): void {
     const steps = Math.max(1, quality.simulationSubsteps);
     const stepDt = dtSeconds / steps;
+    const noiseSeed = Math.floor(readNumber(actor.params.noiseSeed, 1));
     const sourceRadius = Math.max(0.01, readNumber(actor.params.sourceRadius, 0.2, 0.01));
     const injectionRate = Math.max(0, readNumber(actor.params.injectionRate, 1, 0));
     const initialSpeed = Math.max(0, readNumber(actor.params.initialSpeed, 0.6, 0));
@@ -695,6 +784,15 @@ export class MistVolumeController {
     const velocityDrag = clamp01(readNumber(actor.params.velocityDrag, 0.12, 0, 1));
     const diffusion = Math.max(0, readNumber(actor.params.diffusion, 0.04, 0));
     const densityDecay = clamp01(readNumber(actor.params.densityDecay, 0.08, 0, 1));
+    const emissionNoiseStrength = readNumber(actor.params.emissionNoiseStrength, 0, 0);
+    const emissionNoiseScale = readNumber(actor.params.emissionNoiseScale, 1, 0.01);
+    const emissionNoiseSpeed = readNumber(actor.params.emissionNoiseSpeed, 0.75, 0);
+    const windVector = readVector3(actor.params.windVector, [0, 0, 0]);
+    const windNoiseStrength = readNumber(actor.params.windNoiseStrength, 0, 0);
+    const windNoiseScale = readNumber(actor.params.windNoiseScale, 0.75, 0.01);
+    const windNoiseSpeed = readNumber(actor.params.windNoiseSpeed, 0.25, 0);
+    const wispiness = readNumber(actor.params.wispiness, 0, 0);
+    const edgeBreakup = readNumber(actor.params.edgeBreakup, 0, 0);
     const radiusCells = Math.max(
       1,
       Math.ceil(
@@ -704,11 +802,24 @@ export class MistVolumeController {
     );
 
     for (let step = 0; step < steps; step += 1) {
-      this.injectSources(entry, sources, radiusCells, injectionRate * stepDt, initialSpeed);
+      const stepTime = simTimeSeconds - dtSeconds + stepDt * (step + 1);
+      this.injectSources(
+        entry,
+        sources,
+        radiusCells,
+        injectionRate * stepDt,
+        initialSpeed,
+        stepTime,
+        noiseSeed,
+        emissionNoiseStrength,
+        emissionNoiseScale,
+        emissionNoiseSpeed
+      );
+      this.applyNoiseForces(entry, stepDt, stepTime, noiseSeed, windVector, windNoiseStrength, windNoiseScale, windNoiseSpeed, wispiness);
       this.diffuseVelocity(entry, diffusion, stepDt);
       this.advectDensity(entry, stepDt);
       this.applyDensityDiffusion(entry, diffusion);
-      this.applyDecay(entry, densityDecay, stepDt);
+      this.applyDecay(entry, densityDecay, stepDt, edgeBreakup, stepTime, noiseSeed);
       this.applyVelocityForces(entry, buoyancy, velocityDrag, stepDt);
     }
   }
@@ -718,9 +829,41 @@ export class MistVolumeController {
     sources: MistVolumeSourceSample[],
     radiusCells: number,
     densityGain: number,
-    initialSpeed: number
+    initialSpeed: number,
+    timeSeconds: number,
+    noiseSeed: number,
+    emissionNoiseStrength: number,
+    emissionNoiseScale: number,
+    emissionNoiseSpeed: number
   ): void {
     for (const source of sources) {
+      const [noiseX, noiseY, noiseZ] = emissionNoiseStrength > 1e-4
+        ? sampleVectorNoise4D(
+          source.positionLocal.x,
+          source.positionLocal.y,
+          source.positionLocal.z,
+          timeSeconds,
+          noiseSeed + 11,
+          emissionNoiseScale,
+          emissionNoiseSpeed
+        )
+        : [0, 0, 0];
+      const emissionNoiseValue = emissionNoiseStrength > 1e-4
+        ? sampleScalarNoiseFromLocalPosition(
+          source.positionLocal.x + 13.7,
+          source.positionLocal.y - 7.1,
+          source.positionLocal.z + 3.9,
+          timeSeconds,
+          noiseSeed + 29,
+          emissionNoiseScale,
+          emissionNoiseSpeed
+        ) * 2 - 1
+        : 0;
+      const noisyDensityGain = densityGain * Math.max(0, 1 + emissionNoiseValue * emissionNoiseStrength * 0.6);
+      const noisyInitialSpeed = initialSpeed * Math.max(0, 1 + emissionNoiseValue * emissionNoiseStrength * 0.35);
+      const noisyDirection = emissionNoiseStrength > 1e-4
+        ? source.directionLocal.clone().add(new THREE.Vector3(noiseX, noiseY, noiseZ).multiplyScalar(emissionNoiseStrength * 0.45)).normalize()
+        : source.directionLocal;
       const cx = ((source.positionLocal.x + 0.5) * (entry.resolution[0] - 1));
       const cy = ((source.positionLocal.y + 0.5) * (entry.resolution[1] - 1));
       const cz = ((source.positionLocal.z + 0.5) * (entry.resolution[2] - 1));
@@ -742,11 +885,83 @@ export class MistVolumeController {
             }
             const weight = 1 - dist2;
             const index = cellIndex(x, y, z, entry.resolution);
-            entry.density[index] = clamp01((entry.density[index] ?? 0) + densityGain * weight);
+            entry.density[index] = clamp01((entry.density[index] ?? 0) + noisyDensityGain * weight);
             const velocityIndex = index * 3;
-            entry.velocity[velocityIndex] = (entry.velocity[velocityIndex] ?? 0) + source.directionLocal.x * initialSpeed * weight;
-            entry.velocity[velocityIndex + 1] = (entry.velocity[velocityIndex + 1] ?? 0) + source.directionLocal.y * initialSpeed * weight;
-            entry.velocity[velocityIndex + 2] = (entry.velocity[velocityIndex + 2] ?? 0) + source.directionLocal.z * initialSpeed * weight;
+            entry.velocity[velocityIndex] = (entry.velocity[velocityIndex] ?? 0) + noisyDirection.x * noisyInitialSpeed * weight;
+            entry.velocity[velocityIndex + 1] = (entry.velocity[velocityIndex + 1] ?? 0) + noisyDirection.y * noisyInitialSpeed * weight;
+            entry.velocity[velocityIndex + 2] = (entry.velocity[velocityIndex + 2] ?? 0) + noisyDirection.z * noisyInitialSpeed * weight;
+          }
+        }
+      }
+    }
+  }
+
+  private applyNoiseForces(
+    entry: MistVolumeEntry,
+    stepDt: number,
+    timeSeconds: number,
+    noiseSeed: number,
+    windVector: THREE.Vector3,
+    windNoiseStrength: number,
+    windNoiseScale: number,
+    windNoiseSpeed: number,
+    wispiness: number
+  ): void {
+    const hasBaseWind = windVector.lengthSq() > 1e-8;
+    const hasWindNoise = windNoiseStrength > 1e-4;
+    const hasWispiness = wispiness > 1e-4;
+    if (!hasBaseWind && !hasWindNoise && !hasWispiness) {
+      return;
+    }
+    const maxX = Math.max(1, entry.resolution[0] - 1);
+    const maxY = Math.max(1, entry.resolution[1] - 1);
+    const maxZ = Math.max(1, entry.resolution[2] - 1);
+    for (let z = 0; z < entry.resolution[2]; z += 1) {
+      for (let y = 0; y < entry.resolution[1]; y += 1) {
+        for (let x = 0; x < entry.resolution[0]; x += 1) {
+          const index = cellIndex(x, y, z, entry.resolution);
+          const density = entry.density[index] ?? 0;
+          const densityInfluence = clamp01(density * 1.8);
+          if (densityInfluence <= 1e-4) {
+            continue;
+          }
+          const localX = x / maxX - 0.5;
+          const localY = y / maxY - 0.5;
+          const localZ = z / maxZ - 0.5;
+          const velocityIndex = index * 3;
+          if (hasBaseWind) {
+            entry.velocity[velocityIndex] = (entry.velocity[velocityIndex] ?? 0) + windVector.x * stepDt * densityInfluence;
+            entry.velocity[velocityIndex + 1] = (entry.velocity[velocityIndex + 1] ?? 0) + windVector.y * stepDt * densityInfluence;
+            entry.velocity[velocityIndex + 2] = (entry.velocity[velocityIndex + 2] ?? 0) + windVector.z * stepDt * densityInfluence;
+          }
+          if (hasWindNoise) {
+            const [windNx, windNy, windNz] = sampleVectorNoise4D(
+              localX + 17.1,
+              localY - 9.4,
+              localZ + 5.2,
+              timeSeconds,
+              noiseSeed + 101,
+              windNoiseScale,
+              windNoiseSpeed
+            );
+            entry.velocity[velocityIndex] = (entry.velocity[velocityIndex] ?? 0) + windNx * windNoiseStrength * stepDt * densityInfluence;
+            entry.velocity[velocityIndex + 1] = (entry.velocity[velocityIndex + 1] ?? 0) + windNy * windNoiseStrength * stepDt * densityInfluence;
+            entry.velocity[velocityIndex + 2] = (entry.velocity[velocityIndex + 2] ?? 0) + windNz * windNoiseStrength * stepDt * densityInfluence;
+          }
+          if (hasWispiness) {
+            const [wispNx, wispNy, wispNz] = sampleVectorNoise4D(
+              localX - 3.7,
+              localY + 12.8,
+              localZ + 19.6,
+              timeSeconds,
+              noiseSeed + 211,
+              2.5 + wispiness * 2,
+              0.45 + wispiness * 0.15
+            );
+            const wispScale = wispiness * stepDt * densityInfluence * 0.75;
+            entry.velocity[velocityIndex] = (entry.velocity[velocityIndex] ?? 0) + wispNx * wispScale;
+            entry.velocity[velocityIndex + 1] = (entry.velocity[velocityIndex + 1] ?? 0) + wispNy * wispScale;
+            entry.velocity[velocityIndex + 2] = (entry.velocity[velocityIndex + 2] ?? 0) + wispNz * wispScale;
           }
         }
       }
@@ -834,10 +1049,50 @@ export class MistVolumeController {
     entry.density.set(entry.densityScratch);
   }
 
-  private applyDecay(entry: MistVolumeEntry, densityDecay: number, stepDt: number): void {
+  private applyDecay(
+    entry: MistVolumeEntry,
+    densityDecay: number,
+    stepDt: number,
+    edgeBreakup: number,
+    timeSeconds: number,
+    noiseSeed: number
+  ): void {
     const decayFactor = Math.max(0, 1 - densityDecay * stepDt);
+    const maxX = Math.max(1, entry.resolution[0] - 1);
+    const maxY = Math.max(1, entry.resolution[1] - 1);
+    const maxZ = Math.max(1, entry.resolution[2] - 1);
     for (let index = 0; index < entry.count; index += 1) {
-      entry.density[index] = clamp01((entry.density[index] ?? 0) * decayFactor);
+      const current = entry.density[index] ?? 0;
+      let next = current * decayFactor;
+      if (edgeBreakup > 1e-4 && current > 1e-4) {
+        const x = index % entry.resolution[0];
+        const yz = Math.floor(index / entry.resolution[0]);
+        const y = yz % entry.resolution[1];
+        const z = Math.floor(yz / entry.resolution[1]);
+        let sum = 0;
+        let count = 0;
+        const offsets = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]] as const;
+        for (const [ox, oy, oz] of offsets) {
+          const nx = x + ox;
+          const ny = y + oy;
+          const nz = z + oz;
+          if (nx < 0 || ny < 0 || nz < 0 || nx >= entry.resolution[0] || ny >= entry.resolution[1] || nz >= entry.resolution[2]) {
+            continue;
+          }
+          sum += entry.density[cellIndex(nx, ny, nz, entry.resolution)] ?? 0;
+          count += 1;
+        }
+        const neighborAverage = count > 0 ? sum / count : current;
+        const edgeFactor = clamp01(Math.abs(current - neighborAverage) * 8 + current * (1 - current) * 1.5);
+        const localX = x / maxX - 0.5;
+        const localY = y / maxY - 0.5;
+        const localZ = z / maxZ - 0.5;
+        const breakupNoise =
+          sampleScalarNoiseFromLocalPosition(localX + 5.1, localY - 8.2, localZ + 11.7, timeSeconds, noiseSeed + 307, 2.8, 0.35) * 2 - 1;
+        const extraDecay = Math.max(0, breakupNoise) * edgeBreakup * edgeFactor * stepDt * 0.9;
+        next *= Math.max(0, 1 - extraDecay);
+      }
+      entry.density[index] = clamp01(next);
     }
   }
 

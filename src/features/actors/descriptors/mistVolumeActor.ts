@@ -91,6 +91,26 @@ export const mistVolumeActorDescriptor: ReloadableDescriptor<MistVolumeRuntime> 
           value: runtimeStatus?.values.previewVisible ?? false
         },
         {
+          label: "Noise Seed",
+          value: runtimeStatus?.values.noiseSeed ?? readNumber(actor.params.noiseSeed, 1)
+        },
+        {
+          label: "Emission Noise",
+          value: runtimeStatus?.values.emissionNoiseActive ?? (readNumber(actor.params.emissionNoiseStrength, 0) > 0)
+        },
+        {
+          label: "Wind Noise",
+          value: runtimeStatus?.values.windNoiseActive ?? (readNumber(actor.params.windNoiseStrength, 0) > 0)
+        },
+        {
+          label: "Wispiness",
+          value: runtimeStatus?.values.wispiness ?? readNumber(actor.params.wispiness, 0)
+        },
+        {
+          label: "Edge Breakup",
+          value: runtimeStatus?.values.edgeBreakup ?? readNumber(actor.params.edgeBreakup, 0)
+        },
+        {
           label: "Source Collect Ms",
           value: runtimeStatus?.values.sourceCollectMs ?? "n/a"
         },

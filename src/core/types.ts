@@ -107,6 +107,8 @@ export interface ParameterDefinitionBase {
   label: string;
   description?: string;
   defaultValue?: number | string | boolean | number[] | string[];
+  groupKey?: string;
+  groupLabel?: string;
   visibleWhen?: Array<{
     key: string;
     equals: string | number | boolean;
