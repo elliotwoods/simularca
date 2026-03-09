@@ -22,6 +22,11 @@ import { RenderSettingsModal } from "@/ui/components/RenderSettingsModal";
 import { RenderOverlay } from "@/ui/components/RenderOverlay";
 import type { CameraState, SelectionEntry } from "@/core/types";
 import type { RenderProgress, RenderSettings } from "@/features/render/types";
+import { getCameraPathDurationSeconds } from "@/features/cameraPath/model";
+import {
+  defaultRenderCameraPathId,
+  resolveRenderDurationSeconds
+} from "@/features/render/settings";
 import { computeFrameCount, frameSimTime } from "@/features/render/timeline";
 import { solveRenderCamera } from "@/features/render/cameraSolver";
 import { canvasToPngBytes, createRenderExporter } from "@/features/render/exporters";
@@ -341,16 +346,37 @@ export function App() {
     renderHostElRef.current = el;
   }, []);
 
+  const cameraPathActors = useMemo(
+    () =>
+      Object.values(actors)
+        .filter((actor) => actor.actorType === "camera-path")
+        .map((actor) => ({
+          id: actor.id,
+          label: actor.name,
+          durationSeconds: getCameraPathDurationSeconds(actor, actors)
+        })),
+    [actors]
+  );
+
   const runRender = useCallback(
     async (settings: RenderSettings) => {
       const stateBefore = kernel.store.getState().state;
       const previousCamera = structuredClone(stateBefore.camera);
       const previousTime = structuredClone(stateBefore.time);
+      const effectiveDurationSeconds = resolveRenderDurationSeconds(settings, cameraPathActors);
+      const internalWidth = settings.width * settings.supersampleScale;
+      const internalHeight = settings.height * settings.supersampleScale;
+      const warmupStepRate = Math.max(30, Math.min(60, settings.fps));
+      const warmupStepCount = Math.max(0, Math.ceil(settings.preRunSeconds * warmupStepRate));
       setRenderModalOpen(false);
       setRenderOverlayOpen(true);
       setMainViewportSuspended(true);
       renderCancelRequestedRef.current = false;
-      setRenderProgress({ frameIndex: 0, frameCount: 1, message: "Preparing..." });
+      setRenderProgress({
+        frameIndex: 0,
+        frameCount: Math.max(1, warmupStepCount + computeFrameCount(effectiveDurationSeconds, settings.fps)),
+        message: "Preparing..."
+      });
       let viewport: { start(): Promise<void>; stop(): void } | null = null;
       let exporter: { abort(): Promise<void> } | null = null;
       try {
@@ -363,15 +389,26 @@ export function App() {
         if (!hostEl) {
           throw new Error("Render viewport host was not created.");
         }
-        hostEl.style.width = `${String(settings.width)}px`;
-        hostEl.style.height = `${String(settings.height)}px`;
+        hostEl.style.width = `${String(internalWidth)}px`;
+        hostEl.style.height = `${String(internalHeight)}px`;
         viewport =
           sceneRenderEngine === "webgl2"
-            ? new WebGlViewport(kernel, hostEl, { antialias: sceneAntialiasing, qualityMode: "export" })
-            : new WebGpuViewport(kernel, hostEl, { antialias: sceneAntialiasing, qualityMode: "export" });
+            ? new WebGlViewport(kernel, hostEl, {
+                antialias: sceneAntialiasing,
+                qualityMode: "export",
+                showDebugHelpers: settings.showDebugViews,
+                editorOverlays: false
+              })
+            : new WebGpuViewport(kernel, hostEl, {
+                antialias: sceneAntialiasing,
+                qualityMode: "export",
+                showDebugHelpers: settings.showDebugViews,
+                editorOverlays: false
+              });
         await viewport.start();
-        const frameCount = computeFrameCount(settings.durationSeconds, settings.fps);
+        const frameCount = computeFrameCount(effectiveDurationSeconds, settings.fps);
         const startTime = settings.startTimeMode === "zero" ? 0 : previousTime.elapsedSimSeconds;
+        const simulationStartTime = startTime + settings.preRunSeconds;
         const writeExporter = await createRenderExporter(settings, {
           projectName: activeProjectName
         });
@@ -379,29 +416,60 @@ export function App() {
         kernel.store.getState().actions.setTimeRunning(false);
         kernel.store.getState().actions.setTimeSpeed(1);
 
+        if (warmupStepCount > 0) {
+          for (let warmupIndex = 0; warmupIndex < warmupStepCount; warmupIndex += 1) {
+            if (renderCancelRequestedRef.current) {
+              throw new Error("Render cancelled.");
+            }
+            const alpha = (warmupIndex + 1) / warmupStepCount;
+            const simTime = startTime + settings.preRunSeconds * alpha;
+            kernel.store.getState().actions.setElapsedSimSeconds(simTime);
+            kernel.store.getState().actions.setCameraState(previousCamera, false);
+            setRenderProgress({
+              frameIndex: warmupIndex,
+              frameCount: warmupStepCount + frameCount,
+              message: "Pre-running simulation..."
+            });
+            await nextAnimationFrame();
+          }
+          await nextAnimationFrame();
+          await nextAnimationFrame();
+        }
+
         for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
           if (renderCancelRequestedRef.current) {
             throw new Error("Render cancelled.");
           }
-          const simTime = frameSimTime(startTime, frameIndex, settings.fps);
+          const simTime = frameSimTime(simulationStartTime, frameIndex, settings.fps);
           kernel.store.getState().actions.setElapsedSimSeconds(simTime);
           const nextCamera = solveRenderCamera(
             kernel.store.getState().state,
             previousCamera,
-            Math.max(0, simTime - startTime),
+            frameSimTime(0, frameIndex, settings.fps),
             settings.cameraPathId
           );
           kernel.store.getState().actions.setCameraState(nextCamera, false);
-          setRenderProgress({ frameIndex, frameCount, message: "Rendering frame..." });
+          setRenderProgress({
+            frameIndex: warmupStepCount + frameIndex,
+            frameCount: warmupStepCount + frameCount,
+            message: "Rendering frame..."
+          });
           await nextAnimationFrame();
           await nextAnimationFrame();
           const canvas = hostEl.querySelector("canvas");
           if (!(canvas instanceof HTMLCanvasElement)) {
             throw new Error("Render canvas is unavailable.");
           }
-          const bytes = await canvasToPngBytes(canvas);
+          const bytes = await canvasToPngBytes(canvas, {
+            width: settings.width,
+            height: settings.height
+          });
           await writeExporter.writeFrame(bytes, frameIndex);
-          setRenderProgress({ frameIndex, frameCount, message: "Writing frame..." });
+          setRenderProgress({
+            frameIndex: warmupStepCount + frameIndex,
+            frameCount: warmupStepCount + frameCount,
+            message: "Writing frame..."
+          });
         }
         const result = await writeExporter.finalize();
         kernel.store.getState().actions.setStatus(`Render finished. ${result.summary}`);
@@ -426,7 +494,7 @@ export function App() {
         setRenderProgress(null);
       }
     },
-    [activeProjectName, kernel, sceneAntialiasing, sceneRenderEngine]
+    [activeProjectName, cameraPathActors, kernel, sceneAntialiasing, sceneRenderEngine]
   );
 
   useEffect(() => {
@@ -816,10 +884,8 @@ export function App() {
       <RenderSettingsModal
         open={renderModalOpen}
         isElectron={Boolean(window.electronAPI)}
-        defaults={buildDefaultRenderSettings()}
-        cameraPathActors={Object.values(actors)
-          .filter((actor) => actor.actorType === "camera-path")
-          .map((actor) => ({ id: actor.id, label: actor.name }))}
+        defaults={buildDefaultRenderSettings(cameraPathActors)}
+        cameraPathActors={cameraPathActors}
         onCancel={() => setRenderModalOpen(false)}
         onConfirm={(settings) => {
           void runRender(settings);
@@ -843,15 +909,21 @@ function nextAnimationFrame(): Promise<void> {
   });
 }
 
-function buildDefaultRenderSettings(): RenderSettings {
+function buildDefaultRenderSettings(
+  cameraPathActors: Array<{ id: string }>
+): RenderSettings {
   return {
+    resolutionPreset: "fhd",
     width: 1920,
     height: 1080,
+    supersampleScale: 1,
     fps: 24,
     bitrateMbps: 100,
     durationSeconds: 10,
+    preRunSeconds: 0,
+    showDebugViews: false,
     startTimeMode: "current",
-    cameraPathId: "",
+    cameraPathId: defaultRenderCameraPathId(cameraPathActors),
     strategy: window.electronAPI ? "pipe" : "temp-folder"
   };
 }

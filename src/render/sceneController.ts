@@ -62,6 +62,11 @@ interface GaussianSortChunk {
   radius: number;
 }
 
+export interface SceneControllerOptions {
+  qualityMode?: MistVolumeQualityMode;
+  showDebugHelpers?: boolean;
+}
+
 function formatLoadError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -305,15 +310,20 @@ export class SceneController {
   private gaussianSortDirty = true;
   private previousSimTimeSeconds = 0;
   private readonly mistVolumeController: MistVolumeController;
+  private readonly showDebugHelpers: boolean;
 
-  public constructor(private readonly kernel: AppKernel, qualityMode: MistVolumeQualityMode = "interactive") {
+  public constructor(private readonly kernel: AppKernel, options: SceneControllerOptions = {}) {
+    this.showDebugHelpers = options.showDebugHelpers ?? true;
     const initialBackground = normalizeBackgroundColor(this.kernel.store.getState().state.scene.backgroundColor);
     this.scene.background = new THREE.Color(initialBackground);
     const grid = new THREE.GridHelper(20, 20, 0x2f8f9d, 0x1f2430);
     (grid.material as any).transparent = true;
     (grid.material as any).opacity = 0.35;
+    grid.visible = this.showDebugHelpers;
     this.scene.add(grid);
-    this.scene.add(new THREE.AxesHelper(2.5));
+    const axes = new THREE.AxesHelper(2.5);
+    axes.visible = this.showDebugHelpers;
+    this.scene.add(axes);
     const light = new THREE.DirectionalLight(0xffffff, 1.2);
     light.position.set(8, 12, 6);
     this.scene.add(light);
@@ -323,7 +333,7 @@ export class SceneController {
       getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
       getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
       sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t)
-    }, qualityMode);
+    }, options.qualityMode ?? "interactive");
   }
 
   private shouldLogPerformanceDiagnostics(): boolean {
@@ -769,6 +779,7 @@ export class SceneController {
     if (actor.actorType === "curve") {
       const group = new THREE.Group();
       group.name = "curve-container";
+      group.visible = this.showDebugHelpers;
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0)]),
         new THREE.LineBasicMaterial({

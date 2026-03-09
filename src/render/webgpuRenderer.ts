@@ -39,8 +39,8 @@ export class WebGpuViewport {
   private activeCamera: any;
   private readonly controls: OrbitControls;
   private readonly sceneController: SceneController;
-  private readonly curveEditController: CurveEditController;
-  private readonly actorTransformController: ActorTransformController;
+  private readonly curveEditController: CurveEditController | null;
+  private readonly actorTransformController: ActorTransformController | null;
   private frameHandle = 0;
   private frameCount = 0;
   private frameTimeAccumulatorMs = 0;
@@ -57,6 +57,7 @@ export class WebGpuViewport {
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
+  private readonly isExportViewport: boolean;
   private previousMainRenderSample: RenderStatsSample | null = null;
   private readonly wheelZoomSpeed = 0.12;
   private readonly navigationKeysDown = new Set<string>();
@@ -66,13 +67,17 @@ export class WebGpuViewport {
   public constructor(
     private readonly kernel: AppKernel,
     private readonly mountEl: HTMLElement,
-    options: { antialias: boolean; qualityMode?: MistVolumeQualityMode }
+    options: { antialias: boolean; qualityMode?: MistVolumeQualityMode; showDebugHelpers?: boolean; editorOverlays?: boolean }
   ) {
     if (!("gpu" in navigator)) {
       throw new Error("WebGPU is required by this application.");
     }
 
-    this.sceneController = new SceneController(kernel, options.qualityMode ?? "interactive");
+    this.isExportViewport = options.qualityMode === "export";
+    this.sceneController = new SceneController(kernel, {
+      qualityMode: options.qualityMode ?? "interactive",
+      showDebugHelpers: options.showDebugHelpers ?? true
+    });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
     this.renderer = new WebGPURenderer({ antialias: options.antialias, alpha: false });
     this.applyRenderScale(this.mountEl.clientWidth, this.mountEl.clientHeight);
@@ -112,20 +117,25 @@ export class WebGpuViewport {
     (this.controls as any).maxDistance = 10000;
     (this.controls as any).minZoom = 0.05;
     (this.controls as any).maxZoom = 200;
-    this.curveEditController = new CurveEditController(
-      kernel,
-      this.sceneController,
-      this.controls,
-      this.renderer.domElement,
-      this.activeCamera
-    );
-    this.actorTransformController = new ActorTransformController(
-      kernel,
-      this.sceneController,
-      this.controls,
-      this.renderer.domElement,
-      this.activeCamera
-    );
+    if (options.editorOverlays === false) {
+      this.curveEditController = null;
+      this.actorTransformController = null;
+    } else {
+      this.curveEditController = new CurveEditController(
+        kernel,
+        this.sceneController,
+        this.controls,
+        this.renderer.domElement,
+        this.activeCamera
+      );
+      this.actorTransformController = new ActorTransformController(
+        kernel,
+        this.sceneController,
+        this.controls,
+        this.renderer.domElement,
+        this.activeCamera
+      );
+    }
     window.addEventListener("wheel", this.onViewportWheel, { passive: false, capture: true });
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("keyup", this.onKeyUp, { capture: true });
@@ -172,8 +182,8 @@ export class WebGpuViewport {
     }
     this.controls.dispose();
     window.removeEventListener("wheel", this.onViewportWheel, true);
-    this.actorTransformController.dispose();
-    this.curveEditController.dispose();
+    this.actorTransformController?.dispose();
+    this.curveEditController?.dispose();
     this.sceneController.dispose();
     this.clearCompatibilityStatus();
     if (this.initialized) {
@@ -189,11 +199,11 @@ export class WebGpuViewport {
   }
 
   public setActorTransformMode(mode: ActorTransformMode): void {
-    this.actorTransformController.setMode(mode);
+    this.actorTransformController?.setMode(mode);
   }
 
   public setActorTransformSnappingEnabled(enabled: boolean): void {
-    this.actorTransformController.setSnappingEnabled(enabled);
+    this.actorTransformController?.setSnappingEnabled(enabled);
   }
 
   public setFramePacing(settings: SceneFramePacingSettings): void {
@@ -224,10 +234,10 @@ export class WebGpuViewport {
     const _rf1 = performance.now();
     this.syncCameraState();
     this.applyKeyboardNavigation(performance.now());
-    this.curveEditController.setCamera(this.activeCamera);
-    this.actorTransformController.setCamera(this.activeCamera);
-    this.curveEditController.update();
-    this.actorTransformController.update();
+    this.curveEditController?.setCamera(this.activeCamera);
+    this.actorTransformController?.setCamera(this.activeCamera);
+    this.curveEditController?.update();
+    this.actorTransformController?.update();
     this.controls.update();
     this.enforceActorCompatibility("webgpu");
     this.syncCameraToState();
@@ -393,6 +403,10 @@ export class WebGpuViewport {
   }
 
   private applyRenderScale(width: number, height: number): void {
+    if (this.isExportViewport) {
+      this.renderer.setPixelRatio(1);
+      return;
+    }
     const safeWidth = Math.max(1, width);
     const safeHeight = Math.max(1, height);
     const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);

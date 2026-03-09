@@ -77,6 +77,8 @@ Also fix the current camera bookmark / up/down/left/etc system (e.g. better hotk
 
 * Speed up
 * Sometimes we don't even need the video, we just want to cache the frames
+* Automatically choose the camera path (if one exists) and lock the time duration to that camera path
+* Dont' render grids, curves by default (make this an a toggle with default off)
 
 # Timings
 

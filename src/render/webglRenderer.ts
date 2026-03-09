@@ -43,8 +43,8 @@ export class WebGlViewport {
   private activeCamera: any;
   private readonly controls: OrbitControls;
   private readonly sceneController: SceneController;
-  private readonly curveEditController: CurveEditController;
-  private readonly actorTransformController: ActorTransformController;
+  private readonly curveEditController: CurveEditController | null;
+  private readonly actorTransformController: ActorTransformController | null;
   private readonly sparkSplatController: SparkSplatController;
   private frameHandle = 0;
   private frameCount = 0;
@@ -62,6 +62,7 @@ export class WebGlViewport {
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
+  private readonly isExportViewport: boolean;
   private previousMainRenderSample: RenderStatsSample | null = null;
   private readonly wheelZoomSpeed = 0.12;
   private readonly navigationKeysDown = new Set<string>();
@@ -71,9 +72,13 @@ export class WebGlViewport {
   public constructor(
     private readonly kernel: AppKernel,
     private readonly mountEl: HTMLElement,
-    options: { antialias: boolean; qualityMode?: MistVolumeQualityMode }
+    options: { antialias: boolean; qualityMode?: MistVolumeQualityMode; showDebugHelpers?: boolean; editorOverlays?: boolean }
   ) {
-    this.sceneController = new SceneController(kernel, options.qualityMode ?? "interactive");
+    this.isExportViewport = options.qualityMode === "export";
+    this.sceneController = new SceneController(kernel, {
+      qualityMode: options.qualityMode ?? "interactive",
+      showDebugHelpers: options.showDebugHelpers ?? true
+    });
     this.sparkSplatController = new SparkSplatController(kernel, this.sceneController);
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
     this.renderer = new THREE.WebGLRenderer({ antialias: options.antialias, alpha: false });
@@ -128,20 +133,25 @@ export class WebGlViewport {
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("keyup", this.onKeyUp, { capture: true });
     window.addEventListener("blur", this.onWindowBlur);
-    this.curveEditController = new CurveEditController(
-      kernel,
-      this.sceneController,
-      this.controls,
-      this.renderer.domElement,
-      this.activeCamera
-    );
-    this.actorTransformController = new ActorTransformController(
-      kernel,
-      this.sceneController,
-      this.controls,
-      this.renderer.domElement,
-      this.activeCamera
-    );
+    if (options.editorOverlays === false) {
+      this.curveEditController = null;
+      this.actorTransformController = null;
+    } else {
+      this.curveEditController = new CurveEditController(
+        kernel,
+        this.sceneController,
+        this.controls,
+        this.renderer.domElement,
+        this.activeCamera
+      );
+      this.actorTransformController = new ActorTransformController(
+        kernel,
+        this.sceneController,
+        this.controls,
+        this.renderer.domElement,
+        this.activeCamera
+      );
+    }
   }
 
   public async start(): Promise<void> {
@@ -180,8 +190,8 @@ export class WebGlViewport {
     }
     this.controls.dispose();
     window.removeEventListener("wheel", this.onViewportWheel, true);
-    this.actorTransformController.dispose();
-    this.curveEditController.dispose();
+    this.actorTransformController?.dispose();
+    this.curveEditController?.dispose();
     this.sparkSplatController.dispose();
     this.sceneController.dispose();
     this.bloomPass.dispose();
@@ -194,11 +204,11 @@ export class WebGlViewport {
   }
 
   public setActorTransformMode(mode: ActorTransformMode): void {
-    this.actorTransformController.setMode(mode);
+    this.actorTransformController?.setMode(mode);
   }
 
   public setActorTransformSnappingEnabled(enabled: boolean): void {
-    this.actorTransformController.setSnappingEnabled(enabled);
+    this.actorTransformController?.setSnappingEnabled(enabled);
   }
 
   public setFramePacing(settings: SceneFramePacingSettings): void {
@@ -232,10 +242,10 @@ export class WebGlViewport {
     this.enforceActorCompatibility("webgl2");
     this.syncCameraState();
     this.applyKeyboardNavigation(performance.now());
-    this.curveEditController.setCamera(this.activeCamera);
-    this.actorTransformController.setCamera(this.activeCamera);
-    this.curveEditController.update();
-    this.actorTransformController.update();
+    this.curveEditController?.setCamera(this.activeCamera);
+    this.actorTransformController?.setCamera(this.activeCamera);
+    this.curveEditController?.update();
+    this.actorTransformController?.update();
     this.controls.update();
     this.syncCameraToState();
     const _rf3 = performance.now();
@@ -436,6 +446,10 @@ export class WebGlViewport {
   }
 
   private applyRenderScale(width: number, height: number): void {
+    if (this.isExportViewport) {
+      this.renderer.setPixelRatio(1);
+      return;
+    }
     const safeWidth = Math.max(1, width);
     const safeHeight = Math.max(1, height);
     const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);

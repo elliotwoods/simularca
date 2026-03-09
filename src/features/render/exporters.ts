@@ -52,7 +52,7 @@ function buildRenderFolderName(projectName?: string): string {
 }
 
 function buildScript(encoder: string, fps: number, bitrateMbps: number, outputName: string): { sh: string; bat: string } {
-  const ffmpegCommand = `ffmpeg -y -framerate ${String(fps)} -i frame_%06d.png -an -c:v ${encoder} -b:v ${String(bitrateMbps)}M -pix_fmt yuv420p "${outputName}"`;
+  const ffmpegCommand = `ffmpeg -y -framerate ${String(fps)} -i frame_%06d.png -an -c:v ${encoder} -tag:v hvc1 -b:v ${String(bitrateMbps)}M -pix_fmt yuv420p "${outputName}"`;
   return {
     sh: `#!/usr/bin/env bash\nset -euo pipefail\n${ffmpegCommand}\n`,
     bat: `@echo off\r\n${ffmpegCommand}\r\n`
@@ -210,9 +210,31 @@ export async function createRenderExporter(settings: RenderSettings, context?: R
   return await createWebTempExporter(settings, context);
 }
 
-export async function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
+export async function canvasToPngBytes(
+  canvas: HTMLCanvasElement,
+  outputSize?: { width: number; height: number }
+): Promise<Uint8Array> {
+  let sourceCanvas: HTMLCanvasElement = canvas;
+  if (
+    outputSize
+    && outputSize.width > 0
+    && outputSize.height > 0
+    && (canvas.width !== outputSize.width || canvas.height !== outputSize.height)
+  ) {
+    const scaledCanvas = document.createElement("canvas");
+    scaledCanvas.width = outputSize.width;
+    scaledCanvas.height = outputSize.height;
+    const context = scaledCanvas.getContext("2d");
+    if (!context) {
+      throw new Error("Failed to create downsample context.");
+    }
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+    sourceCanvas = scaledCanvas;
+  }
   const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((value) => {
+    sourceCanvas.toBlob((value) => {
       if (!value) {
         reject(new Error("Failed to capture frame from canvas."));
         return;
