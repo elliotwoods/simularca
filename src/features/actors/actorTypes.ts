@@ -95,16 +95,6 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
       description: "Reference a cube primitive actor to define the mist simulation bounds."
     },
     {
-      key: "simulationBackendMode",
-      label: "Simulation Backend",
-      type: "select",
-      groupKey: "volume",
-      groupLabel: "Volume",
-      options: ["auto", "cpu", "gpu"],
-      description: "Backend preference for timestep simulation. Auto currently uses the CPU recovery path by default; choose GPU explicitly to test the WebGL2 backend.",
-      defaultValue: "cpu"
-    },
-    {
       key: "sourceActorIds",
       label: "Emitter Sources",
       type: "actor-ref-list",
@@ -444,7 +434,7 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "surfaceNegXMode",
-      label: "Left Face",
+      label: "-X Face",
       type: "select",
       groupKey: "surfaces",
       groupLabel: "Surfaces",
@@ -454,7 +444,7 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "surfacePosXMode",
-      label: "Right Face",
+      label: "+X Face",
       type: "select",
       groupKey: "surfaces",
       groupLabel: "Surfaces",
@@ -464,7 +454,7 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "surfaceNegYMode",
-      label: "Bottom Face",
+      label: "-Y Face",
       type: "select",
       groupKey: "surfaces",
       groupLabel: "Surfaces",
@@ -474,7 +464,7 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "surfacePosYMode",
-      label: "Top Face",
+      label: "+Y Face",
       type: "select",
       groupKey: "surfaces",
       groupLabel: "Surfaces",
@@ -484,7 +474,7 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "surfaceNegZMode",
-      label: "Back Face",
+      label: "-Z Face",
       type: "select",
       groupKey: "surfaces",
       groupLabel: "Surfaces",
@@ -494,7 +484,7 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "surfacePosZMode",
-      label: "Front Face",
+      label: "+Z Face",
       type: "select",
       groupKey: "surfaces",
       groupLabel: "Surfaces",

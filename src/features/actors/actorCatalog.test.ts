@@ -110,7 +110,6 @@ describe("actorCatalog camera path creation", () => {
     const actor = actorId ? kernel.store.getState().state.actors[actorId] : null;
     expect(actor?.actorType).toBe("mist-volume");
     expect(actor?.params.volumeActorId).toBe("");
-    expect(actor?.params.simulationBackendMode).toBe("cpu");
     expect(actor?.params.resolutionX).toBe(32);
     expect(actor?.params.emissionDirection).toEqual([0, -1, 0]);
     expect(actor?.params.noiseSeed).toBe(1);
