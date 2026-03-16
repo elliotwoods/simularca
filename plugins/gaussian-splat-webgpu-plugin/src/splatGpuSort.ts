@@ -1,17 +1,18 @@
 /**
  * GPU-based bitonic sort for gaussian splats using Three.js TSL compute shaders.
  *
- * Two compute shader passes:
- * 1. Depth computation — computes view-space Z for each splat, with optional
- *    chunk-based frustum culling (culled splats get sentinel depth → sort to end)
- * 2. Bitonic step — one compare-and-swap step of bitonic merge sort
+ * Four compute shader kernels:
+ * 1. Depth computation — view-space Z per splat, with optional chunk frustum culling
+ * 2. Bitonic step — one global compare-and-swap step (for j >= WG_SIZE)
+ * 3. Local sort — sorts each 256-element block using shared memory (k=2..256)
+ * 4. Local merge — merges within workgroups for a given k using shared memory
  *
- * The CPU iterates over (k, j) pairs and dispatches the bitonic step shader
- * for each pair. Each dispatch is a separate renderer.compute() call, which
- * guarantees ordering between steps (separate command buffer submissions).
+ * The local sort + local merge kernels batch multiple j-steps into single
+ * dispatches using workgroupArray + workgroupBarrier, reducing dispatch count
+ * from ~210 to ~92 for 1M splats (56% fewer renderer.compute() calls).
  *
- * The sortedIndices StorageBufferAttribute is shared between the compute
- * shader (write) and the vertex shader (read) — no CPU↔GPU transfer needed.
+ * Combined with temporal coherence (skip full sort on small camera moves),
+ * most frames only need 0-1 dispatches.
  */
 
 import * as THREE from "three";
@@ -20,6 +21,8 @@ import {
   Fn,
   storage,
   globalId,
+  localId,
+  workgroupId,
   uniform,
   float,
   int,
@@ -28,10 +31,15 @@ import {
   dot,
   If,
   select,
+  workgroupArray,
+  workgroupBarrier,
 } from "three/tsl";
 
 /** Sentinel depth value: frustum-culled splats get this so they sort to the end */
 const CULLED_DEPTH = 99999.0;
+
+/** Workgroup size for all compute shaders */
+const WG_SIZE = 256;
 
 // Camera movement thresholds
 const CAMERA_MOVE_THRESHOLD_POS = 1e-4;
@@ -69,6 +77,8 @@ export class GpuSorter {
   // Compute nodes (created once, reused each frame)
   private readonly depthComputeNode: any;
   private readonly bitonicStepNode: any;
+  private readonly localSortNode: any;   // sorts 256-element blocks (k=2..WG_SIZE)
+  private readonly localMergeNode: any;  // merges within workgroups for given uK
 
   // Uniforms updated per-frame / per-step
   private readonly uMvRow2: any; // vec4 — row 2 of model-view matrix
@@ -175,7 +185,7 @@ export class GpuSorter {
       });
     });
 
-    this.depthComputeNode = depthComputeFn().compute(paddedCount, [256]);
+    this.depthComputeNode = depthComputeFn().compute(paddedCount, [WG_SIZE]);
 
     // -----------------------------------------------------------------------
     // Compute shader 2: bitonic compare-and-swap step
@@ -225,7 +235,109 @@ export class GpuSorter {
       });
     });
 
-    this.bitonicStepNode = bitonicStepFn().compute(paddedCount, [256]);
+    this.bitonicStepNode = bitonicStepFn().compute(paddedCount, [WG_SIZE]);
+
+    // -----------------------------------------------------------------------
+    // Compute shader 3: local bitonic sort (sorts each 256-element block)
+    // Replaces k=2..WG_SIZE steps (36 dispatches → 1 dispatch)
+    // -----------------------------------------------------------------------
+    const localSortFn = Fn(() => {
+      const lid: any = localId.x;
+      const blockStart: any = workgroupId.x.mul(uint(WG_SIZE));
+      const gid: any = blockStart.add(lid);
+
+      // Shared memory for indices and depths
+      const sharedIdx: any = workgroupArray("uint", WG_SIZE);
+      const sharedDep: any = workgroupArray("float", WG_SIZE);
+
+      // Load from global memory
+      sharedIdx.element(lid).assign(sortedIndicesStorage.element(gid));
+      sharedDep.element(lid).assign(depthsStorage.element(sharedIdx.element(lid)));
+      workgroupBarrier();
+
+      // Unrolled bitonic sort for k=2..WG_SIZE (36 steps, generated at shader build time)
+      let step = 0;
+      for (let k = 2; k <= WG_SIZE; k *= 2) {
+        for (let j = k >> 1; j > 0; j >>= 1) {
+          const s = step++;
+          const partner: any = lid.bitXor(uint(j));
+
+          If(partner.greaterThan(lid), () => {
+            const ascending: any = lid.bitAnd(uint(k)).equal(uint(0));
+            const dA: any = sharedDep.element(lid).toVar(`dA${s}`);
+            const dB: any = sharedDep.element(partner).toVar(`dB${s}`);
+            const needSwap: any = select(ascending, dA.greaterThan(dB), dA.lessThan(dB));
+
+            If(needSwap, () => {
+              // Swap indices
+              const tmpI: any = sharedIdx.element(lid).toVar(`tI${s}`);
+              sharedIdx.element(lid).assign(sharedIdx.element(partner));
+              sharedIdx.element(partner).assign(tmpI);
+              // Swap depths
+              const tmpD: any = sharedDep.element(lid).toVar(`tD${s}`);
+              sharedDep.element(lid).assign(sharedDep.element(partner));
+              sharedDep.element(partner).assign(tmpD);
+            });
+          });
+          workgroupBarrier();
+        }
+      }
+
+      // Write back to global memory
+      sortedIndicesStorage.element(gid).assign(sharedIdx.element(lid));
+    });
+
+    this.localSortNode = localSortFn().compute(paddedCount, [WG_SIZE]);
+
+    // -----------------------------------------------------------------------
+    // Compute shader 4: local bitonic merge (j < WG_SIZE steps for a given k)
+    // Replaces 8 dispatches → 1 dispatch per k-value
+    // -----------------------------------------------------------------------
+    const localMergeFn = Fn(() => {
+      const lid: any = localId.x;
+      const blockStart: any = workgroupId.x.mul(uint(WG_SIZE));
+      const gid: any = blockStart.add(lid);
+
+      // Shared memory
+      const sharedIdx: any = workgroupArray("uint", WG_SIZE);
+      const sharedDep: any = workgroupArray("float", WG_SIZE);
+
+      // Load from global memory
+      sharedIdx.element(lid).assign(sortedIndicesStorage.element(gid));
+      sharedDep.element(lid).assign(depthsStorage.element(sharedIdx.element(lid)));
+      workgroupBarrier();
+
+      // Ascending direction uses global index and uK (set per-dispatch)
+      const ascending: any = gid.bitAnd(this.uK).equal(uint(0));
+
+      // Unrolled merge steps for j = WG_SIZE/2 down to 1 (8 steps)
+      let mStep = 0;
+      for (let j = WG_SIZE >> 1; j > 0; j >>= 1) {
+        const ms = mStep++;
+        const partner: any = lid.bitXor(uint(j));
+
+        If(partner.greaterThan(lid), () => {
+          const dA: any = sharedDep.element(lid).toVar(`mdA${ms}`);
+          const dB: any = sharedDep.element(partner).toVar(`mdB${ms}`);
+          const needSwap: any = select(ascending, dA.greaterThan(dB), dA.lessThan(dB));
+
+          If(needSwap, () => {
+            const tmpI: any = sharedIdx.element(lid).toVar(`mtI${ms}`);
+            sharedIdx.element(lid).assign(sharedIdx.element(partner));
+            sharedIdx.element(partner).assign(tmpI);
+            const tmpD: any = sharedDep.element(lid).toVar(`mtD${ms}`);
+            sharedDep.element(lid).assign(sharedDep.element(partner));
+            sharedDep.element(partner).assign(tmpD);
+          });
+        });
+        workgroupBarrier();
+      }
+
+      // Write back
+      sortedIndicesStorage.element(gid).assign(sharedIdx.element(lid));
+    });
+
+    this.localMergeNode = localMergeFn().compute(paddedCount, [WG_SIZE]);
   }
 
   /**
@@ -279,16 +391,40 @@ export class GpuSorter {
       || this.framesSinceSort >= MAX_SKIP_FRAMES;
 
     if (needsFullSort) {
-      // Full bitonic sort
       const n = this.paddedCount;
-      for (let k = 2; k <= n; k *= 2) {
-        for (let j = k >> 1; j > 0; j >>= 1) {
+
+      if (n >= WG_SIZE) {
+        // Optimized path: local sort + global merge with local merge
+        // Phase 1: sort each 256-element block (replaces k=2..256 steps)
+        renderer.compute(this.localSortNode);
+        dispatches++;
+
+        // Phase 2: global merge for k > WG_SIZE
+        for (let k = WG_SIZE * 2; k <= n; k *= 2) {
+          // Global j-steps (j >= WG_SIZE: pairs span workgroups)
+          for (let j = k >> 1; j >= WG_SIZE; j >>= 1) {
+            this.uK.value = k;
+            this.uJ.value = j;
+            renderer.compute(this.bitonicStepNode);
+            dispatches++;
+          }
+          // Local merge (j = WG_SIZE/2 down to 1 in one dispatch)
           this.uK.value = k;
-          this.uJ.value = j;
-          renderer.compute(this.bitonicStepNode);
+          renderer.compute(this.localMergeNode);
           dispatches++;
         }
+      } else {
+        // Fallback for tiny arrays: use original global bitonic sort
+        for (let k = 2; k <= n; k *= 2) {
+          for (let j = k >> 1; j > 0; j >>= 1) {
+            this.uK.value = k;
+            this.uJ.value = j;
+            renderer.compute(this.bitonicStepNode);
+            dispatches++;
+          }
+        }
       }
+
       this.framesSinceSort = 0;
       this.lastSortCameraQuaternion.copy(camera.quaternion);
     }
