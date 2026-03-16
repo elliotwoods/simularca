@@ -1,4 +1,5 @@
 import type { AppState, CameraPreset, CameraState } from "@/core/types";
+import { cameraStateForPreset } from "@/features/camera/viewUtils";
 
 const ORTHOGRAPHIC_HALF_HEIGHT = 8;
 const MIN_ZOOM = 0.05;
@@ -13,7 +14,7 @@ export interface CameraCycleTarget {
   id: string;
   label: string;
   camera: CameraState;
-  source: "preset" | "bookmark";
+  source: "preset";
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -63,56 +64,13 @@ function zoomForViewHeight(viewHeightValue: number): number {
   return clamp((ORTHOGRAPHIC_HALF_HEIGHT * 2) / safeHeight, MIN_ZOOM, MAX_ZOOM);
 }
 
-export function cameraStateForPreset(preset: CameraPreset): CameraState {
-  const base: CameraState = {
-    mode: "orthographic",
-    position: [6, 4, 6],
-    target: [0, 0, 0],
-    fov: 50,
-    zoom: 1,
-    near: 0.01,
-    far: 1000
-  };
-  if (preset === "perspective") {
-    return {
-      ...base,
-      mode: "perspective",
-      position: [6, 4, 6]
-    };
-  }
-  if (preset === "isometric") {
-    return {
-      ...base,
-      mode: "orthographic",
-      position: [8, 8, 8]
-    };
-  }
-  if (preset === "top") {
-    return { ...base, position: [0, 15, 0.001] };
-  }
-  if (preset === "left") {
-    return { ...base, position: [-15, 0, 0] };
-  }
-  if (preset === "front") {
-    return { ...base, position: [0, 0, 15] };
-  }
-  return { ...base, position: [0, 0, -15] };
-}
-
-export function buildCameraCycleTargets(state: AppState): CameraCycleTarget[] {
-  const presetTargets: CameraCycleTarget[] = CAMERA_PRESET_ORDER.map((preset) => ({
+export function buildCameraCycleTargets(_state: AppState): CameraCycleTarget[] {
+  return CAMERA_PRESET_ORDER.map((preset) => ({
     id: `preset:${preset}`,
     label: `Preset: ${preset}`,
     camera: cameraStateForPreset(preset),
     source: "preset"
   }));
-  const bookmarkTargets: CameraCycleTarget[] = state.cameraBookmarks.map((bookmark) => ({
-    id: `bookmark:${bookmark.id}`,
-    label: `Bookmark: ${bookmark.name}`,
-    camera: structuredClone(bookmark.camera),
-    source: "bookmark"
-  }));
-  return [...presetTargets, ...bookmarkTargets];
 }
 
 function cameraDistanceMetric(a: CameraState, b: CameraState): number {

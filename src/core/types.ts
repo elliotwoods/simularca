@@ -259,12 +259,6 @@ export interface CameraState {
   far: number;
 }
 
-export interface CameraBookmark {
-  id: string;
-  name: string;
-  camera: CameraState;
-}
-
 export interface TimeState {
   running: boolean;
   speed: TimeSpeedPreset;
@@ -288,7 +282,6 @@ export interface ProjectSnapshotManifest {
   actors: Record<string, ActorNode>;
   components: Record<string, ComponentNode>;
   camera: CameraState;
-  cameraBookmarks: CameraBookmark[];
   time: TimeState;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];
@@ -375,7 +368,6 @@ export interface AppState {
   actors: Record<string, ActorNode>;
   components: Record<string, ComponentNode>;
   camera: CameraState;
-  cameraBookmarks: CameraBookmark[];
   time: TimeState;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];

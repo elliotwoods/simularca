@@ -141,9 +141,6 @@ const METHOD_DOCS: ConsoleMethodDoc[] = [
   { path: "time.speed", signature: "time.speed(value)", description: "Set simulation speed preset.", examples: ["time.speed(2)"] },
   { path: "camera.preset", signature: "camera.preset(name)", description: "Apply camera preset.", examples: ["camera.preset('isometric')"] },
   { path: "camera.state", signature: "camera.state()", description: "Get current camera.", examples: ["camera.state()"] },
-  { path: "camera.bookmarks.save", signature: "camera.bookmarks.save(name)", description: "Save bookmark.", examples: ["camera.bookmarks.save('Shot A')"] },
-  { path: "camera.bookmarks.load", signature: "camera.bookmarks.load(idOrName)", description: "Load bookmark.", examples: ["camera.bookmarks.load('Shot A')"] },
-  { path: "camera.bookmarks.remove", signature: "camera.bookmarks.remove(idOrName)", description: "Delete bookmark.", examples: ["camera.bookmarks.remove('Shot A')"] },
   { path: "app.undo", signature: "app.undo()", description: "Undo.", examples: ["app.undo()"] },
   { path: "app.redo", signature: "app.redo()", description: "Redo.", examples: ["app.redo()"] },
   { path: "window.state", signature: "window.state()", description: "Get desktop window state.", examples: ["window.state()"] },
@@ -325,25 +322,6 @@ function normalizeVector3(input: unknown, current: [number, number, number]): [n
     return current;
   }
   return [values[0], values[1], values[2]] as [number, number, number];
-}
-
-function findBookmarkId(kernel: AppKernel, idOrName: string): string {
-  const state = kernel.store.getState().state;
-  const byId = state.cameraBookmarks.find((entry) => entry.id === idOrName);
-  if (byId) {
-    return byId.id;
-  }
-  const byName = state.cameraBookmarks.filter((entry) => entry.name === idOrName);
-  if (byName.length === 1) {
-    const first = byName[0];
-    if (first) {
-      return first.id;
-    }
-  }
-  if (byName.length > 1) {
-    throw new Error(`Bookmark name '${idOrName}' is ambiguous (${byName.map((entry) => entry.id).join(", ")}).`);
-  }
-  throw new Error(`Bookmark not found: ${idOrName}`);
 }
 
 function buildHelp() {
@@ -725,24 +703,6 @@ function buildRuntimeApi(kernel: AppKernel) {
       },
       state() {
         return kernel.store.getState().state.camera;
-      },
-      bookmarks: {
-        save(name: string) {
-          assertWritable(kernel);
-          kernel.store.getState().actions.saveCameraBookmark(name);
-          return { count: kernel.store.getState().state.cameraBookmarks.length };
-        },
-        load(idOrName: string) {
-          const id = findBookmarkId(kernel, idOrName);
-          kernel.store.getState().actions.loadCameraBookmark(id);
-          return kernel.store.getState().state.camera;
-        },
-        remove(idOrName: string) {
-          assertWritable(kernel);
-          const id = findBookmarkId(kernel, idOrName);
-          kernel.store.getState().actions.removeCameraBookmark(id);
-          return { count: kernel.store.getState().state.cameraBookmarks.length };
-        }
       }
     },
     app: {

@@ -2,7 +2,13 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { produce } from "immer";
 import { createId } from "@/core/ids";
 import { createInitialState } from "@/core/defaults";
-import { cameraStateForPreset } from "@/features/camera/cycleTween";
+import { cameraStateForPreset } from "@/features/camera/viewUtils";
+import {
+  DEFAULT_CAMERA_TRANSITION_DURATION_MS,
+  cancelCameraTransition as cancelRequestedCameraTransition,
+  requestCameraTransition,
+  type CameraTransitionRequestOptions
+} from "@/features/camera/transitionController";
 import type {
   ActorNode,
   ActorVisibilityMode,
@@ -94,11 +100,10 @@ export interface AppActions {
   setTimeSpeed(speed: TimeSpeedPreset): void;
   setElapsedSimSeconds(seconds: number): void;
   applyCameraPreset(preset: CameraPreset): void;
+  requestCameraState(camera: AppState["camera"], options?: CameraTransitionRequestOptions): void;
+  cancelCameraTransition(): void;
   setCameraState(camera: Partial<AppState["camera"]>, markDirty?: boolean): void;
   setRuntimeDebugSettings(settings: Partial<RuntimeDebugState>): void;
-  saveCameraBookmark(name: string): void;
-  loadCameraBookmark(id: string): void;
-  removeCameraBookmark(id: string): void;
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
   createMaterial(input?: Partial<Material>): string;
@@ -743,12 +748,29 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       applyCameraPreset(preset) {
-        set({
-          state: produce(get().state, (draft) => {
-            draft.camera = cameraStateForPreset(preset);
-            draft.dirty = true;
-          })
+        get().actions.requestCameraState(cameraStateForPreset(preset), {
+          animated: true,
+          durationMs: DEFAULT_CAMERA_TRANSITION_DURATION_MS,
+          markDirty: true
         });
+      },
+      requestCameraState(camera, options) {
+        const animated = options?.animated ?? false;
+        const durationMs = options?.durationMs ?? DEFAULT_CAMERA_TRANSITION_DURATION_MS;
+        const markDirty = options?.markDirty ?? true;
+        if (
+          requestCameraTransition(camera, {
+            animated,
+            durationMs,
+            markDirty
+          })
+        ) {
+          return;
+        }
+        get().actions.setCameraState(camera, markDirty);
+      },
+      cancelCameraTransition() {
+        cancelRequestedCameraTransition();
       },
       setCameraState(camera, markDirty = true) {
         set({
@@ -772,38 +794,6 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             ) {
               draft.runtimeDebug.slowFrameDiagnosticsThresholdMs = Math.max(1, settings.slowFrameDiagnosticsThresholdMs);
             }
-          })
-        });
-      },
-      saveCameraBookmark(name) {
-        withHistory(get, set, "Save camera bookmark");
-        set({
-          state: produce(get().state, (draft) => {
-            draft.cameraBookmarks.push({
-              id: createId("bookmark"),
-              name,
-              camera: structuredClone(draft.camera)
-            });
-            draft.dirty = true;
-          })
-        });
-      },
-      loadCameraBookmark(id) {
-        set({
-          state: produce(get().state, (draft) => {
-            const bookmark = draft.cameraBookmarks.find((entry) => entry.id === id);
-            if (bookmark) {
-              draft.camera = structuredClone(bookmark.camera);
-            }
-          })
-        });
-      },
-      removeCameraBookmark(id) {
-        withHistory(get, set, "Remove camera bookmark");
-        set({
-          state: produce(get().state, (draft) => {
-            draft.cameraBookmarks = draft.cameraBookmarks.filter((entry) => entry.id !== id);
-            draft.dirty = true;
           })
         });
       },

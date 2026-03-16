@@ -3,13 +3,13 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { BUILD_INFO, buildInfoSummary } from "@/app/buildInfo";
 import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
-import {
-  buildCameraCycleTargets,
-  findCurrentCycleIndex,
-  interpolateCameraState,
-  type CameraCycleTarget
-} from "@/features/camera/cycleTween";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
+import { interpolateCameraState } from "@/features/camera/cycleTween";
+import {
+  DEFAULT_CAMERA_TRANSITION_DURATION_MS,
+  registerCameraTransitionDriver,
+  type CameraTransitionRequestOptions
+} from "@/features/camera/transitionController";
 import { importFileAsActor, listCompatibleActorFileImportOptions, type ActorFileImportOption } from "@/features/imports/actorFileImport";
 import { discoverAndLoadLocalPlugins, formatPluginDiscoverySummary, startLocalPluginAutoReload } from "@/features/plugins/discovery";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
@@ -79,17 +79,16 @@ function isMouseForwardEvent(event: MouseEvent | PointerEvent): boolean {
 }
 
 export function App() {
-  type ActiveCameraTween = {
+  const kernel = useKernel();
+  const dragDepthRef = useRef(0);
+  const cameraTransitionRef = useRef<{
     from: CameraState;
     to: CameraState;
     startAtMs: number;
     durationMs: number;
-    target: CameraCycleTarget;
-  };
-  const kernel = useKernel();
-  const dragDepthRef = useRef(0);
-  const cameraTweenRef = useRef<ActiveCameraTween | null>(null);
-  const cameraTweenRafRef = useRef<number | null>(null);
+    markDirty: boolean;
+  } | null>(null);
+  const cameraTransitionRafRef = useRef<number | null>(null);
   const [keyboardMapOpen, setKeyboardMapOpen] = useState(false);
   const [dragImportState, setDragImportState] = useState<{
     fileName: string;
@@ -130,6 +129,46 @@ export function App() {
   const selectionHistoryForwardRef = useRef<SelectionEntry[][]>([]);
   const selectionHistorySuppressRef = useRef(false);
   const previousSelectionRef = useRef<SelectionEntry[]>(cloneSelection(selection));
+
+  const cancelCameraTransition = useCallback(() => {
+    if (cameraTransitionRafRef.current !== null) {
+      cancelAnimationFrame(cameraTransitionRafRef.current);
+      cameraTransitionRafRef.current = null;
+    }
+    cameraTransitionRef.current = null;
+  }, []);
+
+  const sampleActiveCameraTransition = useCallback((nowMs: number): CameraState | null => {
+    const active = cameraTransitionRef.current;
+    if (!active) {
+      return null;
+    }
+    const elapsed = nowMs - active.startAtMs;
+    const t = Math.max(0, Math.min(1, elapsed / active.durationMs));
+    return interpolateCameraState(active.from, active.to, t);
+  }, []);
+
+  const tickCameraTransition = useCallback(
+    (nowMs: number) => {
+      const active = cameraTransitionRef.current;
+      if (!active) {
+        cameraTransitionRafRef.current = null;
+        return;
+      }
+      const elapsed = nowMs - active.startAtMs;
+      const t = Math.max(0, Math.min(1, elapsed / active.durationMs));
+      const nextCamera = interpolateCameraState(active.from, active.to, t);
+      kernel.store.getState().actions.setCameraState(nextCamera, active.markDirty);
+      if (t >= 1) {
+        kernel.store.getState().actions.setCameraState(active.to, active.markDirty);
+        cameraTransitionRef.current = null;
+        cameraTransitionRafRef.current = null;
+        return;
+      }
+      cameraTransitionRafRef.current = requestAnimationFrame(tickCameraTransition);
+    },
+    [kernel]
+  );
 
   const fileExtensionFromName = (fileName: string): string => {
     const dotIndex = fileName.lastIndexOf(".");
@@ -264,86 +303,6 @@ export function App() {
         });
       }),
     []
-  );
-
-  const sampleActiveCameraTween = useCallback((nowMs: number): CameraState | null => {
-    const active = cameraTweenRef.current;
-    if (!active) {
-      return null;
-    }
-    const elapsed = nowMs - active.startAtMs;
-    const t = Math.max(0, Math.min(1, elapsed / active.durationMs));
-    return interpolateCameraState(active.from, active.to, t);
-  }, []);
-
-  const stopCameraTween = useCallback(() => {
-    if (cameraTweenRafRef.current !== null) {
-      cancelAnimationFrame(cameraTweenRafRef.current);
-      cameraTweenRafRef.current = null;
-    }
-    cameraTweenRef.current = null;
-  }, []);
-
-  const tickCameraTween = useCallback(
-    (nowMs: number) => {
-      const active = cameraTweenRef.current;
-      if (!active) {
-        cameraTweenRafRef.current = null;
-        return;
-      }
-      const elapsed = nowMs - active.startAtMs;
-      const t = Math.max(0, Math.min(1, elapsed / active.durationMs));
-      const nextCamera = interpolateCameraState(active.from, active.to, t);
-      kernel.store.getState().actions.setCameraState(nextCamera, true);
-      if (t >= 1) {
-        kernel.store.getState().actions.setCameraState(active.to, true);
-        cameraTweenRef.current = null;
-        cameraTweenRafRef.current = null;
-        return;
-      }
-      cameraTweenRafRef.current = requestAnimationFrame(tickCameraTween);
-    },
-    [kernel]
-  );
-
-  const startCameraTween = useCallback(
-    (target: CameraCycleTarget) => {
-      const nowMs = performance.now();
-      const currentFrom = sampleActiveCameraTween(nowMs) ?? kernel.store.getState().state.camera;
-      cameraTweenRef.current = {
-        from: currentFrom,
-        to: structuredClone(target.camera),
-        startAtMs: nowMs,
-        durationMs: 1000,
-        target
-      };
-      kernel.store.getState().actions.setStatus(`Camera tween to ${target.label}`);
-      if (cameraTweenRafRef.current === null) {
-        cameraTweenRafRef.current = requestAnimationFrame(tickCameraTween);
-      }
-    },
-    [kernel, sampleActiveCameraTween, tickCameraTween]
-  );
-
-  const cycleCameraByTab = useCallback(
-    (direction: 1 | -1) => {
-      const state = kernel.store.getState().state;
-      const targets = buildCameraCycleTargets(state);
-      if (targets.length === 0) {
-        return;
-      }
-      const nowMs = performance.now();
-      const cameraNow = sampleActiveCameraTween(nowMs) ?? state.camera;
-      const currentIndex = findCurrentCycleIndex(cameraNow, targets);
-      const normalizedCurrent = currentIndex < 0 ? 0 : currentIndex;
-      const nextIndex = (normalizedCurrent + direction + targets.length) % targets.length;
-      const target = targets[nextIndex];
-      if (!target) {
-        return;
-      }
-      startCameraTween(target);
-    },
-    [kernel, sampleActiveCameraTween, startCameraTween]
   );
 
   const handleRenderHostReady = useCallback((el: HTMLDivElement | null) => {
@@ -603,6 +562,45 @@ export function App() {
   );
 
   useEffect(() => {
+    const unregister = registerCameraTransitionDriver({
+      request: (targetCamera: CameraState, options?: CameraTransitionRequestOptions) => {
+        const animated = options?.animated ?? false;
+        const durationMs = Math.max(0, Math.round(options?.durationMs ?? DEFAULT_CAMERA_TRANSITION_DURATION_MS));
+        const markDirty = options?.markDirty ?? true;
+        const from = sampleActiveCameraTransition(performance.now()) ?? structuredClone(kernel.store.getState().state.camera);
+        cancelCameraTransition();
+        const sameCamera =
+          JSON.stringify(from.position) === JSON.stringify(targetCamera.position) &&
+          JSON.stringify(from.target) === JSON.stringify(targetCamera.target) &&
+          from.mode === targetCamera.mode &&
+          Math.abs(from.fov - targetCamera.fov) <= 1e-6 &&
+          Math.abs(from.zoom - targetCamera.zoom) <= 1e-6 &&
+          Math.abs(from.near - targetCamera.near) <= 1e-6 &&
+          Math.abs(from.far - targetCamera.far) <= 1e-6;
+        if (!animated || durationMs <= 0 || sameCamera) {
+          kernel.store.getState().actions.setCameraState(targetCamera, markDirty);
+          return;
+        }
+        cameraTransitionRef.current = {
+          from,
+          to: structuredClone(targetCamera),
+          startAtMs: performance.now(),
+          durationMs,
+          markDirty
+        };
+        cameraTransitionRafRef.current = requestAnimationFrame(tickCameraTransition);
+      },
+      cancel: () => {
+        cancelCameraTransition();
+      }
+    });
+    return () => {
+      cancelCameraTransition();
+      unregister();
+    };
+  }, [cancelCameraTransition, kernel, sampleActiveCameraTransition, tickCameraTransition]);
+
+  useEffect(() => {
     kernel.store.getState().actions.setStatus(buildInfoSummary(BUILD_INFO));
     registerCoreActorDescriptors(kernel);
     setupActorHotReload(kernel);
@@ -670,13 +668,6 @@ export function App() {
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
     };
   }, [kernel]);
-
-  useEffect(
-    () => () => {
-      stopCameraTween();
-    },
-    [stopCameraTween]
-  );
 
   useEffect(() => {
     const previousSelection = previousSelectionRef.current;
@@ -851,14 +842,6 @@ export function App() {
         actions.deleteSelection();
         return;
       }
-      if (event.key === "Tab") {
-        event.preventDefault();
-        if (event.repeat) {
-          return;
-        }
-        cycleCameraByTab(event.shiftKey ? -1 : 1);
-        return;
-      }
       if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "a") {
         if (event.repeat) {
           return;
@@ -867,14 +850,6 @@ export function App() {
           event.preventDefault();
           return;
         }
-      }
-      if (event.key.toLowerCase() === "p") {
-        event.preventDefault();
-        stopCameraTween();
-        const state = kernel.store.getState().state;
-        const nextMode = state.camera.mode === "orthographic" ? "perspective" : "orthographic";
-        actions.setCameraState({ mode: nextMode }, true);
-        return;
       }
       if (event.key === "?") {
         event.preventDefault();
@@ -913,7 +888,7 @@ export function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [activeSnapshotName, cycleCameraByTab, kernel, requestTextInput, stopCameraTween]);
+  }, [activeSnapshotName, kernel, requestTextInput]);
 
   const topBar = useMemo(
     () => (

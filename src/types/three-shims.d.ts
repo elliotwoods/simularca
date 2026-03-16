@@ -1,14 +1,16 @@
 declare module "three/examples/jsm/controls/OrbitControls.js" {
   export class OrbitControls {
     public object: any;
-    public target: {
-      x: number;
-      y: number;
-      z: number;
-      set(x: number, y: number, z: number): void;
-    };
+    public target: import("three").Vector3;
+    public enabled: boolean;
     public enableDamping: boolean;
+    public minDistance: number;
+    public maxDistance: number;
+    public minZoom: number;
+    public maxZoom: number;
     public constructor(object: any, domElement?: HTMLElement);
+    public connect?(domElement: HTMLElement): void;
+    public disconnect?(): void;
     public update(): void;
     public dispose(): void;
   }
@@ -110,6 +112,15 @@ declare module "three/webgpu" {
     public init?(): Promise<void>;
     public setPixelRatio(value: number): void;
     public setSize(width: number, height: number): void;
+    public getRenderTarget?(): any;
+    public setRenderTarget?(target: any | null): void;
+    public readRenderTargetPixelsAsync?(
+      target: any,
+      x: number,
+      y: number,
+      width: number,
+      height: number
+    ): Promise<Uint8Array>;
     public renderAsync?(scene: any, camera: any): Promise<void>;
     public render(scene: any, camera: any): void;
     public dispose(): void;

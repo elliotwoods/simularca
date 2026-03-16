@@ -5,7 +5,7 @@
  * Follows the same async load-token pattern as SparkSplatController to guard
  * against stale load completions when the user swaps assets rapidly.
  *
- * GPU radix sort + compute projection pre-pass + chunk-based frustum culling.
+ * Phase 5: GPU bitonic sort + chunk-based frustum culling + NDC clip culling.
  */
 
 import * as THREE from "three";
@@ -14,9 +14,14 @@ import { tryParseSplatBinary } from "./splatBinaryFormat";
 import { parsePlyGaussianData } from "./plyParser";
 import { precomputeCovariances, computeBounds } from "./mathUtils";
 import { createSplatMaterial, type SplatBuffers, type SplatUniforms } from "./splatMaterial";
-import { RadixSorter } from "./splatRadixSort";
-import { SplatProjection } from "./splatProjection";
+import { GpuSorter } from "./splatGpuSort";
 import { buildChunks, updateChunkVisibility, type ChunkData } from "./splatChunks";
+
+function nextPowerOfTwo(n: number): number {
+  let p = 1;
+  while (p < n) p <<= 1;
+  return p;
+}
 
 /** Convert a single sRGB channel value [0,1] to linear light [0,1]. */
 function srgbToLinear(c: number): number {
@@ -47,19 +52,12 @@ export class SplatController {
   private bounds: { min: [number, number, number]; max: [number, number, number] } | null = null;
 
   // GPU sorting state
-  private gpuSorter: RadixSorter | null = null;
-
-  // Compute pre-pass for Cov2D projection (Phase 1 optimization)
-  private splatProjection: SplatProjection | null = null;
-  private currentSplatSizeScale = 1;
+  private gpuSorter: GpuSorter | null = null;
 
   // Chunk-based frustum culling state
   private chunkData: ChunkData | null = null;
   private chunkVisibilityArray: Uint32Array | null = null;
   private lastVisibleChunks = 0;
-
-  // Cached to avoid per-frame allocation
-  private readonly _cachedViewportSize = new THREE.Vector2();
 
   // One-shot diagnostics flag
   private hasLoggedDiagnostics = false;
@@ -212,11 +210,14 @@ export class SplatController {
         colorsData[i4 + 3] = data.opacities[i]; // opacity is linear
       }
 
-      // Identity sort order (no padding needed — radix sort works with arbitrary counts)
-      const sortedIndicesData = new Uint32Array(count);
+      // Identity sort order, padded to next power of 2 for bitonic sort
+      const paddedCount = nextPowerOfTwo(count);
+      const sortedIndicesData = new Uint32Array(paddedCount);
       for (let i = 0; i < count; i++) {
         sortedIndicesData[i] = i;
       }
+      // Padding indices point to index 0 (won't be rendered due to instanceCount)
+      // Their depths will be set to +99999 by the GPU sort, pushing them to the end
 
       // Create chunk ID storage buffer (per-splat → chunk index)
       // Use Uint32Array for GPU storage even though Uint16 would suffice — WebGPU
@@ -234,44 +235,27 @@ export class SplatController {
 
       // Create storage buffer attributes (vec4 for positions/covA/covB to match WGSL alignment)
       const positionsAttr = new StorageBufferAttribute(positionsData4, 4);
-      const covAAttr = new StorageBufferAttribute(covAData, 4);
-      const covBAttr = new StorageBufferAttribute(covBData, 4);
       const sortedIndicesAttr = new StorageBufferAttribute(sortedIndicesData, 1);
       const buffers: SplatBuffers = {
         positions: positionsAttr,
-        covA: covAAttr,
-        covB: covBAttr,
+        covA: new StorageBufferAttribute(covAData, 4),
+        covB: new StorageBufferAttribute(covBData, 4),
         colors: new StorageBufferAttribute(colorsData, 4),
         sortedIndices: sortedIndicesAttr,
         chunkIds: chunkIdsAttr,
         chunkVisibility: chunkVisibilityAttr
       };
 
-      // Create material + GPU sorter + compute pre-pass
+      // Create material + GPU sorter (wrapped in try-catch for cleaner error reporting
+      // if shader compilation fails, e.g. when accidentally running under WebGL2)
       let material: THREE.Material;
       let uniforms: SplatUniforms;
-      let gpuSorter: RadixSorter;
-      let splatProjection: SplatProjection;
+      let gpuSorter: GpuSorter;
       try {
-        // Compute pre-pass: project Cov3D→Cov2D once per splat (not 4× per vertex)
-        splatProjection = new SplatProjection(
-          positionsAttr,
-          covAAttr,
-          covBAttr,
-          count,
-          chunkIdsAttr,
-          numChunks,
-          chunkVisibilityAttr
-        );
-
-        // Attach precomputed ellipse buffers so material uses lightweight vertex shader
-        buffers.ellipseA = splatProjection.ellipseABuffer;
-        buffers.ellipseB = splatProjection.ellipseBBuffer;
-
-        const result = createSplatMaterial(buffers, count, count, numChunks);
+        const result = createSplatMaterial(buffers, count, paddedCount, numChunks);
         material = result.material;
         uniforms = result.uniforms;
-        gpuSorter = new RadixSorter(
+        gpuSorter = new GpuSorter(
           positionsAttr,
           sortedIndicesAttr,
           count,
@@ -287,13 +271,18 @@ export class SplatController {
         );
       }
 
-      // Vertex-pulled geometry: flat draw call with 6 vertices per splat.
-      // vertexIndex derives splat ordinal and quad corner — no index buffer needed.
-      const geometry = new THREE.BufferGeometry();
-      // Three.js requires at least one position attribute
-      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
-      geometry.drawRange.start = 0;
-      geometry.drawRange.count = count * 6;
+      // Create instanced geometry (quad: 4 vertices, 2 triangles)
+      const geometry = new THREE.InstancedBufferGeometry();
+      const quadPositions = new Float32Array([
+        -1, -1, 0,
+         1, -1, 0,
+         1,  1, 0,
+        -1,  1, 0
+      ]);
+      const quadIndices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+      geometry.setAttribute("position", new THREE.BufferAttribute(quadPositions, 3));
+      geometry.setIndex(new THREE.BufferAttribute(quadIndices, 1));
+      geometry.instanceCount = count;
 
       // Create mesh
       const mesh = new THREE.Mesh(geometry, material);
@@ -307,7 +296,6 @@ export class SplatController {
       this.pointCount = count;
       this.bounds = bounds;
       this.gpuSorter = gpuSorter;
-      this.splatProjection = splatProjection;
       this.chunkData = chunkData;
       this.chunkVisibilityArray = visibilityArray;
       this.lastVisibleChunks = numChunks;
@@ -335,8 +323,7 @@ export class SplatController {
           boundsMin: bounds.min,
           boundsMax: bounds.max,
           colorSource: data.colorSource,
-          sortMethod: "gpu-radix",
-          projectionPrepass: true,
+          sortMethod: "gpu-bitonic",
           chunkCount: numChunks
         },
         updatedAtIso: new Date().toISOString()
@@ -417,7 +404,7 @@ export class SplatController {
     // Update viewport size from renderer
     // Prefer getDrawingBufferSize (actual rendering resolution) over getSize (CSS pixels)
     // to match the coordinate space the projection matrix was built against
-    const size = this._cachedViewportSize;
+    const size = new THREE.Vector2();
     if (typeof renderer.getDrawingBufferSize === "function") {
       renderer.getDrawingBufferSize(size);
     } else if (typeof renderer.getSize === "function") {
@@ -494,19 +481,6 @@ export class SplatController {
     if (this.gpuSorter && this.mesh) {
       this.gpuSorter.sort(renderer, camera, this.mesh.matrixWorld);
     }
-
-    // GPU projection compute pre-pass: project Cov3D→Cov2D once per splat
-    if (this.splatProjection && this.mesh) {
-      this.splatProjection.updateUniforms(
-        camera,
-        this.mesh.matrixWorld,
-        focalX,
-        focalY,
-        this.currentSplatSizeScale,
-        this.uniforms.viewportSize.value
-      );
-      this.splatProjection.dispatch(renderer);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -519,7 +493,6 @@ export class SplatController {
     this.uniforms.opacity.value = Math.max(0, Math.min(1, opacity));
     this.uniforms.brightness.value = Math.max(0, brightness);
     this.uniforms.sizeScale.value = Math.max(0.01, splatSizeScale);
-    this.currentSplatSizeScale = Math.max(0.01, splatSizeScale);
 
     const safeScale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
     this.mesh.scale.setScalar(safeScale);
@@ -549,10 +522,6 @@ export class SplatController {
     if (this.gpuSorter) {
       this.gpuSorter.dispose();
       this.gpuSorter = null;
-    }
-    if (this.splatProjection) {
-      this.splatProjection.dispose();
-      this.splatProjection = null;
     }
   }
 }

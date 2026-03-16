@@ -162,5 +162,22 @@ describe("appStore undo/redo", () => {
       targetFps: 120
     });
   });
+
+  it("falls back to immediate camera updates when no transition driver is registered", () => {
+    const store = createAppStore("electron-rw");
+
+    store.getState().actions.requestCameraState({
+      mode: "perspective",
+      position: [2, 3, 4],
+      target: [0, 0, 0],
+      fov: 50,
+      zoom: 1,
+      near: 0.01,
+      far: 1000
+    });
+
+    expect(store.getState().state.camera.position).toEqual([2, 3, 4]);
+    expect(store.getState().state.dirty).toBe(true);
+  });
 });
 

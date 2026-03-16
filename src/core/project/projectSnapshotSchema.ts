@@ -226,7 +226,7 @@ const projectSnapshotSchema = z.object({
         far: z.number()
       })
     })
-  ),
+  ).optional(),
   time: z.object({
     running: z.boolean(),
     speed: z.union([z.literal(0.125), z.literal(0.25), z.literal(0.5), z.literal(1), z.literal(2), z.literal(4)]),

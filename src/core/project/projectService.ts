@@ -45,7 +45,6 @@ export class ProjectService {
       actors: manifest.actors,
       components: manifest.components,
       camera: manifest.camera,
-      cameraBookmarks: manifest.cameraBookmarks,
       time: manifest.time,
       materials: manifest.materials,
       assets: manifest.assets,

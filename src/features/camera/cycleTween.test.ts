@@ -9,15 +9,11 @@ import {
 import type { CameraState } from "@/core/types";
 
 describe("camera cycle tween helpers", () => {
-  it("builds targets as presets first and bookmarks after", () => {
+  it("builds preset-only camera cycle targets", () => {
     const state = createInitialState("electron-rw");
-    state.cameraBookmarks = [
-      { id: "a", name: "Shot A", camera: structuredClone(state.camera) },
-      { id: "b", name: "Shot B", camera: structuredClone(state.camera) }
-    ];
     const targets = buildCameraCycleTargets(state);
-    expect(targets.slice(0, CAMERA_PRESET_ORDER.length).every((entry) => entry.source === "preset")).toBe(true);
-    expect(targets.slice(CAMERA_PRESET_ORDER.length).map((entry) => entry.id)).toEqual(["bookmark:a", "bookmark:b"]);
+    expect(targets).toHaveLength(CAMERA_PRESET_ORDER.length);
+    expect(targets.every((entry) => entry.source === "preset")).toBe(true);
   });
 
   it("finds nearest index for current camera", () => {

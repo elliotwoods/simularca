@@ -58,7 +58,6 @@ describe("project snapshot schema", () => {
       actors: state.actors,
       components: state.components,
       camera: state.camera,
-      cameraBookmarks: state.cameraBookmarks,
       time: state.time,
       materials: state.materials,
       assets: state.assets
@@ -112,7 +111,6 @@ describe("project snapshot schema", () => {
         near: 0.01,
         far: 1000
       },
-      cameraBookmarks: [],
       time: {
         running: false,
         speed: 1,
@@ -164,7 +162,6 @@ describe("project snapshot schema", () => {
       },
       components: {},
       camera: createInitialState("electron-rw", "demo", "main").camera,
-      cameraBookmarks: [],
       time: createInitialState("electron-rw", "demo", "main").time,
       materials: {},
       assets: []

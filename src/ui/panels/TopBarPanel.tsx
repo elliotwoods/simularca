@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCube,
-  faCamera,
   faCirclePause,
   faCirclePlay,
   faForwardStep,
@@ -299,26 +298,6 @@ export function TopBarPanel(props: TopBarPanelProps) {
     <div className="top-toolbar">
       <div className="toolbar-group">
         <label title="Camera presets">Camera</label>
-        <button
-          type="button"
-          title="Save camera bookmark"
-          onClick={() => {
-            void props
-              .requestTextInput({
-                title: "Save Camera Bookmark",
-                label: "Bookmark name",
-                initialValue: `Camera ${state.cameraBookmarks.length + 1}`,
-                confirmLabel: "Save"
-              })
-              .then((name) => {
-                if (name) {
-                  kernel.store.getState().actions.saveCameraBookmark(name);
-                }
-              });
-          }}
-        >
-          <FontAwesomeIcon icon={faCamera} />
-        </button>
         <select
           onChange={(event) => {
             kernel.store.getState().actions.applyCameraPreset(event.target.value as CameraPreset);
@@ -328,22 +307,6 @@ export function TopBarPanel(props: TopBarPanelProps) {
           {CAMERA_PRESETS.map((preset) => (
             <option key={preset} value={preset}>
               {preset}
-            </option>
-          ))}
-        </select>
-        <select
-          value=""
-          onChange={(event) => {
-            if (!event.target.value) {
-              return;
-            }
-            kernel.store.getState().actions.loadCameraBookmark(event.target.value);
-          }}
-        >
-          <option value="">Bookmarks...</option>
-          {state.cameraBookmarks.map((bookmark) => (
-            <option key={bookmark.id} value={bookmark.id}>
-              {bookmark.name}
             </option>
           ))}
         </select>

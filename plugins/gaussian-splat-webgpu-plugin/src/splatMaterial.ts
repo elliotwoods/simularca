@@ -22,7 +22,8 @@ import {
   uint,
   uniform,
   storage,
-  vertexIndex,
+  instanceIndex,
+  positionGeometry,
   cameraProjectionMatrix,
   modelViewMatrix,
   varyingProperty,
@@ -48,9 +49,6 @@ export interface SplatBuffers {
   // Optional: chunk-based frustum culling buffers
   chunkIds?: StorageBufferAttribute;        // uint per splat → chunk index
   chunkVisibility?: StorageBufferAttribute; // uint per chunk → 1 visible, 0 culled
-  // Optional: precomputed ellipse data from compute pre-pass (Phase 1)
-  ellipseA?: StorageBufferAttribute; // vec4: (radius1, radius2, cosT, sinT)
-  ellipseB?: StorageBufferAttribute; // vec4: (clipX, clipY, clipZ, clipW)
 }
 
 /**
@@ -83,14 +81,23 @@ export function createSplatMaterial(
   const uFocalY = uniform(1.0);
   const uSizeScale = uniform(1.0);
 
-  // Detect whether compute pre-pass ellipse buffers are available
-  const hasPrepass = !!(buffers.ellipseA && buffers.ellipseB);
-
   // Storage buffer nodes (vec4 to match WGSL array alignment — xyz used, w=0 padding)
+  const positionsStorage: any = storage(buffers.positions, "vec4", count);
+  const covAStorage: any = storage(buffers.covA, "vec4", count);
+  const covBStorage: any = storage(buffers.covB, "vec4", count);
   const colorsStorage: any = storage(buffers.colors, "vec4", count);
   // sortedIndices may be padded to power-of-2 for GPU bitonic sort
   const indicesCount = paddedCount ?? count;
   const sortedIndicesStorage: any = storage(buffers.sortedIndices, "uint", indicesCount);
+
+  // Optional: chunk visibility storage nodes for frustum culling
+  const hasChunkCulling = !!(buffers.chunkIds && buffers.chunkVisibility && numChunks);
+  let chunkIdsStorage: any = null;
+  let chunkVisibilityStorage: any = null;
+  if (hasChunkCulling && buffers.chunkIds && buffers.chunkVisibility && numChunks) {
+    chunkIdsStorage = storage(buffers.chunkIds, "uint", count);
+    chunkVisibilityStorage = storage(buffers.chunkVisibility, "uint", numChunks);
+  }
 
   // Varyings to pass from vertex to fragment shader
   const vColor: any = varyingProperty("vec3", "vSplatColor");
@@ -98,233 +105,153 @@ export function createSplatMaterial(
   const vQuadUV: any = varyingProperty("vec2", "vQuadUV");
   const vValid: any = varyingProperty("float", "vValid");
 
-  let vertexNode: any;
+  // Vertex shader
+  const vertexNode = Fn(() => {
+    // Look up the actual splat index via sort indirection
+    const splatIdx: any = sortedIndicesStorage.element(instanceIndex);
 
-  // Vertex pulling: derive splat index and quad corner from vertexIndex
-  // 6 vertices per splat (2 triangles): splatSeq = vertexIndex / 6
-  // triVert (0-5) maps to quad corners: BL, BR, TR, BL, TR, TL
+    // Read per-splat data (extract xyz from vec4 storage)
+    const center: any = positionsStorage.element(splatIdx).xyz.toVar("center");
+    const covA: any = covAStorage.element(splatIdx).xyz.toVar("covA");
+    const covB: any = covBStorage.element(splatIdx).xyz.toVar("covB");
+    const colorData: any = colorsStorage.element(splatIdx).toVar("colorData");
 
-  if (hasPrepass) {
-    // ---- Pre-pass path: lightweight vertex shader reads precomputed ellipse data ----
-    const ellipseAStorage: any = storage(buffers.ellipseA!, "vec4", count);
-    const ellipseBStorage: any = storage(buffers.ellipseB!, "vec4", count);
+    // Transform center to view space
+    const mv: any = modelViewMatrix;
+    const viewPos: any = mv.mul(vec4(center, 1.0)).toVar("viewPos");
 
-    vertexNode = Fn(() => {
-      // Derive splat ordinal and quad corner from vertexIndex
-      const splatSeq: any = vertexIndex.div(uint(6));
-      const triVert: any = vertexIndex.sub(splatSeq.mul(uint(6)));
+    // Cull splats behind camera (initial check — merged with frustum cull below)
+    const behindCamera: any = viewPos.z.greaterThan(float(0.0));
 
-      // Map triVert (0-5) to quadPos: BL(-1,-1), BR(1,-1), TR(1,1), BL, TR, TL(-1,1)
-      const isRight: any = triVert.equal(uint(1)).or(triVert.equal(uint(2))).or(triVert.equal(uint(4)));
-      const isTop: any = triVert.equal(uint(2)).or(triVert.equal(uint(4))).or(triVert.equal(uint(5)));
-      const qx: any = select(isRight, float(1.0), float(-1.0));
-      const qy: any = select(isTop, float(1.0), float(-1.0));
-      const quadPos: any = vec2(qx, qy);
-
-      const splatIdx: any = sortedIndicesStorage.element(splatSeq);
-
-      // Read precomputed ellipse data
-      const ellA: any = ellipseAStorage.element(splatIdx);
-      const ellB: any = ellipseBStorage.element(splatIdx);
-      const colorData: any = colorsStorage.element(splatIdx);
-
-      const radius1: any = ellA.x;
-      const radius2: any = ellA.y;
-      const cosT: any = ellA.z;
-      const sinT: any = ellA.w;
-
-      // radius1 == 0 is the culled sentinel from the compute pre-pass
-      vValid.assign(select(radius1.greaterThan(float(0.0)), float(1.0), float(0.0)));
-
-      // Scale and rotate the quad vertex
-      const scaled: any = vec2(quadPos.x.mul(radius1), quadPos.y.mul(radius2));
-      const rotated: any = vec2(
-        scaled.x.mul(cosT).sub(scaled.y.mul(sinT)),
-        scaled.x.mul(sinT).add(scaled.y.mul(cosT))
-      );
-
-      // Clip position from pre-pass
-      const clipPos: any = ellB;
-
-      // Convert pixel offset to NDC offset
-      const ndcOffset: any = vec2(
-        rotated.x.div(uViewportSize.x.mul(0.5)),
-        rotated.y.div(uViewportSize.y.mul(0.5))
-      );
-
-      // Pass varyings to fragment
-      vColor.assign(vec3(colorData.x, colorData.y, colorData.z).mul(uBrightness));
-      vOpacity.assign(colorData.w.mul(uOpacity));
-      vQuadUV.assign(quadPos);
-
-      // Final clip position with ellipse offset
-      return vec4(
-        clipPos.x.add(ndcOffset.x.mul(clipPos.w)),
-        clipPos.y.add(ndcOffset.y.mul(clipPos.w)),
-        clipPos.z,
-        clipPos.w
-      );
-    })();
-  } else {
-    // ---- Fallback path: full Cov3D→Cov2D math in vertex shader ----
-    const positionsStorage: any = storage(buffers.positions, "vec4", count);
-    const covAStorage: any = storage(buffers.covA, "vec4", count);
-    const covBStorage: any = storage(buffers.covB, "vec4", count);
-
-    // Optional: chunk visibility storage nodes for frustum culling
-    const hasChunkCulling = !!(buffers.chunkIds && buffers.chunkVisibility && numChunks);
-    let chunkIdsStorage: any = null;
-    let chunkVisibilityStorage: any = null;
-    if (hasChunkCulling && buffers.chunkIds && buffers.chunkVisibility && numChunks) {
-      chunkIdsStorage = storage(buffers.chunkIds, "uint", count);
-      chunkVisibilityStorage = storage(buffers.chunkVisibility, "uint", numChunks);
+    // Chunk-based frustum culling: if the splat's chunk is not visible, cull it
+    let shouldCull: any = behindCamera;
+    if (hasChunkCulling && chunkIdsStorage && chunkVisibilityStorage) {
+      const chunkId: any = chunkIdsStorage.element(splatIdx);
+      const chunkVisible: any = chunkVisibilityStorage.element(chunkId);
+      const chunkCulled: any = chunkVisible.equal(uint(0));
+      shouldCull = behindCamera.or(chunkCulled);
     }
+    vValid.assign(select(shouldCull, float(0.0), float(1.0)));
 
-    vertexNode = Fn(() => {
-      // Derive splat ordinal and quad corner from vertexIndex
-      const splatSeq: any = vertexIndex.div(uint(6));
-      const triVert: any = vertexIndex.sub(splatSeq.mul(uint(6)));
+    // 3D covariance components
+    const c00: any = covA.x;
+    const c01: any = covA.y;
+    const c02: any = covA.z;
+    const c11: any = covB.x;
+    const c12: any = covB.y;
+    const c22: any = covB.z;
 
-      const isRight: any = triVert.equal(uint(1)).or(triVert.equal(uint(2))).or(triVert.equal(uint(4)));
-      const isTop: any = triVert.equal(uint(2)).or(triVert.equal(uint(4))).or(triVert.equal(uint(5)));
-      const qx: any = select(isRight, float(1.0), float(-1.0));
-      const qy: any = select(isTop, float(1.0), float(-1.0));
-      const quadPos: any = vec2(qx, qy);
+    // Extract 3x3 rotation from modelViewMatrix
+    // modelViewMatrix is view * model (column-major in Three.js)
+    const r00: any = mv.element(0).element(0);
+    const r01: any = mv.element(1).element(0);
+    const r02: any = mv.element(2).element(0);
+    const r10: any = mv.element(0).element(1);
+    const r11: any = mv.element(1).element(1);
+    const r12: any = mv.element(2).element(1);
+    const r20: any = mv.element(0).element(2);
+    const r21: any = mv.element(1).element(2);
+    const r22: any = mv.element(2).element(2);
 
-      // Look up the actual splat index via sort indirection
-      const splatIdx: any = sortedIndicesStorage.element(splatSeq);
+    // Compute W * Cov3D (t = W * C, 3x3 * symmetric)
+    const t00: any = r00.mul(c00).add(r01.mul(c01)).add(r02.mul(c02));
+    const t01: any = r00.mul(c01).add(r01.mul(c11)).add(r02.mul(c12));
+    const t02: any = r00.mul(c02).add(r01.mul(c12)).add(r02.mul(c22));
+    const t10: any = r10.mul(c00).add(r11.mul(c01)).add(r12.mul(c02));
+    const t11_v: any = r10.mul(c01).add(r11.mul(c11)).add(r12.mul(c12));
+    const t12: any = r10.mul(c02).add(r11.mul(c12)).add(r12.mul(c22));
+    const t20: any = r20.mul(c00).add(r21.mul(c01)).add(r22.mul(c02));
+    const t21: any = r20.mul(c01).add(r21.mul(c11)).add(r22.mul(c12));
+    const t22_v: any = r20.mul(c02).add(r21.mul(c12)).add(r22.mul(c22));
 
-      // Read per-splat data (extract xyz from vec4 storage)
-      const center: any = positionsStorage.element(splatIdx).xyz.toVar("center");
-      const covA: any = covAStorage.element(splatIdx).xyz.toVar("covA");
-      const covB: any = covBStorage.element(splatIdx).xyz.toVar("covB");
-      const colorData: any = colorsStorage.element(splatIdx).toVar("colorData");
+    // Cov_view = t * W^T (only upper triangle)
+    const cv00: any = t00.mul(r00).add(t01.mul(r01)).add(t02.mul(r02));
+    const cv01: any = t00.mul(r10).add(t01.mul(r11)).add(t02.mul(r12));
+    const cv02: any = t00.mul(r20).add(t01.mul(r21)).add(t02.mul(r22));
+    const cv11: any = t10.mul(r10).add(t11_v.mul(r11)).add(t12.mul(r12));
+    const cv12: any = t10.mul(r20).add(t11_v.mul(r21)).add(t12.mul(r22));
+    const cv22: any = t20.mul(r20).add(t21.mul(r21)).add(t22_v.mul(r22));
 
-      // Transform center to view space
-      const mv: any = modelViewMatrix;
-      const viewPos: any = mv.mul(vec4(center, 1.0)).toVar("viewPos");
+    // Perspective projection Jacobian
+    // Clamp tz to prevent blow-up when camera is very close to a splat
+    const tz: any = max(viewPos.z.negate(), float(0.2)); // positive depth, min 0.2
+    const tz2: any = tz.mul(tz);
+    const vx: any = viewPos.x;
+    const vy: any = viewPos.y;
 
-      // Cull splats behind camera (initial check — merged with frustum cull below)
-      const behindCamera: any = viewPos.z.greaterThan(float(0.0));
+    const j00: any = uFocalX.div(tz);
+    const j02: any = uFocalX.mul(vx).div(tz2);
+    const j11_jac: any = uFocalY.div(tz);
+    const j12: any = uFocalY.mul(vy).div(tz2);
 
-      // Chunk-based frustum culling: if the splat's chunk is not visible, cull it
-      let shouldCull: any = behindCamera;
-      if (hasChunkCulling && chunkIdsStorage && chunkVisibilityStorage) {
-        const chunkId: any = chunkIdsStorage.element(splatIdx);
-        const chunkVisible: any = chunkVisibilityStorage.element(chunkId);
-        const chunkCulled: any = chunkVisible.equal(uint(0));
-        shouldCull = behindCamera.or(chunkCulled);
-      }
-      vValid.assign(select(shouldCull, float(0.0), float(1.0)));
+    // Cov2D = J * Cov_view * J^T (2x2 symmetric)
+    const jc00: any = j00.mul(cv00).add(j02.mul(cv02));
+    const jc01: any = j00.mul(cv01).add(j02.mul(cv12));
+    const jc02_v: any = j00.mul(cv02).add(j02.mul(cv22));
+    const jc11_v: any = j11_jac.mul(cv11).add(j12.mul(cv12));
+    const jc12_v: any = j11_jac.mul(cv12).add(j12.mul(cv22));
 
-      // 3D covariance components
-      const c00: any = covA.x;
-      const c01: any = covA.y;
-      const c02: any = covA.z;
-      const c11: any = covB.x;
-      const c12: any = covB.y;
-      const c22: any = covB.z;
+    // Final 2D cov (with low-pass filter for stability, 0.3 px²)
+    const s00: any = jc00.mul(j00).add(jc02_v.mul(j02)).add(float(0.3));
+    const s01: any = jc01.mul(j11_jac).add(jc02_v.mul(j12));
+    const s11: any = jc11_v.mul(j11_jac).add(jc12_v.mul(j12)).add(float(0.3));
 
-      // Extract 3x3 rotation from modelViewMatrix
-      const r00: any = mv.element(0).element(0);
-      const r01: any = mv.element(1).element(0);
-      const r02: any = mv.element(2).element(0);
-      const r10: any = mv.element(0).element(1);
-      const r11: any = mv.element(1).element(1);
-      const r12: any = mv.element(2).element(1);
-      const r20: any = mv.element(0).element(2);
-      const r21: any = mv.element(1).element(2);
-      const r22: any = mv.element(2).element(2);
+    // Eigendecomposition of 2x2 symmetric matrix (closed form)
+    const halfSum: any = s00.add(s11).mul(0.5);
+    const diff: any = s00.sub(s11);
+    const discriminant: any = diff.mul(diff).add(s01.mul(s01).mul(4.0));
+    const halfSqrtDisc: any = sqrt(max(discriminant, float(1e-8))).mul(0.5);
 
-      // Compute W * Cov3D (t = W * C, 3x3 * symmetric)
-      const t00: any = r00.mul(c00).add(r01.mul(c01)).add(r02.mul(c02));
-      const t01: any = r00.mul(c01).add(r01.mul(c11)).add(r02.mul(c12));
-      const t02: any = r00.mul(c02).add(r01.mul(c12)).add(r02.mul(c22));
-      const t10: any = r10.mul(c00).add(r11.mul(c01)).add(r12.mul(c02));
-      const t11_v: any = r10.mul(c01).add(r11.mul(c11)).add(r12.mul(c12));
-      const t12: any = r10.mul(c02).add(r11.mul(c12)).add(r12.mul(c22));
-      const t20: any = r20.mul(c00).add(r21.mul(c01)).add(r22.mul(c02));
-      const t21: any = r20.mul(c01).add(r21.mul(c11)).add(r22.mul(c12));
-      const t22_v: any = r20.mul(c02).add(r21.mul(c12)).add(r22.mul(c22));
+    const lambda1: any = max(halfSum.add(halfSqrtDisc), float(0.1));
+    const lambda2: any = max(halfSum.sub(halfSqrtDisc), float(0.1));
 
-      // Cov_view = t * W^T (only upper triangle)
-      const cv00: any = t00.mul(r00).add(t01.mul(r01)).add(t02.mul(r02));
-      const cv01: any = t00.mul(r10).add(t01.mul(r11)).add(t02.mul(r12));
-      const cv02: any = t00.mul(r20).add(t01.mul(r21)).add(t02.mul(r22));
-      const cv11: any = t10.mul(r10).add(t11_v.mul(r11)).add(t12.mul(r12));
-      const cv12: any = t10.mul(r20).add(t11_v.mul(r21)).add(t12.mul(r22));
-      const cv22: any = t20.mul(r20).add(t21.mul(r21)).add(t22_v.mul(r22));
+    // Ellipse radii: sqrt(8)-sigma ≈ 2.828σ matching Spark's maxStdDev.
+    // Clamped to 1024px to prevent screen-filling quads.
+    // uSizeScale allows interactive testing of splat sizes.
+    const maxStdDev: any = float(Math.sqrt(8));
+    const radius1: any = min(sqrt(lambda1).mul(maxStdDev).mul(uSizeScale), float(1024.0));
+    const radius2: any = min(sqrt(lambda2).mul(maxStdDev).mul(uSizeScale), float(1024.0));
 
-      // Perspective projection Jacobian
-      const tz: any = max(viewPos.z.negate(), float(0.2));
-      const tz2: any = tz.mul(tz);
-      const vx: any = viewPos.x;
-      const vy: any = viewPos.y;
+    // Eigenvector rotation angle (atan with 2 args = atan2)
+    const theta: any = atan(s01.mul(2.0), diff).mul(0.5);
+    const cosT: any = cos(theta);
+    const sinT: any = sin(theta);
 
-      const j00: any = uFocalX.div(tz);
-      const j02: any = uFocalX.mul(vx).div(tz2);
-      const j11_jac: any = uFocalY.div(tz);
-      const j12: any = uFocalY.mul(vy).div(tz2);
+    // Scale and rotate the quad vertex
+    const quadPos: any = positionGeometry.xy; // [-1..1]
+    const scaled: any = vec2(quadPos.x.mul(radius1), quadPos.y.mul(radius2));
+    const rotated: any = vec2(
+      scaled.x.mul(cosT).sub(scaled.y.mul(sinT)),
+      scaled.x.mul(sinT).add(scaled.y.mul(cosT))
+    );
 
-      // Cov2D = J * Cov_view * J^T (2x2 symmetric)
-      const jc00: any = j00.mul(cv00).add(j02.mul(cv02));
-      const jc01: any = j00.mul(cv01).add(j02.mul(cv12));
-      const jc02_v: any = j00.mul(cv02).add(j02.mul(cv22));
-      const jc11_v: any = j11_jac.mul(cv11).add(j12.mul(cv12));
-      const jc12_v: any = j11_jac.mul(cv12).add(j12.mul(cv22));
+    // Project center to clip space
+    const clipPos: any = cameraProjectionMatrix.mul(viewPos).toVar("clipPos");
 
-      // Final 2D cov (with low-pass filter for stability, 0.3 px²)
-      const s00: any = jc00.mul(j00).add(jc02_v.mul(j02)).add(float(0.3));
-      const s01: any = jc01.mul(j11_jac).add(jc02_v.mul(j12));
-      const s11: any = jc11_v.mul(j11_jac).add(jc12_v.mul(j12)).add(float(0.3));
+    // Convert pixel offset to NDC offset
+    const ndcOffset: any = vec2(
+      rotated.x.div(uViewportSize.x.mul(0.5)),
+      rotated.y.div(uViewportSize.y.mul(0.5))
+    );
 
-      // Eigendecomposition of 2x2 symmetric matrix (closed form)
-      const halfSum: any = s00.add(s11).mul(0.5);
-      const diff: any = s00.sub(s11);
-      const discriminant: any = diff.mul(diff).add(s01.mul(s01).mul(4.0));
-      const halfSqrtDisc: any = sqrt(max(discriminant, float(1e-8))).mul(0.5);
+    // NOTE: NDC clip test removed — it had a per-vertex vs per-splat
+    // inconsistency (ndcOffset varies per quad vertex, causing vValid varying
+    // interpolation artifacts at screen edges). Chunk-based frustum culling
+    // handles off-screen culling at a coarser (and correct) level.
 
-      const lambda1: any = max(halfSum.add(halfSqrtDisc), float(0.1));
-      const lambda2: any = max(halfSum.sub(halfSqrtDisc), float(0.1));
+    // Pass varyings to fragment
+    vColor.assign(vec3(colorData.x, colorData.y, colorData.z).mul(uBrightness));
+    vOpacity.assign(colorData.w.mul(uOpacity));
+    vQuadUV.assign(quadPos);
 
-      const maxStdDev: any = float(Math.sqrt(8));
-      const radius1: any = min(sqrt(lambda1).mul(maxStdDev).mul(uSizeScale), float(1024.0));
-      const radius2: any = min(sqrt(lambda2).mul(maxStdDev).mul(uSizeScale), float(1024.0));
-
-      const theta: any = atan(s01.mul(2.0), diff).mul(0.5);
-      const cosT: any = cos(theta);
-      const sinT: any = sin(theta);
-
-      // Scale and rotate the quad vertex
-      const scaled: any = vec2(quadPos.x.mul(radius1), quadPos.y.mul(radius2));
-      const rotated: any = vec2(
-        scaled.x.mul(cosT).sub(scaled.y.mul(sinT)),
-        scaled.x.mul(sinT).add(scaled.y.mul(cosT))
-      );
-
-      // Project center to clip space
-      const clipPos: any = cameraProjectionMatrix.mul(viewPos).toVar("clipPos");
-
-      // Convert pixel offset to NDC offset
-      const ndcOffset: any = vec2(
-        rotated.x.div(uViewportSize.x.mul(0.5)),
-        rotated.y.div(uViewportSize.y.mul(0.5))
-      );
-
-      // Pass varyings to fragment
-      vColor.assign(vec3(colorData.x, colorData.y, colorData.z).mul(uBrightness));
-      vOpacity.assign(colorData.w.mul(uOpacity));
-      vQuadUV.assign(quadPos);
-
-      // Final clip position with ellipse offset
-      return vec4(
-        clipPos.x.add(ndcOffset.x.mul(clipPos.w)),
-        clipPos.y.add(ndcOffset.y.mul(clipPos.w)),
-        clipPos.z,
-        clipPos.w
-      );
-    })();
-  }
+    // Final clip position with ellipse offset
+    return vec4(
+      clipPos.x.add(ndcOffset.x.mul(clipPos.w)),
+      clipPos.y.add(ndcOffset.y.mul(clipPos.w)),
+      clipPos.z,
+      clipPos.w
+    );
+  })();
 
   // Fragment shader
   const fragmentNode = Fn(() => {
