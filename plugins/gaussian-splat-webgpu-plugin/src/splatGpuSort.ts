@@ -38,8 +38,16 @@ const CAMERA_MOVE_THRESHOLD_POS = 1e-4;
 const CAMERA_MOVE_THRESHOLD_QUAT = 1e-4;
 
 // Temporal sort coherence: skip full sort when camera rotates slowly
-const SORT_ANGLE_THRESHOLD = 0.01; // ~0.57° — re-sort when exceeded
-const MAX_SKIP_FRAMES = 4;         // force sort at least every 5th frame
+const SORT_ANGLE_THRESHOLD = 0.02; // ~1.15° — re-sort when exceeded
+const MAX_SKIP_FRAMES = 8;         // force sort at least every 9th frame
+
+/** Per-frame sort statistics for inspector status display. */
+export interface SortFrameStats {
+  sortMode: "full" | "depth-only" | "skipped";
+  dispatches: number;
+  framesSinceFullSort: number;
+  angleSinceSort: number;
+}
 
 function nextPowerOfTwo(n: number): number {
   let p = 1;
@@ -227,42 +235,47 @@ export class GpuSorter {
   updateChunkVisibility(visibility: Uint32Array): void {
     if (!this.chunkVisibilityBuffer) return;
     const arr = this.chunkVisibilityBuffer.array as Uint32Array;
+    // Only mark dirty if data actually changed (avoid forcing full sort every frame)
+    let changed = false;
+    for (let i = 0; i < visibility.length; i++) {
+      if (arr[i] !== visibility[i]) { changed = true; break; }
+    }
     arr.set(visibility);
     this.chunkVisibilityBuffer.needsUpdate = true;
-    this.visibilityDirty = true;
+    if (changed) this.visibilityDirty = true;
   }
 
   /**
    * Run the GPU sort if the camera has moved or visibility changed.
    * Called from onBeforeRender with the renderer and camera.
    */
-  sort(renderer: any, camera: THREE.Camera, modelWorldMatrix: THREE.Matrix4): void {
+  sort(renderer: any, camera: THREE.Camera, modelWorldMatrix: THREE.Matrix4): SortFrameStats {
     // Guard: renderer.compute may not be available during scene transitions
-    // (e.g. when reloading, the renderer might be a WebGLRenderer or in a
-    // transitional state where compute shaders aren't yet available)
-    if (typeof renderer.compute !== "function") return;
+    if (typeof renderer.compute !== "function") {
+      return { sortMode: "skipped", dispatches: 0, framesSinceFullSort: this.framesSinceSort, angleSinceSort: 0 };
+    }
+
+    const angleSinceSort = this.hasSortedOnce ? this.angleSinceLastSort(camera) : 0;
 
     const cameraMoved = this.hasCameraMoved(camera);
     if (!cameraMoved && !this.visibilityDirty && this.hasSortedOnce) {
-      return; // Camera stationary → skip entirely
+      return { sortMode: "skipped", dispatches: 0, framesSinceFullSort: this.framesSinceSort, angleSinceSort };
     }
 
     // Compute model-view matrix and extract row 2 (Z axis in view space)
     this.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, modelWorldMatrix);
     const me = this.modelViewMatrix.elements;
-    // Row 2 of the model-view matrix (column-major storage):
-    // Row i is at elements[i], [i+4], [i+8], [i+12]
-    // Row 2 = elements[2], [6], [10], [14]
     this.uMvRow2.value.set(me[2], me[6], me[10], me[14]);
 
     // Always recompute depths (1 dispatch — cheap)
     renderer.compute(this.depthComputeNode);
+    let dispatches = 1;
 
     // Temporal coherence: decide if full sort is needed
     this.framesSinceSort++;
     const needsFullSort = !this.hasSortedOnce
       || this.visibilityDirty
-      || this.angleSinceLastSort(camera) > SORT_ANGLE_THRESHOLD
+      || angleSinceSort > SORT_ANGLE_THRESHOLD
       || this.framesSinceSort >= MAX_SKIP_FRAMES;
 
     if (needsFullSort) {
@@ -273,17 +286,22 @@ export class GpuSorter {
           this.uK.value = k;
           this.uJ.value = j;
           renderer.compute(this.bitonicStepNode);
+          dispatches++;
         }
       }
       this.framesSinceSort = 0;
       this.lastSortCameraQuaternion.copy(camera.quaternion);
     }
 
+    const sortMode = needsFullSort ? "full" as const : "depth-only" as const;
+
     // Save camera snapshot for movement detection
     this.lastCameraPosition.copy(camera.position);
     this.lastCameraQuaternion.copy(camera.quaternion);
     this.hasSortedOnce = true;
     this.visibilityDirty = false;
+
+    return { sortMode, dispatches, framesSinceFullSort: this.framesSinceSort, angleSinceSort };
   }
 
   private hasCameraMoved(camera: THREE.Camera): boolean {

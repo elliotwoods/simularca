@@ -5,7 +5,22 @@
  * Follows the same async load-token pattern as SparkSplatController to guard
  * against stale load completions when the user swaps assets rapidly.
  *
- * Phase 5: GPU bitonic sort + chunk-based frustum culling + NDC clip culling.
+ * Current pipeline:
+ *   - Rendering: InstancedBufferGeometry + instanceIndex (4 verts/splat, instanced)
+ *   - Sorting: GPU bitonic sort with temporal coherence (skip sort on small camera moves)
+ *   - Culling: chunk-based frustum culling (CPU visibility → GPU upload)
+ *   - Projection: compute pre-pass (Cov3D → Cov2D once per splat, not 4× per vertex)
+ *
+ * IMPORTANT for future optimization work:
+ *   - Vertex pulling (vertexIndex + flat draw) was attempted but produced blank output.
+ *     Three.js WebGPU may not support non-instanced draws with vertexIndex correctly.
+ *   - Radix sort was attempted but Three.js TSL workgroupArray("uint") does not produce
+ *     atomic<u32> WGSL types, so atomicAdd on workgroup shared memory fails.
+ *   - Compute pre-pass (Cov3D→Cov2D in compute shader) was coded but never validated.
+ *   - Any rendering pipeline change (geometry type, shader structure, buffer layout)
+ *     MUST be tested incrementally — only one change at a time.
+ *   - The status object (setActorStatus) should reflect current sort method and any
+ *     operational parameters so they are visible in the inspector.
  */
 
 import * as THREE from "three";
@@ -14,7 +29,8 @@ import { tryParseSplatBinary } from "./splatBinaryFormat";
 import { parsePlyGaussianData } from "./plyParser";
 import { precomputeCovariances, computeBounds } from "./mathUtils";
 import { createSplatMaterial, type SplatBuffers, type SplatUniforms } from "./splatMaterial";
-import { GpuSorter } from "./splatGpuSort";
+import { GpuSorter, type SortFrameStats } from "./splatGpuSort";
+import { SplatProjection } from "./splatProjection";
 import { buildChunks, updateChunkVisibility, type ChunkData } from "./splatChunks";
 
 function nextPowerOfTwo(n: number): number {
@@ -54,10 +70,23 @@ export class SplatController {
   // GPU sorting state
   private gpuSorter: GpuSorter | null = null;
 
+  // Compute pre-pass for Cov2D projection (runs 1× per splat instead of 4× in vertex shader)
+  private splatProjection: SplatProjection | null = null;
+  private currentSplatSizeScale = 1;
+
+  // Cached to avoid per-frame allocation
+  private readonly _cachedViewportSize = new THREE.Vector2();
+
   // Chunk-based frustum culling state
   private chunkData: ChunkData | null = null;
   private chunkVisibilityArray: Uint32Array | null = null;
   private lastVisibleChunks = 0;
+
+  // Per-frame status reporting
+  private setActorStatusRef: ((status: unknown) => void) | null = null;
+  private lastSortStats: SortFrameStats | null = null;
+  private statusFrameCounter = 0;
+  private lastReportedSortMode = "";
 
   // One-shot diagnostics flag
   private hasLoggedDiagnostics = false;
@@ -81,6 +110,9 @@ export class SplatController {
     const opacity = typeof params.opacity === "number" ? params.opacity : 1;
     const brightness = typeof params.brightness === "number" ? params.brightness : 1;
     const splatSizeScale = typeof params.splatSizeScale === "number" ? params.splatSizeScale : 1;
+
+    // Save reference for per-frame status updates
+    this.setActorStatusRef = context.setActorStatus;
 
     // Asset cleared
     if (!assetId) {
@@ -246,12 +278,28 @@ export class SplatController {
         chunkVisibility: chunkVisibilityAttr
       };
 
-      // Create material + GPU sorter (wrapped in try-catch for cleaner error reporting
-      // if shader compilation fails, e.g. when accidentally running under WebGL2)
+      // Create compute pre-pass, material, and GPU sorter
+      // Wrapped in try-catch for cleaner error reporting if shader compilation fails
       let material: THREE.Material;
       let uniforms: SplatUniforms;
       let gpuSorter: GpuSorter;
+      let splatProjection: SplatProjection | null = null;
       try {
+        // Compute pre-pass: project Cov3D → Cov2D once per splat (not 4× per vertex)
+        splatProjection = new SplatProjection(
+          positionsAttr,
+          buffers.covA,
+          buffers.covB,
+          count,
+          chunkIdsAttr,
+          numChunks,
+          chunkVisibilityAttr
+        );
+
+        // Attach precomputed ellipse buffers so material uses lightweight vertex shader
+        buffers.ellipseA = splatProjection.ellipseABuffer;
+        buffers.ellipseB = splatProjection.ellipseBBuffer;
+
         const result = createSplatMaterial(buffers, count, paddedCount, numChunks);
         material = result.material;
         uniforms = result.uniforms;
@@ -296,6 +344,7 @@ export class SplatController {
       this.pointCount = count;
       this.bounds = bounds;
       this.gpuSorter = gpuSorter;
+      this.splatProjection = splatProjection;
       this.chunkData = chunkData;
       this.chunkVisibilityArray = visibilityArray;
       this.lastVisibleChunks = numChunks;
@@ -323,7 +372,9 @@ export class SplatController {
           boundsMin: bounds.min,
           boundsMax: bounds.max,
           colorSource: data.colorSource,
-          sortMethod: "gpu-bitonic",
+          sortMethod: "gpu-bitonic-temporal",
+          temporalCoherence: `angle=${0.01}rad, maxSkip=${4}`,
+          projectionPrepass: splatProjection !== null,
           chunkCount: numChunks
         },
         updatedAtIso: new Date().toISOString()
@@ -404,7 +455,7 @@ export class SplatController {
     // Update viewport size from renderer
     // Prefer getDrawingBufferSize (actual rendering resolution) over getSize (CSS pixels)
     // to match the coordinate space the projection matrix was built against
-    const size = new THREE.Vector2();
+    const size = this._cachedViewportSize;
     if (typeof renderer.getDrawingBufferSize === "function") {
       renderer.getDrawingBufferSize(size);
     } else if (typeof renderer.getSize === "function") {
@@ -479,7 +530,48 @@ export class SplatController {
 
     // GPU depth sort (entirely on GPU — no CPU→GPU transfer needed for sort data)
     if (this.gpuSorter && this.mesh) {
-      this.gpuSorter.sort(renderer, camera, this.mesh.matrixWorld);
+      this.lastSortStats = this.gpuSorter.sort(renderer, camera, this.mesh.matrixWorld);
+    }
+
+    // GPU projection compute pre-pass: project Cov3D → Cov2D once per splat
+    // (instead of 4× per vertex in the vertex shader)
+    if (this.splatProjection && this.mesh) {
+      this.splatProjection.updateUniforms(
+        camera,
+        this.mesh.matrixWorld,
+        focalX,
+        focalY,
+        this.currentSplatSizeScale,
+        this.uniforms.viewportSize.value
+      );
+      this.splatProjection.dispatch(renderer);
+    }
+
+    // Update per-frame status (throttled: every 10 frames or on sort mode change)
+    this.statusFrameCounter++;
+    const sortModeChanged = this.lastSortStats && this.lastSortStats.sortMode !== this.lastReportedSortMode;
+    if (this.setActorStatusRef && this.lastSortStats && (sortModeChanged || this.statusFrameCounter >= 10)) {
+      this.statusFrameCounter = 0;
+      this.lastReportedSortMode = this.lastSortStats.sortMode;
+      this.setActorStatusRef({
+        values: {
+          backend: "webgpu-tsl",
+          loadState: "loaded",
+          pointCount: this.pointCount,
+          boundsMin: this.bounds?.min ?? "n/a",
+          boundsMax: this.bounds?.max ?? "n/a",
+          sortMethod: "gpu-bitonic-temporal",
+          projectionPrepass: this.splatProjection !== null,
+          chunkCount: this.chunkData?.chunks.length ?? 0,
+          visibleChunks: this.lastVisibleChunks,
+          // Per-frame sort stats
+          sortMode: this.lastSortStats.sortMode,
+          sortDispatches: this.lastSortStats.dispatches,
+          framesSinceFullSort: this.lastSortStats.framesSinceFullSort,
+          angleSinceSort: Math.round(this.lastSortStats.angleSinceSort * 1000) / 1000,
+        },
+        updatedAtIso: new Date().toISOString()
+      });
     }
   }
 
@@ -493,6 +585,7 @@ export class SplatController {
     this.uniforms.opacity.value = Math.max(0, Math.min(1, opacity));
     this.uniforms.brightness.value = Math.max(0, brightness);
     this.uniforms.sizeScale.value = Math.max(0.01, splatSizeScale);
+    this.currentSplatSizeScale = Math.max(0.01, splatSizeScale);
 
     const safeScale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
     this.mesh.scale.setScalar(safeScale);
@@ -522,6 +615,10 @@ export class SplatController {
     if (this.gpuSorter) {
       this.gpuSorter.dispose();
       this.gpuSorter = null;
+    }
+    if (this.splatProjection) {
+      this.splatProjection.dispose();
+      this.splatProjection = null;
     }
   }
 }

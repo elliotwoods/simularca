@@ -185,6 +185,12 @@ export function createGaussianSplatDescriptor(): ReloadableDescriptor {
           },
           { label: "Bounds Min (m)", value: rs?.values?.boundsMin ?? "n/a" },
           { label: "Bounds Max (m)", value: rs?.values?.boundsMax ?? "n/a" },
+          { label: "Projection", value: rs?.values?.projectionPrepass ? "compute pre-pass" : "vertex shader" },
+          { label: "Sort Mode", value: rs?.values?.sortMode ?? "n/a" },
+          { label: "Sort Dispatches", value: rs?.values?.sortDispatches ?? "n/a" },
+          { label: "Frames Since Sort", value: rs?.values?.framesSinceFullSort ?? "n/a" },
+          { label: "Sort Angle (rad)", value: rs?.values?.angleSinceSort ?? "n/a" },
+          { label: "Visible Chunks", value: rs?.values?.visibleChunks ?? "n/a" },
           {
             label: "Last Update",
             value: rs?.updatedAtIso ? new Date(rs.updatedAtIso).toLocaleString() : "n/a"
