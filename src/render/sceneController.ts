@@ -274,6 +274,8 @@ function extractPlyVertexPropertyNames(bytes: Uint8Array): Set<string> {
 
 export class SceneController {
   public readonly scene = new THREE.Scene();
+  private readonly gridHelper: any;
+  private readonly axesHelper: any;
   private readonly actorObjects = new Map<string, any>();
   private readonly pluginDescriptorByActorId = new Map<string, ReloadableDescriptor | null>();
   private readonly gaussianAssetByActorId = new Map<string, string>();
@@ -312,9 +314,11 @@ export class SceneController {
   private previousSimTimeSeconds = 0;
   private readonly mistVolumeController: MistVolumeController;
   private readonly showDebugHelpers: boolean;
+  private debugHelpersVisible: boolean;
 
   public constructor(private readonly kernel: AppKernel, options: SceneControllerOptions = {}) {
     this.showDebugHelpers = options.showDebugHelpers ?? true;
+    this.debugHelpersVisible = this.showDebugHelpers;
     const initialBackground = normalizeBackgroundColor(this.kernel.store.getState().state.scene.backgroundColor);
     this.scene.background = new THREE.Color(initialBackground);
     const grid = new THREE.GridHelper(20, 20, 0x2f8f9d, 0x1f2430);
@@ -322,9 +326,11 @@ export class SceneController {
     (grid.material as any).opacity = 0.35;
     grid.visible = this.showDebugHelpers;
     this.scene.add(grid);
+    this.gridHelper = grid;
     const axes = new THREE.AxesHelper(2.5);
     axes.visible = this.showDebugHelpers;
     this.scene.add(axes);
+    this.axesHelper = axes;
     const light = new THREE.DirectionalLight(0xffffff, 1.2);
     light.position.set(8, 12, 6);
     this.scene.add(light);
@@ -335,6 +341,28 @@ export class SceneController {
       getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
       sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t)
     }, options.qualityMode ?? "interactive");
+  }
+
+  public getDebugHelpersVisible(): boolean {
+    return this.debugHelpersVisible;
+  }
+
+  public setDebugHelpersVisible(visible: boolean): void {
+    this.debugHelpersVisible = visible;
+    this.gridHelper.visible = visible;
+    this.axesHelper.visible = visible;
+    for (const helper of this.gaussianBoundsHelpers.values()) {
+      helper.visible = visible;
+    }
+    for (const actor of Object.values(this.kernel.store.getState().state.actors)) {
+      if (actor.actorType !== "curve") {
+        continue;
+      }
+      const object = this.actorObjects.get(actor.id);
+      if (object) {
+        object.visible = visible;
+      }
+    }
   }
 
   private shouldLogPerformanceDiagnostics(): boolean {
@@ -810,7 +838,7 @@ export class SceneController {
     if (actor.actorType === "curve") {
       const group = new THREE.Group();
       group.name = "curve-container";
-      group.visible = this.showDebugHelpers;
+      group.visible = this.debugHelpersVisible;
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0)]),
         new THREE.LineBasicMaterial({
@@ -1494,6 +1522,7 @@ export class SceneController {
         let helper = this.gaussianBoundsHelpers.get(actor.id);
         if (!helper) {
           helper = new THREE.Box3Helper(correctedBounds.clone(), 0xff5bd6);
+          helper.visible = this.debugHelpersVisible;
           this.gaussianBoundsHelpers.set(actor.id, helper);
           correctedRoot.add(helper);
         } else {

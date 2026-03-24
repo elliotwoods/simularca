@@ -93,6 +93,7 @@ export interface ElectronApi {
   openSaveDialog(args: SaveDialogArgs): Promise<string | null>;
   openDirectoryDialog(args: DirectoryDialogArgs): Promise<string | null>;
   discoverLocalPlugins(): Promise<LocalPluginCandidate[]>;
+  writeClipboardImagePng(args: { pngBytes: Uint8Array }): Promise<void>;
   renderPipeOpen(args: { outputPath: string; fps: number; bitrateMbps: number }): Promise<{ pipeId: string; encoder: string }>;
   renderPipeWriteFrame(args: { pipeId: string; framePngBytes: Uint8Array }): Promise<void>;
   renderPipeClose(args: { pipeId: string }): Promise<{ summary: string }>;

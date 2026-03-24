@@ -17,6 +17,10 @@ import {
   type CameraViewDirection
 } from "@/features/camera/viewUtils";
 import { DEFAULT_CAMERA_TRANSITION_DURATION_MS } from "@/features/camera/transitionController";
+import {
+  formatViewportScreenshotStatus,
+  type ViewportScreenshotResult
+} from "@/features/render/viewportScreenshot";
 import type { ActorTransformMode } from "@/render/actorTransformController";
 import { WebGpuViewport } from "@/render/webgpuRenderer";
 import { WebGlViewport } from "@/render/webglRenderer";
@@ -24,6 +28,7 @@ import { WebGlViewport } from "@/render/webglRenderer";
 interface ViewportRuntime {
   start(): Promise<void>;
   stop(): void;
+  captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult>;
   setActorTransformMode(mode: ActorTransformMode): void;
   setActorTransformSnappingEnabled(enabled: boolean): void;
   setFramePacing(settings: SceneFramePacingSettings): void;
@@ -31,6 +36,8 @@ interface ViewportRuntime {
 
 interface ViewportPanelProps {
   suspended?: boolean;
+  screenshotRequestId?: number;
+  onScreenshotBusyChange?: (busy: boolean) => void;
 }
 
 type WidgetAxis = "x" | "y" | "z";
@@ -216,6 +223,8 @@ export function ViewportPanel(props: ViewportPanelProps) {
   const viewportHoveredRef = useRef(false);
   const cameraRef = useRef(camera);
   const cleanupAxesDragRef = useRef<(() => void) | null>(null);
+  const screenshotInFlightRef = useRef(false);
+  const lastScreenshotRequestIdRef = useRef(props.screenshotRequestId ?? 0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [showResolutionOverlay, setShowResolutionOverlay] = useState(false);
   const [actorTransformMode, setActorTransformMode] = useState<ActorTransformMode>("none");
@@ -397,6 +406,71 @@ export function ViewportPanel(props: ViewportPanelProps) {
   useEffect(() => {
     viewportRef.current?.setFramePacing(framePacing);
   }, [framePacing]);
+
+  useEffect(() => {
+    const requestId = props.screenshotRequestId ?? 0;
+    if (requestId <= 0 || requestId === lastScreenshotRequestIdRef.current) {
+      return;
+    }
+    lastScreenshotRequestIdRef.current = requestId;
+    if (props.suspended) {
+      kernel.store.getState().actions.setStatus("Viewport screenshot failed: viewport is suspended.");
+      props.onScreenshotBusyChange?.(false);
+      return;
+    }
+    if (screenshotInFlightRef.current) {
+      return;
+    }
+    const viewportRuntime = viewportRef.current;
+    if (!viewportRuntime) {
+      kernel.store.getState().actions.setStatus("Viewport screenshot failed: viewport is unavailable.");
+      props.onScreenshotBusyChange?.(false);
+      return;
+    }
+    screenshotInFlightRef.current = true;
+    const captureWidth = Math.max(0, viewportSize.width, Math.round(hostRef.current?.clientWidth ?? 0));
+    const captureHeight = Math.max(0, viewportSize.height, Math.round(hostRef.current?.clientHeight ?? 0));
+    let active = true;
+    void viewportRuntime.captureViewportScreenshot({
+      width: captureWidth,
+      height: captureHeight
+    })
+      .then(async (result) => {
+        if (!window.electronAPI?.writeClipboardImagePng) {
+          throw new Error("Viewport screenshots are available in desktop mode only.");
+        }
+        await window.electronAPI.writeClipboardImagePng({
+          pngBytes: result.pngBytes
+        });
+        if (!active) {
+          return;
+        }
+        kernel.store.getState().actions.setStatus(formatViewportScreenshotStatus(result));
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : "Unknown screenshot failure";
+        kernel.store.getState().actions.setStatus(`Viewport screenshot failed: ${message}`);
+      })
+      .finally(() => {
+        screenshotInFlightRef.current = false;
+        props.onScreenshotBusyChange?.(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    antialiasing,
+    backend,
+    kernel,
+    props.onScreenshotBusyChange,
+    props.screenshotRequestId,
+    props.suspended,
+    viewportSize.height,
+    viewportSize.width
+  ]);
 
   useEffect(() => {
     return () => {

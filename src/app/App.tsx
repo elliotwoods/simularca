@@ -113,6 +113,8 @@ export function App() {
   const [renderModalOpen, setRenderModalOpen] = useState(false);
   const [renderOverlayOpen, setRenderOverlayOpen] = useState(false);
   const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
+  const [viewportScreenshotRequestId, setViewportScreenshotRequestId] = useState(0);
+  const [viewportScreenshotBusy, setViewportScreenshotBusy] = useState(false);
   const renderHostElRef = useRef<HTMLDivElement | null>(null);
   const renderPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mainViewportSuspended, setMainViewportSuspended] = useState(false);
@@ -895,10 +897,19 @@ export function App() {
       <TopBarPanel
         onToggleKeyboardMap={() => setKeyboardMapOpen((value) => !value)}
         onOpenRender={() => setRenderModalOpen(true)}
+        onCaptureViewportScreenshot={() => {
+          if (viewportScreenshotBusy) {
+            return;
+          }
+          setViewportScreenshotBusy(true);
+          setViewportScreenshotRequestId((value) => value + 1);
+        }}
+        canCaptureViewportScreenshot={Boolean(window.electronAPI?.writeClipboardImagePng)}
+        viewportScreenshotBusy={viewportScreenshotBusy}
         requestTextInput={requestTextInput}
       />
     ),
-    [requestTextInput]
+    [requestTextInput, viewportScreenshotBusy]
   );
   const titleBar = useMemo(
     () => <TitleBarPanel requestTextInput={requestTextInput} />,
@@ -918,6 +929,8 @@ export function App() {
         topBar={topBar}
         pendingDropFileName={dragImportState?.fileName ?? null}
         viewportSuspended={mainViewportSuspended}
+        viewportScreenshotRequestId={viewportScreenshotRequestId}
+        onViewportScreenshotBusyChange={setViewportScreenshotBusy}
       />
       {dragImportState ? (
         <div className="file-drop-overlay">

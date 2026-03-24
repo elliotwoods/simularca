@@ -15,6 +15,7 @@ import { CurveEditController } from "./curveEditController";
 import { reportSlowFrame } from "./slowFrameDiagnostics";
 import type { MistVolumeQualityMode } from "./mistVolumeController";
 import { buildWebGpuToneMappedOutputNode, threeToneMappingForMode } from "./tonemapping";
+import { captureViewportScreenshotFromCanvas, type ViewportScreenshotResult } from "@/features/render/viewportScreenshot";
 
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
@@ -214,6 +215,48 @@ export class WebGpuViewport {
     this.framePacer.setSettings(settings);
   }
 
+  public async renderOnce(): Promise<void> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    if (!this.initialized) {
+      if (typeof (this.renderer as any).init === "function") {
+        await (this.renderer as any).init();
+      }
+      this.initialized = true;
+    }
+    this.onResize();
+    await this.renderFrame({ collectStats: false });
+  }
+
+  public getCanvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
+  public async captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    void requestSize;
+    while (this.renderInFlight) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    }
+    const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    try {
+      this.sceneController.setDebugHelpersVisible(false);
+      for (let passIndex = 0; passIndex < 2; passIndex += 1) {
+        await this.renderOnce();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      }
+      return await captureViewportScreenshotFromCanvas({
+        backend: "webgpu",
+        canvas: this.renderer.domElement
+      });
+    } finally {
+      this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+    }
+  }
+
   private animate = (nowMs = performance.now()): void => {
     if (this.disposed) {
       return;
@@ -232,7 +275,8 @@ export class WebGpuViewport {
     });
   };
 
-  private async renderFrame(): Promise<void> {
+  private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
+    const collectStats = options?.collectStats ?? true;
     const _rf0 = performance.now();
     await this.sceneController.syncFromState();
     const _rf1 = performance.now();
@@ -253,15 +297,17 @@ export class WebGpuViewport {
         : Promise.resolve((this.postProcessing as any).render());
     await Promise.resolve(renderPromise);
     const _rf3 = performance.now();
-    reportSlowFrame(this.kernel, {
-      backend: "webgpu",
-      totalMs: _rf3 - _rf0,
-      sceneSyncMs: _rf1 - _rf0,
-      sparkSyncMs: 0,
-      controlsMs: _rf2 - _rf1,
-      renderMs: _rf3 - _rf2
-    });
-    this.updateStats();
+    if (collectStats) {
+      reportSlowFrame(this.kernel, {
+        backend: "webgpu",
+        totalMs: _rf3 - _rf0,
+        sceneSyncMs: _rf1 - _rf0,
+        sparkSyncMs: 0,
+        controlsMs: _rf2 - _rf1,
+        renderMs: _rf3 - _rf2
+      });
+      this.updateStats();
+    }
   }
 
   private syncCameraState(): void {

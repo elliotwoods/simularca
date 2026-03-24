@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, protocol, screen, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, protocol, screen, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -804,6 +804,21 @@ function registerIpcHandlers(): void {
   ipcMain.handle("plugins:discover-local", async () => {
     return await discoverLocalPlugins();
   });
+  ipcMain.handle(
+    "clipboard:write-image-png",
+    async (
+      _event,
+      args: {
+        pngBytes: Uint8Array;
+      }
+    ) => {
+      const image = nativeImage.createFromBuffer(Buffer.from(args.pngBytes));
+      if (image.isEmpty()) {
+        throw new Error("Clipboard image is empty.");
+      }
+      clipboard.writeImage(image);
+    }
+  );
   ipcMain.handle(
     "render:pipe-open",
     async (

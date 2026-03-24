@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
+  faCamera,
   faCube,
   faCirclePause,
   faCirclePlay,
@@ -60,6 +61,9 @@ function clampInteger(value: number, min: number, max: number): number {
 interface TopBarPanelProps {
   onToggleKeyboardMap: () => void;
   onOpenRender: () => void;
+  onCaptureViewportScreenshot: () => void;
+  canCaptureViewportScreenshot: boolean;
+  viewportScreenshotBusy: boolean;
   requestTextInput(args: {
     title: string;
     label: string;
@@ -391,6 +395,21 @@ export function TopBarPanel(props: TopBarPanelProps) {
         <label title="Render">Render</label>
         <button type="button" title="Render video" onClick={props.onOpenRender}>
           <FontAwesomeIcon icon={faFilm} />
+        </button>
+        <button
+          type="button"
+          title={
+            !props.canCaptureViewportScreenshot
+              ? "Copy viewport screenshot to clipboard (desktop only)"
+              : props.viewportScreenshotBusy
+                ? "Viewport screenshot in progress"
+                : "Copy viewport screenshot to clipboard"
+          }
+          aria-label="Copy viewport screenshot to clipboard"
+          onClick={props.onCaptureViewportScreenshot}
+          disabled={!props.canCaptureViewportScreenshot || props.viewportScreenshotBusy}
+        >
+          <FontAwesomeIcon icon={faCamera} />
         </button>
       </div>
 

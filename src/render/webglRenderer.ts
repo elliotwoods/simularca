@@ -17,6 +17,7 @@ import type { MistVolumeQualityMode } from "@/render/mistVolumeController";
 import { SparkSplatController } from "@/render/sparkSplatController";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "@/render/stats";
 import { SceneOutputPass, threeToneMappingForMode } from "@/render/tonemapping";
+import { captureViewportScreenshotFromCanvas, type ViewportScreenshotResult } from "@/features/render/viewportScreenshot";
 
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
@@ -221,6 +222,42 @@ export class WebGlViewport {
     this.framePacer.setSettings(settings);
   }
 
+  public async renderOnce(): Promise<void> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    this.onResize();
+    await this.renderFrame({ collectStats: false });
+  }
+
+  public getCanvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
+  public async captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    void requestSize;
+    while (this.renderInFlight) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    }
+    const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    try {
+      this.sceneController.setDebugHelpersVisible(false);
+      for (let passIndex = 0; passIndex < 2; passIndex += 1) {
+        await this.renderOnce();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      }
+      return await captureViewportScreenshotFromCanvas({
+        backend: "webgl2",
+        canvas: this.renderer.domElement
+      });
+    } finally {
+      this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+    }
+  }
+
   private animate = (nowMs = performance.now()): void => {
     if (this.disposed) {
       return;
@@ -239,7 +276,8 @@ export class WebGlViewport {
     });
   };
 
-  private async renderFrame(): Promise<void> {
+  private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
+    const collectStats = options?.collectStats ?? true;
     const _rf0 = performance.now();
     await this.sceneController.syncFromState();
     const _rf1 = performance.now();
@@ -267,15 +305,17 @@ export class WebGlViewport {
     this.sceneOutputPass.setPostProcessingSettings(postProcessing);
     this.composer.render();
     const _rf4 = performance.now();
-    reportSlowFrame(this.kernel, {
-      backend: "webgl2",
-      totalMs: _rf4 - _rf0,
-      sceneSyncMs: _rf1 - _rf0,
-      sparkSyncMs: _rf2 - _rf1,
-      controlsMs: _rf3 - _rf2,
-      renderMs: _rf4 - _rf3
-    });
-    this.updateStats();
+    if (collectStats) {
+      reportSlowFrame(this.kernel, {
+        backend: "webgl2",
+        totalMs: _rf4 - _rf0,
+        sceneSyncMs: _rf1 - _rf0,
+        sparkSyncMs: _rf2 - _rf1,
+        controlsMs: _rf3 - _rf2,
+        renderMs: _rf4 - _rf3
+      });
+      this.updateStats();
+    }
   }
 
   private enforceActorCompatibility(engine: "webgl2"): void {

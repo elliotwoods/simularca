@@ -58,6 +58,7 @@ const api = {
   openSaveDialog: (args) => ipcRenderer.invoke("dialog:save-file", args),
   openDirectoryDialog: (args) => ipcRenderer.invoke("dialog:open-directory", args),
   discoverLocalPlugins: () => ipcRenderer.invoke("plugins:discover-local"),
+  writeClipboardImagePng: (args) => ipcRenderer.invoke("clipboard:write-image-png", args),
   renderPipeOpen: (args) => ipcRenderer.invoke("render:pipe-open", args),
   renderPipeWriteFrame: (args) => ipcRenderer.invoke("render:pipe-write-frame", args),
   renderPipeClose: (args) => ipcRenderer.invoke("render:pipe-close", args),
