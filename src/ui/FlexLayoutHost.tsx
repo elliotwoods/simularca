@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Layout, Model, type IJsonModel, type TabNode } from "flexlayout-react";
+import { useEffect, useMemo } from "react";
+import { Actions, Layout, Model, type IJsonModel, type TabNode } from "flexlayout-react";
 import { LeftPanel } from "@/ui/panels/LeftPanel";
 import { RightPanel } from "@/ui/panels/RightPanel";
 import { ViewportPanel } from "@/ui/panels/ViewportPanel";
@@ -204,6 +204,24 @@ function persistLayoutConfig(model: Model): void {
   }
 }
 
+function findViewportTabsetId(model: Model): string | null {
+  let viewportTabsetId: string | null = null;
+  model.visitNodes((node) => {
+    if (viewportTabsetId || node.getType() !== "tab") {
+      return;
+    }
+    const tabNode = node as TabNode;
+    if (tabNode.getComponent() !== "center") {
+      return;
+    }
+    const parent = tabNode.getParent();
+    if (parent?.getType() === "tabset") {
+      viewportTabsetId = parent.getId();
+    }
+  });
+  return viewportTabsetId;
+}
+
 interface FlexLayoutHostProps {
   titleBar: React.ReactNode;
   topBar: React.ReactNode;
@@ -216,13 +234,18 @@ interface FlexLayoutHostProps {
 
 export function FlexLayoutHost(props: FlexLayoutHostProps) {
   const model = useMemo(() => createLayoutModel(), []);
-  const renderViewportPanel = (): React.ReactNode => (
-    <ViewportPanel
-      suspended={props.viewportSuspended}
-      screenshotRequestId={props.viewportScreenshotRequestId}
-      onScreenshotBusyChange={props.onViewportScreenshotBusyChange}
-    />
-  );
+  const viewportTabsetId = useMemo(() => findViewportTabsetId(model), [model]);
+
+  useEffect(() => {
+    if (!viewportTabsetId) {
+      return;
+    }
+    const viewportIsMaximized = model.getMaximizedTabset()?.getId() === viewportTabsetId;
+    if (viewportIsMaximized === Boolean(props.viewportFullscreen)) {
+      return;
+    }
+    model.doAction(Actions.maximizeToggle(viewportTabsetId));
+  }, [model, props.viewportFullscreen, viewportTabsetId]);
 
   const factory = (node: TabNode): React.ReactNode => {
     const component = node.getComponent();
@@ -230,7 +253,13 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
       case "left":
         return <LeftPanel pendingDropFileName={props.pendingDropFileName} />;
       case "center":
-        return renderViewportPanel();
+        return (
+          <ViewportPanel
+            suspended={props.viewportSuspended}
+            screenshotRequestId={props.viewportScreenshotRequestId}
+            onScreenshotBusyChange={props.onViewportScreenshotBusyChange}
+          />
+        );
       case "right":
         return <RightPanel />;
       case "console":
@@ -242,17 +271,11 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
 
   return (
     <div className={`layout-shell${props.viewportFullscreen ? " is-viewport-fullscreen" : ""}`}>
-      {props.viewportFullscreen ? (
-        <div className="viewport-fullscreen-shell">{renderViewportPanel()}</div>
-      ) : (
-        <>
-          <div className="layout-shell-title">{props.titleBar}</div>
-          <div className="layout-shell-toolbar">{props.topBar}</div>
-          <div className="flex-layout-host">
-            <Layout model={model} factory={factory} onModelChange={persistLayoutConfig} />
-          </div>
-        </>
-      )}
+      <div className="layout-shell-title">{props.titleBar}</div>
+      <div className="layout-shell-toolbar">{props.topBar}</div>
+      <div className="flex-layout-host">
+        <Layout model={model} factory={factory} onModelChange={persistLayoutConfig} />
+      </div>
     </div>
   );
 }

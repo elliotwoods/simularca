@@ -71,8 +71,13 @@ body {
 }
 
 .layout-shell.is-viewport-fullscreen {
-  display: block;
+  grid-template-rows: minmax(0, 1fr);
   background: #02070e;
+}
+
+.layout-shell.is-viewport-fullscreen .layout-shell-title,
+.layout-shell.is-viewport-fullscreen .layout-shell-toolbar {
+  display: none;
 }
 
 .layout-shell-title {
@@ -100,15 +105,6 @@ body {
   position: relative;
   overflow: hidden;
   z-index: 1;
-}
-
-.viewport-fullscreen-shell {
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  position: relative;
-  overflow: hidden;
 }
 
 .flexlayout__layout {
@@ -221,6 +217,12 @@ body {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.layout-shell.is-viewport-fullscreen .flexlayout__tabset-maximized .flexlayout__tabset_header,
+.layout-shell.is-viewport-fullscreen .flexlayout__tabset-maximized .flexlayout__tabset_tabbar_outer,
+.layout-shell.is-viewport-fullscreen .flexlayout__tabset-maximized .flexlayout__tab_toolbar {
+  display: none;
 }
 
 .flexlayout__splitter {
