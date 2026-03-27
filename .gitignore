@@ -23,7 +23,9 @@ Thumbs.db
 
 # Editor files
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 
 # Runtime data
 savedata/

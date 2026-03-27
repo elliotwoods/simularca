@@ -1,0 +1,71 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Simularca: Desktop",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "program": "${workspaceFolder}/dist-electron/electron/main.js",
+      "env": {
+        "VITE_DEV_SERVER_URL": "http://localhost:5180"
+      },
+      "preLaunchTask": "Simularca: Desktop Prereqs",
+      "outFiles": [
+        "${workspaceFolder}/dist-electron/**/*.js"
+      ],
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "console": "integratedTerminal",
+      "outputCapture": "std",
+      "presentation": {
+        "group": "simularca",
+        "order": 1
+      }
+    },
+    {
+      "name": "Simularca: Web",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "preLaunchTask": "Simularca: Web",
+      "url": "http://localhost:5180",
+      "webRoot": "${workspaceFolder}",
+      "sourceMaps": true,
+      "presentation": {
+        "group": "simularca",
+        "order": 2
+      }
+    },
+    {
+      "name": "Simularca: Web (No Task)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5180",
+      "webRoot": "${workspaceFolder}",
+      "sourceMaps": true,
+      "presentation": {
+        "hidden": true
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Simularca: Full Dev",
+      "configurations": [
+        "Simularca: Desktop",
+        "Simularca: Web (No Task)"
+      ],
+      "stopAll": true,
+      "presentation": {
+        "group": "simularca",
+        "order": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Simularca: Web",
+      "type": "shell",
+      "command": "npm run dev:web",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "simularca-web",
+        "pattern": {
+          "regexp": "."
+        },
+        "background": {
+          "activeOnStart": true,
+          "endsPattern": "Local:\\s+http://localhost:5180/?|ready in \\d+ ms"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "simularca"
+      }
+    },
+    {
+      "label": "Simularca: Plugins",
+      "type": "shell",
+      "command": "npm run dev:plugins",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "simularca-plugins",
+        "pattern": {
+          "regexp": "."
+        },
+        "background": {
+          "activeOnStart": true,
+          "endsPattern": "^\\[plugins\\]\\s+Watching\\s+.+$"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "simularca"
+      }
+    },
+    {
+      "label": "Simularca: Electron Compile Watch",
+      "type": "shell",
+      "command": "npx tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "simularca"
+      }
+    },
+    {
+      "label": "Simularca: Desktop Prereqs",
+      "dependsOn": [
+        "Simularca: Plugins",
+        "Simularca: Web",
+        "Simularca: Electron Compile Watch"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

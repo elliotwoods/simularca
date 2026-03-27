@@ -11,6 +11,8 @@
     "strict": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "sourceMap": true,
+    "inlineSources": true,
     "outDir": "dist-electron",
     "types": ["node", "electron"],
     "skipLibCheck": true,
