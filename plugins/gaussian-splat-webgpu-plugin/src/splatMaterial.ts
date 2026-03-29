@@ -36,6 +36,7 @@ import {
   exp,
   select
 } from "three/tsl";
+import { MIN_PERSPECTIVE_PROJECTION_DEPTH } from "./projectionDepth";
 
 /**
  * Storage buffer data needed by the material.
@@ -65,7 +66,9 @@ export interface SplatUniforms {
   viewportSize: { value: THREE.Vector2 };
   focalX: { value: number };
   focalY: { value: number };
+  cameraNear: { value: number };
   sizeScale: { value: number };
+  isOrthographic: { value: number };
 }
 
 export interface SplatMaterialResult {
@@ -84,7 +87,9 @@ export function createSplatMaterial(
   const uViewportSize = uniform(new THREE.Vector2(1920, 1080));
   const uFocalX = uniform(1.0);
   const uFocalY = uniform(1.0);
+  const uCameraNear = uniform(MIN_PERSPECTIVE_PROJECTION_DEPTH);
   const uSizeScale = uniform(1.0);
+  const uIsOrthographic = uniform(0.0);
 
   // Detect whether compute pre-pass ellipse buffers are available
   const hasPrepass = !!(buffers.ellipseA && buffers.ellipseB);
@@ -236,8 +241,11 @@ export function createSplatMaterial(
       const cv12: any = t10.mul(r20).add(t11_v.mul(r21)).add(t12.mul(r22));
       const cv22: any = t20.mul(r20).add(t21.mul(r21)).add(t22_v.mul(r22));
 
-      // Perspective projection Jacobian
-      const tz: any = max(viewPos.z.negate(), float(0.2));
+      // Perspective splats should not inherit a hidden near plane. Clamp only to the
+      // real camera near so splats do not vanish along an exaggerated cut plane.
+      const perspectiveNear: any = max(uCameraNear, float(MIN_PERSPECTIVE_PROJECTION_DEPTH));
+      const perspectiveViewZ: any = min(viewPos.z, perspectiveNear.negate());
+      const tz: any = perspectiveViewZ.negate();
       const tz2: any = tz.mul(tz);
       const vx: any = viewPos.x;
       const vy: any = viewPos.y;
@@ -255,9 +263,18 @@ export function createSplatMaterial(
       const jc12_v: any = j11_jac.mul(cv12).add(j12.mul(cv22));
 
       // Final 2D cov (with low-pass filter for stability, 0.3 px²)
-      const s00: any = jc00.mul(j00).add(jc02_v.mul(j02)).add(float(0.3));
-      const s01: any = jc01.mul(j11_jac).add(jc02_v.mul(j12));
-      const s11: any = jc11_v.mul(j11_jac).add(jc12_v.mul(j12)).add(float(0.3));
+      const perspectiveS00: any = jc00.mul(j00).add(jc02_v.mul(j02)).add(float(0.3));
+      const perspectiveS01: any = jc01.mul(j11_jac).add(jc02_v.mul(j12));
+      const perspectiveS11: any = jc11_v.mul(j11_jac).add(jc12_v.mul(j12)).add(float(0.3));
+
+      const orthographicS00: any = cv00.mul(uFocalX.mul(uFocalX)).add(float(0.3));
+      const orthographicS01: any = cv01.mul(uFocalX.mul(uFocalY));
+      const orthographicS11: any = cv11.mul(uFocalY.mul(uFocalY)).add(float(0.3));
+
+      const isOrthographic: any = uIsOrthographic.greaterThan(float(0.5));
+      const s00: any = select(isOrthographic, orthographicS00, perspectiveS00);
+      const s01: any = select(isOrthographic, orthographicS01, perspectiveS01);
+      const s11: any = select(isOrthographic, orthographicS11, perspectiveS11);
 
       // Eigendecomposition of 2x2 symmetric matrix (closed form)
       const halfSum: any = s00.add(s11).mul(0.5);
@@ -285,7 +302,8 @@ export function createSplatMaterial(
       );
 
       // Project center to clip space
-      const clipPos: any = cameraProjectionMatrix.mul(viewPos).toVar("clipPos");
+      const clipViewZ: any = select(isOrthographic, viewPos.z, perspectiveViewZ);
+      const clipPos: any = cameraProjectionMatrix.mul(vec4(vx, vy, clipViewZ, 1.0)).toVar("clipPos");
 
       // Convert pixel offset to NDC offset
       const ndcOffset: any = vec2(
@@ -348,7 +366,9 @@ export function createSplatMaterial(
       viewportSize: uViewportSize as unknown as { value: THREE.Vector2 },
       focalX: uFocalX as unknown as { value: number },
       focalY: uFocalY as unknown as { value: number },
-      sizeScale: uSizeScale as unknown as { value: number }
+      cameraNear: uCameraNear as unknown as { value: number },
+      sizeScale: uSizeScale as unknown as { value: number },
+      isOrthographic: uIsOrthographic as unknown as { value: number }
     }
   };
 }

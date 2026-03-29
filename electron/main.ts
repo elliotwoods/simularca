@@ -13,6 +13,7 @@ import type {
   ProjectAssetRef,
   ProjectSnapshotListEntry
 } from "../src/types/ipc";
+import { startLiveDebugServer, type LiveDebugServerController } from "./liveDebugServer.js";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"]);
 // 1×1 transparent PNG
@@ -35,6 +36,7 @@ const DEFAULT_WINDOW_HEIGHT = 960;
 const MIN_WINDOW_WIDTH = 1200;
 const MIN_WINDOW_HEIGHT = 720;
 const APP_ICON_FILE_NAME = "icon.png";
+const CODEX_DEBUG_MANIFEST_FILE_NAME = "codex-debug-session.json";
 const renderPipeJobs = new Map<string, { child: ReturnType<typeof spawn>; encoder: string; outputPath: string }>();
 const renderTempJobs = new Map<
   string,
@@ -94,6 +96,10 @@ function getRuntimeLogFilePath(): string {
   return path.join(getLogsRoot(), RUNTIME_LOG_FILE_NAME);
 }
 
+function getCodexDebugManifestFilePath(): string {
+  return path.join(getLogsRoot(), CODEX_DEBUG_MANIFEST_FILE_NAME);
+}
+
 function toErrorPayload(input: unknown): Record<string, unknown> {
   if (input instanceof Error) {
     return {
@@ -128,6 +134,8 @@ void writeRuntimeLog("boot", "electron main module loaded", {
   node: process.version,
   platform: process.platform
 });
+
+let liveDebugServerController: LiveDebugServerController | null = null;
 
 app.setName(APP_DISPLAY_NAME);
 
@@ -620,6 +628,7 @@ function createWindow(): BrowserWindow {
 
   mainWindow.on("closed", () => {
     void writeRuntimeLog("window", "BrowserWindow closed");
+    void liveDebugServerController?.refreshManifest();
   });
 
   let persistTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -676,6 +685,8 @@ function createWindow(): BrowserWindow {
       void writeRuntimeLog("window", "Failed to load production index.html", error);
     });
   }
+
+  void liveDebugServerController?.refreshManifest();
 
   return mainWindow;
 }
@@ -1637,6 +1648,17 @@ void app.whenReady().then(async () => {
   await ensureDefaultsFile();
   await registerAssetProtocol();
   registerIpcHandlers();
+  liveDebugServerController = await startLiveDebugServer({
+    buildKind: IS_DEV ? "dev" : "build",
+    getLogsRoot,
+    getRuntimeLogFilePath,
+    writeRuntimeLog
+  });
+  if (liveDebugServerController) {
+    void writeRuntimeLog("debug-bridge", "Manifest ready", {
+      manifestPath: getCodexDebugManifestFilePath()
+    });
+  }
   createWindow();
 
   app.on("activate", () => {
@@ -1651,4 +1673,10 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  const activeController = liveDebugServerController;
+  liveDebugServerController = null;
+  void activeController?.dispose();
 });

@@ -27,6 +27,7 @@ import {
   sin,
   select
 } from "three/tsl";
+import { MIN_PERSPECTIVE_PROJECTION_DEPTH } from "./projectionDepth";
 
 export class SplatProjection {
   // Output buffers
@@ -38,8 +39,10 @@ export class SplatProjection {
   private readonly uProjection = uniform(new THREE.Matrix4());
   private readonly uFocalX = uniform(1.0);
   private readonly uFocalY = uniform(1.0);
+  private readonly uCameraNear = uniform(MIN_PERSPECTIVE_PROJECTION_DEPTH);
   private readonly uSizeScale = uniform(1.0);
   private readonly uViewportSize = uniform(new THREE.Vector2(1920, 1080));
+  private readonly uIsOrthographic = uniform(0.0);
 
   // Compute node
   private readonly projectionNode: any;
@@ -83,8 +86,10 @@ export class SplatProjection {
     const uProj = this.uProjection;
     const uFX = this.uFocalX;
     const uFY = this.uFocalY;
+    const uNear = this.uCameraNear;
     const uSS = this.uSizeScale;
     const uVP = this.uViewportSize;
+    const uOrtho = this.uIsOrthographic;
 
     // Compute kernel
     const projectionKernel = Fn(() => {
@@ -148,8 +153,11 @@ export class SplatProjection {
       const cv12: any = t10.mul(r20).add(t11_v.mul(r21)).add(t12.mul(r22));
       const cv22: any = t20.mul(r20).add(t21.mul(r21)).add(t22_v.mul(r22));
 
-      // Perspective projection Jacobian
-      const tz: any = max(viewPos.z.negate(), float(0.2));
+      // Match the material fallback path: use the real camera near instead of a
+      // hidden fixed threshold that behaves like an exaggerated near plane.
+      const perspectiveNear: any = max(uNear, float(MIN_PERSPECTIVE_PROJECTION_DEPTH));
+      const perspectiveViewZ: any = min(viewPos.z, perspectiveNear.negate());
+      const tz: any = perspectiveViewZ.negate();
       const tz2: any = tz.mul(tz);
       const vx: any = viewPos.x;
       const vy: any = viewPos.y;
@@ -167,9 +175,18 @@ export class SplatProjection {
       const jc12_v: any = j11_jac.mul(cv12).add(j12.mul(cv22));
 
       // Final 2D cov (with low-pass filter, 0.3 px²)
-      const s00: any = jc00.mul(j00).add(jc02_v.mul(j02)).add(float(0.3));
-      const s01: any = jc01.mul(j11_jac).add(jc02_v.mul(j12));
-      const s11: any = jc11_v.mul(j11_jac).add(jc12_v.mul(j12)).add(float(0.3));
+      const perspectiveS00: any = jc00.mul(j00).add(jc02_v.mul(j02)).add(float(0.3));
+      const perspectiveS01: any = jc01.mul(j11_jac).add(jc02_v.mul(j12));
+      const perspectiveS11: any = jc11_v.mul(j11_jac).add(jc12_v.mul(j12)).add(float(0.3));
+
+      const orthographicS00: any = cv00.mul(uFX.mul(uFX)).add(float(0.3));
+      const orthographicS01: any = cv01.mul(uFX.mul(uFY));
+      const orthographicS11: any = cv11.mul(uFY.mul(uFY)).add(float(0.3));
+
+      const isOrthographic: any = uOrtho.greaterThan(float(0.5));
+      const s00: any = select(isOrthographic, orthographicS00, perspectiveS00);
+      const s01: any = select(isOrthographic, orthographicS01, perspectiveS01);
+      const s11: any = select(isOrthographic, orthographicS11, perspectiveS11);
 
       // Eigendecomposition (closed form)
       const halfSum: any = s00.add(s11).mul(0.5);
@@ -191,7 +208,8 @@ export class SplatProjection {
       const sinT: any = sin(theta);
 
       // Project center to clip space
-      const clipPos: any = uProj.mul(viewPos);
+      const clipViewZ: any = select(isOrthographic, viewPos.z, perspectiveViewZ);
+      const clipPos: any = uProj.mul(vec4(vx, vy, clipViewZ, 1.0));
 
       // Write outputs — culled splats get radius1=0 as sentinel
       ellipseAStorage.element(idx).assign(
@@ -210,6 +228,8 @@ export class SplatProjection {
     meshWorldMatrix: THREE.Matrix4,
     focalX: number,
     focalY: number,
+    isOrthographic: boolean,
+    cameraNear: number,
     sizeScale: number,
     viewportSize: THREE.Vector2
   ): void {
@@ -222,6 +242,8 @@ export class SplatProjection {
     (this.uProjection as any).value.copy(camera.projectionMatrix);
     (this.uFocalX as any).value = focalX;
     (this.uFocalY as any).value = focalY;
+    (this.uCameraNear as any).value = cameraNear;
+    (this.uIsOrthographic as any).value = isOrthographic ? 1 : 0;
     (this.uSizeScale as any).value = sizeScale;
     (this.uViewportSize as any).value.copy(viewportSize);
   }

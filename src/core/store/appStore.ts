@@ -102,7 +102,13 @@ export interface AppActions {
   applyCameraPreset(preset: CameraPreset): void;
   requestCameraState(camera: AppState["camera"], options?: CameraTransitionRequestOptions): void;
   cancelCameraTransition(): void;
-  setCameraState(camera: Partial<AppState["camera"]>, markDirty?: boolean): void;
+  setCameraState(
+    camera: Partial<AppState["camera"]>,
+    markDirty?: boolean,
+    options?: {
+      rememberPerspective?: boolean;
+    }
+  ): void;
   setRuntimeDebugSettings(settings: Partial<RuntimeDebugState>): void;
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
@@ -772,10 +778,13 @@ export function createAppStore(mode: AppMode): AppStoreApi {
       cancelCameraTransition() {
         cancelRequestedCameraTransition();
       },
-      setCameraState(camera, markDirty = true) {
+      setCameraState(camera, markDirty = true, options) {
         set({
           state: produce(get().state, (draft) => {
             draft.camera = { ...draft.camera, ...camera };
+            if ((options?.rememberPerspective ?? true) && draft.camera.mode === "perspective") {
+              draft.lastPerspectiveCamera = structuredClone(draft.camera);
+            }
             if (markDirty) {
               draft.dirty = true;
             }

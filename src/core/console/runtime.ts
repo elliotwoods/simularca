@@ -1,7 +1,8 @@
 import type { AppKernel } from "@/app/kernel";
-import type { ActorNode, ActorVisibilityMode, ComponentNode, ParameterValues, SelectionEntry } from "@/core/types";
+import type { ActorNode, ActorVisibilityMode, CameraState, ComponentNode, ParameterValues, SelectionEntry } from "@/core/types";
 import { createActorFromDescriptor, listActorCreationOptions } from "@/features/actors/actorCatalog";
 import { loadPluginFromModule } from "@/features/plugins/pluginLoader";
+import { cameraStatesApproximatelyEqual, diffCameraStates, readViewportCameraState } from "@/render/cameraSync";
 
 export interface ConsoleMethodDoc {
   path: string;
@@ -32,6 +33,10 @@ export interface ConsoleExecutionError {
 }
 
 export type ConsoleExecutionResult = ConsoleExecutionSuccess | ConsoleExecutionError;
+
+export interface DebugExecutionOptions {
+  extraScope?: Record<string, unknown>;
+}
 
 const METHOD_DOCS: ConsoleMethodDoc[] = [
   { path: "help", signature: "help()", description: "List available JS console APIs.", examples: ["help()"] },
@@ -141,6 +146,7 @@ const METHOD_DOCS: ConsoleMethodDoc[] = [
   { path: "time.speed", signature: "time.speed(value)", description: "Set simulation speed preset.", examples: ["time.speed(2)"] },
   { path: "camera.preset", signature: "camera.preset(name)", description: "Apply camera preset.", examples: ["camera.preset('isometric')"] },
   { path: "camera.state", signature: "camera.state()", description: "Get current camera.", examples: ["camera.state()"] },
+  { path: "camera.debug", signature: "camera.debug()", description: "Inspect live/store camera sync state.", examples: ["camera.debug()"] },
   { path: "app.undo", signature: "app.undo()", description: "Undo.", examples: ["app.undo()"] },
   { path: "app.redo", signature: "app.redo()", description: "Redo.", examples: ["app.redo()"] },
   { path: "window.state", signature: "window.state()", description: "Get desktop window state.", examples: ["window.state()"] },
@@ -152,6 +158,27 @@ const METHOD_DOCS: ConsoleMethodDoc[] = [
 ];
 
 type TargetInput = "@selected" | string | { id?: string; name?: string } | Array<"@selected" | string | { id?: string; name?: string }>;
+
+interface ViewportDebugRuntime {
+  constructor?: { name?: string };
+  activeCamera?: {
+    position: { x: number; y: number; z: number };
+    near: number;
+    far: number;
+    fov?: number;
+    zoom?: number;
+    isPerspectiveCamera?: boolean;
+    isOrthographicCamera?: boolean;
+  };
+  controls?: {
+    enabled?: boolean;
+    target?: { x: number; y: number; z: number };
+  };
+  cameraController?: { mode?: string; pointerId?: number | null; pointerButton?: number | null };
+  actorTransformController?: { mode?: string; pendingOrbitBlock?: boolean };
+  curveEditController?: { activeActorId?: string | null; pendingOrbitBlock?: boolean };
+  lastAppliedCameraState?: CameraState | null;
+}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -179,6 +206,78 @@ function serializeResult(result: unknown): string {
   } catch {
     return String(result);
   }
+}
+
+function findActiveViewportRuntime(): ViewportDebugRuntime | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  const root = document.querySelector(".viewport-panel") ?? document.querySelector("canvas");
+  if (!root) {
+    return null;
+  }
+  const fiberKey = Object.keys(root).find((key) => key.startsWith("__reactFiber$"));
+  let fiber = fiberKey ? (root as unknown as Record<string, unknown>)[fiberKey] : null;
+  while (fiber && typeof fiber === "object") {
+    const typed = fiber as { type?: { name?: string }; elementType?: { name?: string }; return?: unknown; memoizedState?: unknown };
+    if ((typed.type?.name ?? typed.elementType?.name) === "ViewportPanel") {
+      let hook = typed.memoizedState as { memoizedState?: unknown; next?: unknown } | null;
+      while (hook) {
+        const memoizedState = hook.memoizedState as { current?: unknown } | null;
+        const current = memoizedState?.current as { constructor?: { name?: string } } | undefined;
+        const name = current?.constructor?.name;
+        if (name === "WebGlViewport" || name === "WebGpuViewport") {
+          return current as ViewportDebugRuntime;
+        }
+        hook = (hook.next as { memoizedState?: unknown; next?: unknown } | null) ?? null;
+      }
+      return null;
+    }
+    fiber = (typed.return as unknown) ?? null;
+  }
+  return null;
+}
+
+function buildCameraDebug(kernel: AppKernel) {
+  const storeCamera = kernel.store.getState().state.camera;
+  const viewport = findActiveViewportRuntime();
+  if (!viewport) {
+    return {
+      available: false,
+      backend: kernel.store.getState().state.scene.renderEngine,
+      storeCamera
+    };
+  }
+  const controlsTarget = viewport.controls?.target;
+  const activeCamera = viewport.activeCamera;
+  const liveCamera =
+    activeCamera && controlsTarget
+      ? readViewportCameraState(
+          activeCamera as unknown as Parameters<typeof readViewportCameraState>[0],
+          controlsTarget as Parameters<typeof readViewportCameraState>[1],
+          storeCamera
+        )
+      : null;
+  return {
+    available: true,
+    backend: kernel.store.getState().state.scene.renderEngine,
+    storeCamera,
+    liveCamera,
+    liveMatchesStore: liveCamera ? cameraStatesApproximatelyEqual(liveCamera, storeCamera) : null,
+    liveVsStoreDiff: liveCamera ? diffCameraStates(liveCamera, storeCamera) : null,
+    lastAppliedCameraState: viewport.lastAppliedCameraState ?? null,
+    viewport: {
+      type: viewport.constructor?.name ?? "unknown",
+      controlsEnabled: viewport.controls?.enabled ?? null,
+      cameraControllerMode: viewport.cameraController?.mode ?? null,
+      pointerId: viewport.cameraController?.pointerId ?? null,
+      pointerButton: viewport.cameraController?.pointerButton ?? null,
+      actorTransformMode: viewport.actorTransformController?.mode ?? null,
+      actorTransformPendingOrbitBlock: viewport.actorTransformController?.pendingOrbitBlock ?? null,
+      curveActorId: viewport.curveEditController?.activeActorId ?? null,
+      curvePendingOrbitBlock: viewport.curveEditController?.pendingOrbitBlock ?? null
+    }
+  };
 }
 
 function assertWritable(kernel: AppKernel): void {
@@ -703,6 +802,9 @@ function buildRuntimeApi(kernel: AppKernel) {
       },
       state() {
         return kernel.store.getState().state.camera;
+      },
+      debug() {
+        return buildCameraDebug(kernel);
       }
     },
     app: {
@@ -770,6 +872,44 @@ function buildRuntimeApi(kernel: AppKernel) {
   };
 }
 
+function getAsyncFunctionConstructor(): new (...args: string[]) => (...callArgs: unknown[]) => Promise<unknown> {
+  return Object.getPrototypeOf(async function () {
+    return;
+  }).constructor as new (...args: string[]) => (...callArgs: unknown[]) => Promise<unknown>;
+}
+
+function getValidScopeBindingNames(extraScope: Record<string, unknown>): string[] {
+  return Object.keys(extraScope).filter((key) => /^[A-Za-z_$][\w$]*$/.test(key));
+}
+
+async function evaluateSource(
+  source: string,
+  api: ReturnType<typeof buildRuntimeApi>,
+  extraScope: Record<string, unknown>
+): Promise<unknown> {
+  const AsyncFunction = getAsyncFunctionConstructor();
+  const bindingNames = getValidScopeBindingNames(extraScope);
+  const bindingValues = bindingNames.map((name) => extraScope[name]);
+  try {
+    const expressionFn = new AsyncFunction(
+      "api",
+      ...bindingNames,
+      `'use strict'; const { help, scene, actor, component, project, camera, time, app, window, plugin } = api; return await (${source});`
+    );
+    return await expressionFn(api, ...bindingValues);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    const statementFn = new AsyncFunction(
+      "api",
+      ...bindingNames,
+      `'use strict'; const { help, scene, actor, component, project, camera, time, app, window, plugin } = api; return await (async () => {\n${source}\n})();`
+    );
+    return await statementFn(api, ...bindingValues);
+  }
+}
+
 export function getConsoleMethodDocs(): ConsoleMethodDoc[] {
   return METHOD_DOCS;
 }
@@ -802,6 +942,14 @@ export function getConsoleCompletions(input: string, cursor: number): { items: C
 }
 
 export async function executeConsoleSource(kernel: AppKernel, source: string): Promise<ConsoleExecutionResult> {
+  return await executeDebugSource(kernel, source);
+}
+
+export async function executeDebugSource(
+  kernel: AppKernel,
+  source: string,
+  options: DebugExecutionOptions = {}
+): Promise<ConsoleExecutionResult> {
   const trimmed = source.trim();
   if (!trimmed) {
     return { ok: false, summary: "No command to run.", error: "Input is empty." };
@@ -810,27 +958,7 @@ export async function executeConsoleSource(kernel: AppKernel, source: string): P
   const api = buildRuntimeApi(kernel);
 
   try {
-    const AsyncFunction = Object.getPrototypeOf(async function () {
-      return;
-    }).constructor as new (...args: string[]) => (...callArgs: unknown[]) => Promise<unknown>;
-    let result: unknown;
-    try {
-      const expressionFn = new AsyncFunction(
-        "api",
-        `'use strict'; const { help, scene, actor, component, project, camera, time, app, window, plugin } = api; return await (${source});`
-      );
-      result = await expressionFn(api);
-    } catch (error) {
-      const syntaxError = error instanceof SyntaxError;
-      if (!syntaxError) {
-        throw error;
-      }
-      const statementFn = new AsyncFunction(
-        "api",
-        `'use strict'; const { help, scene, actor, component, project, camera, time, app, window, plugin } = api; return await (async () => {\n${source}\n})();`
-      );
-      result = await statementFn(api);
-    }
+    const result = await evaluateSource(source, api, options.extraScope ?? {});
 
     return {
       ok: true,

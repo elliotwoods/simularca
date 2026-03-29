@@ -7,11 +7,14 @@ import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import type { AppKernel } from "@/app/kernel";
-import type { ActorNode, ActorRuntimeStatus, AppState } from "@/core/types";
+import type { ActorNode, ActorRuntimeStatus, AppState, DxfDrawingPlane, DxfInputUnits, DxfLayerStateMap, DxfSourcePlane } from "@/core/types";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import { getEffectiveCurveHandlesAt } from "@/features/curves/handles";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
 import { estimateCurveLength, sampleCurvePositionAndTangent } from "@/features/curves/sampler";
+import { parseDxf } from "@/features/dxf/parseDxf";
+import { buildDxfScene, createDxfObject, disposeDxfObject, syncDxfAppearance } from "@/features/dxf/dxfToScene";
+import type { BuiltDxfScene, ParsedDxfDocument } from "@/features/dxf/dxfTypes";
 import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
 import { MistVolumeController, type MistVolumeQualityMode } from "@/render/mistVolumeController";
@@ -20,6 +23,7 @@ import { collectActorRenderOrder } from "@/render/sceneRenderOrder";
 const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
 const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
 const MESH_RENDER_ROOT_NAME = "mesh-render-root";
+const DXF_RENDER_ROOT_NAME = "dxf-render-root";
 const CURVE_RENDER_LINE_NAME = "curve-render-line";
 const SPLAT_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ");
 const SPLAT_COORDINATE_CORRECTION_QUATERNION = new THREE.Quaternion().setFromEuler(SPLAT_COORDINATE_CORRECTION_EULER);
@@ -190,6 +194,58 @@ function normalizeBackgroundColor(value: unknown): string {
   return "#070b12";
 }
 
+function getDxfInputUnits(actor: ActorNode): DxfInputUnits {
+  switch (actor.params.inputUnits) {
+    case "centimeters":
+    case "meters":
+    case "inches":
+    case "feet":
+      return actor.params.inputUnits;
+    case "millimeters":
+    default:
+      return "millimeters";
+  }
+}
+
+function getDxfDrawingPlane(actor: ActorNode): DxfDrawingPlane {
+  switch (actor.params.drawingPlane) {
+    case "front-xy":
+    case "side-zy":
+      return actor.params.drawingPlane;
+    case "plan-xz":
+    default:
+      return "plan-xz";
+  }
+}
+
+function getDxfSourcePlane(actor: ActorNode): DxfSourcePlane {
+  switch (actor.params.sourcePlane) {
+    case "xy":
+    case "yz":
+    case "xz":
+      return actor.params.sourcePlane;
+    case "auto":
+    default:
+      return "auto";
+  }
+}
+
+function getDxfCurveResolution(actor: ActorNode): number {
+  const value = Number(actor.params.curveResolution ?? 32);
+  if (!Number.isFinite(value)) {
+    return 32;
+  }
+  return Math.max(4, Math.min(256, Math.floor(value)));
+}
+
+function getDxfLayerStates(actor: ActorNode): DxfLayerStateMap {
+  const value = actor.params.layerStates;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as DxfLayerStateMap;
+}
+
 function readAttributeRange(attribute: any): { min: number; max: number } {
   if (!attribute || typeof attribute.count !== "number" || attribute.count <= 0) {
     return { min: 0, max: 0 };
@@ -282,6 +338,13 @@ export class SceneController {
   private readonly gaussianReloadTokenByActorId = new Map<string, number>();
   private readonly meshAssetByActorId = new Map<string, string>();
   private readonly meshReloadTokenByActorId = new Map<string, number>();
+  private readonly dxfAssetByActorId = new Map<string, string>();
+  private readonly dxfReloadTokenByActorId = new Map<string, number>();
+  private readonly dxfDocumentByActorId = new Map<string, ParsedDxfDocument>();
+  private readonly dxfSceneByActorId = new Map<string, BuiltDxfScene>();
+  private readonly dxfBuildSignatureByActorId = new Map<string, string>();
+  private readonly dxfAppearanceSignatureByActorId = new Map<string, string>();
+  private readonly dxfStatusSignatureByActorId = new Map<string, string>();
   private readonly gaussianBoundsHelpers = new Map<string, any>();
   private readonly meshLoadTokenByActorId = new Map<string, number>();
   private readonly primitiveSignatureByActorId = new Map<string, string>();
@@ -397,6 +460,13 @@ export class SceneController {
         this.gaussianReloadTokenByActorId.delete(existing);
         this.meshAssetByActorId.delete(existing);
         this.meshReloadTokenByActorId.delete(existing);
+        this.dxfAssetByActorId.delete(existing);
+        this.dxfReloadTokenByActorId.delete(existing);
+        this.dxfDocumentByActorId.delete(existing);
+        this.dxfSceneByActorId.delete(existing);
+        this.dxfBuildSignatureByActorId.delete(existing);
+        this.dxfAppearanceSignatureByActorId.delete(existing);
+        this.dxfStatusSignatureByActorId.delete(existing);
         this.meshLoadTokenByActorId.delete(existing);
         const helper = this.gaussianBoundsHelpers.get(existing);
         if (helper) {
@@ -411,6 +481,12 @@ export class SceneController {
         this.curveSignatureByActorId.delete(existing);
         this.meshMaterialSigByActorId.delete(existing);
         this.pluginDescriptorByActorId.delete(existing);
+        if (object instanceof THREE.Group) {
+          const dxfRoot = object.getObjectByName(DXF_RENDER_ROOT_NAME);
+          if (dxfRoot instanceof THREE.Group) {
+            disposeDxfObject(dxfRoot);
+          }
+        }
         this.kernel.store.getState().actions.setActorStatus(existing, null);
         this.primitiveSignatureByActorId.delete(existing);
         this.lastKnownActorById.delete(existing);
@@ -447,6 +523,19 @@ export class SceneController {
         _ta4 = performance.now();
         this.syncMeshMaterials(actor, state);
         _ta5 = performance.now();
+      }
+      if (actor.actorType === "dxf-reference") {
+        const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+        const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+        const needsReload = assetId !== (this.dxfAssetByActorId.get(actor.id) ?? "")
+          || reloadToken !== (this.dxfReloadTokenByActorId.get(actor.id) ?? 0);
+        const needsInitialLoad = assetId.length > 0
+          && !this.dxfDocumentByActorId.has(actor.id)
+          && !this.dxfStatusSignatureByActorId.has(actor.id);
+        if (needsReload || needsInitialLoad) {
+          await this.syncDxfReferenceAsset(actor);
+        }
+        this.syncDxfReferenceVisual(actor);
       }
       if (actor.actorType === "primitive") {
         this.syncPrimitiveActor(actor);
@@ -820,6 +909,12 @@ export class SceneController {
       const renderRoot = new THREE.Group();
       renderRoot.name = MESH_RENDER_ROOT_NAME;
       container.add(renderRoot);
+      return container;
+    }
+
+    if (actor.actorType === "dxf-reference") {
+      const container = new THREE.Group();
+      container.name = "dxf-container";
       return container;
     }
 
@@ -1338,6 +1433,213 @@ export class SceneController {
       },
       updatedAtIso: new Date().toISOString()
     });
+  }
+
+  private mergeDxfLayerStates(actor: ActorNode, built: BuiltDxfScene): DxfLayerStateMap {
+    const current = getDxfLayerStates(actor);
+    const next: DxfLayerStateMap = {};
+    for (const layer of built.layers) {
+      const existing = current[layer.layerName];
+      next[layer.layerName] = {
+        name: layer.layerName,
+        sourceColor: layer.sourceColor,
+        color: typeof existing?.color === "string" ? existing.color : layer.sourceColor,
+        visible: existing?.visible !== false
+      };
+    }
+    if (JSON.stringify(next) !== JSON.stringify(current)) {
+      this.kernel.store.getState().actions.updateActorParamsNoHistory(actor.id, {
+        layerStates: next
+      });
+    }
+    return next;
+  }
+
+  private clearDxfActor(actor: ActorNode, object: THREE.Group): void {
+    const existing = object.getObjectByName(DXF_RENDER_ROOT_NAME);
+    if (existing instanceof THREE.Group) {
+      disposeDxfObject(existing);
+      object.remove(existing);
+    }
+    this.dxfDocumentByActorId.delete(actor.id);
+    this.dxfSceneByActorId.delete(actor.id);
+    this.dxfBuildSignatureByActorId.delete(actor.id);
+    this.dxfAppearanceSignatureByActorId.delete(actor.id);
+    this.dxfStatusSignatureByActorId.delete(actor.id);
+  }
+
+  private async syncDxfReferenceAsset(actor: ActorNode): Promise<void> {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) {
+      return;
+    }
+    const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+    const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+    this.dxfAssetByActorId.set(actor.id, assetId);
+    this.dxfReloadTokenByActorId.set(actor.id, reloadToken);
+
+    if (!assetId) {
+      this.clearDxfActor(actor, object);
+      this.dxfAssetByActorId.delete(actor.id);
+      this.dxfReloadTokenByActorId.delete(actor.id);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, null);
+      return;
+    }
+
+    const state = this.kernel.store.getState().state;
+    const asset = state.assets.find((entry) => entry.id === assetId);
+    if (!asset) {
+      this.clearDxfActor(actor, object);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {},
+        error: "Asset reference not found in project state.",
+        updatedAtIso: new Date().toISOString()
+      });
+      return;
+    }
+
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        assetFileName: asset.sourceFileName,
+        loadState: "loading"
+      },
+      updatedAtIso: new Date().toISOString()
+    });
+
+    try {
+      const bytes = await this.kernel.storage.readAssetBytes({
+        projectName: state.activeProjectName,
+        relativePath: asset.relativePath
+      });
+      const text = new TextDecoder("utf-8").decode(bytes);
+      const parsed = parseDxf(text);
+      this.dxfDocumentByActorId.set(actor.id, parsed);
+      this.dxfSceneByActorId.delete(actor.id);
+      this.dxfBuildSignatureByActorId.delete(actor.id);
+      this.dxfAppearanceSignatureByActorId.delete(actor.id);
+    } catch (error) {
+      this.clearDxfActor(actor, object);
+      const message = formatLoadError(error);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: {
+          assetFileName: asset.sourceFileName,
+          loadState: "failed"
+        },
+        error: message,
+        updatedAtIso: new Date().toISOString()
+      });
+      this.kernel.store.getState().actions.setStatus(`DXF load failed: ${asset.sourceFileName} (${message})`);
+    }
+  }
+
+  private syncDxfReferenceVisual(actor: ActorNode): void {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) {
+      return;
+    }
+    const document = this.dxfDocumentByActorId.get(actor.id);
+    if (!document) {
+      return;
+    }
+    const inputUnits = getDxfInputUnits(actor);
+    const sourcePlane = getDxfSourcePlane(actor);
+    const drawingPlane = getDxfDrawingPlane(actor);
+    const curveResolution = getDxfCurveResolution(actor);
+    const buildSignature = JSON.stringify({
+      assetId: this.dxfAssetByActorId.get(actor.id) ?? "",
+      reloadToken: this.dxfReloadTokenByActorId.get(actor.id) ?? 0,
+      inputUnits,
+      sourcePlane,
+      drawingPlane,
+      curveResolution
+    });
+
+    let built = this.dxfSceneByActorId.get(actor.id);
+    if (!built || buildSignature !== this.dxfBuildSignatureByActorId.get(actor.id)) {
+      built = buildDxfScene(document, {
+        inputUnits,
+        sourcePlane,
+        drawingPlane,
+        curveResolution,
+        invertColors: false,
+        showText: true
+      });
+      this.dxfSceneByActorId.set(actor.id, built);
+      this.dxfBuildSignatureByActorId.set(actor.id, buildSignature);
+      this.dxfAppearanceSignatureByActorId.delete(actor.id);
+
+      const existing = object.getObjectByName(DXF_RENDER_ROOT_NAME);
+      if (existing instanceof THREE.Group) {
+        disposeDxfObject(existing);
+        object.remove(existing);
+      }
+      const mergedLayerStates = this.mergeDxfLayerStates(actor, built);
+      const renderRoot = createDxfObject(built, mergedLayerStates, {
+        invertColors: actor.params.invertColors === true,
+        showText: actor.params.showText !== false,
+        drawingPlane
+      });
+      renderRoot.name = DXF_RENDER_ROOT_NAME;
+      object.add(renderRoot);
+    }
+
+    built = this.dxfSceneByActorId.get(actor.id) ?? built;
+    if (!built) {
+      return;
+    }
+    const mergedLayerStates = this.mergeDxfLayerStates(actor, built);
+    const appearanceSignature = JSON.stringify({
+      layerStates: mergedLayerStates,
+      invertColors: actor.params.invertColors === true,
+      showText: actor.params.showText !== false
+    });
+    const renderRoot = object.getObjectByName(DXF_RENDER_ROOT_NAME);
+    let visibleLayerCount = Object.keys(mergedLayerStates).length;
+    const appearanceChanged = appearanceSignature !== this.dxfAppearanceSignatureByActorId.get(actor.id);
+    if (renderRoot instanceof THREE.Group && appearanceChanged) {
+      visibleLayerCount = syncDxfAppearance(renderRoot, mergedLayerStates, {
+        invertColors: actor.params.invertColors === true,
+        showText: actor.params.showText !== false
+      });
+      this.dxfAppearanceSignatureByActorId.set(actor.id, appearanceSignature);
+    } else {
+      visibleLayerCount = Object.values(mergedLayerStates).filter((entry) => entry.visible !== false).length;
+    }
+
+    const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+    const asset = this.kernel.store.getState().state.assets.find((entry) => entry.id === assetId);
+    const unsupportedEntries = Object.entries(built.unsupportedEntityCounts);
+    const statusValues = {
+      assetFileName: asset?.sourceFileName ?? "",
+      loadState: "loaded",
+      units: inputUnits,
+      sourcePlane,
+      resolvedSourcePlane: built.resolvedSourcePlane,
+      sourcePlaneMode: built.sourcePlaneMode,
+      plane: drawingPlane,
+      layerCount: built.layers.length,
+      visibleLayerCount,
+      entityCount: built.entityCount,
+      segmentCount: built.segmentCount,
+      textCount: built.textCount,
+      boundsMin: built.bounds?.min ?? null,
+      boundsMax: built.bounds?.max ?? null,
+      unsupportedEntityCount: unsupportedEntries.reduce((sum, [, count]) => sum + count, 0),
+      unsupportedEntityCounts: unsupportedEntries.length > 0
+        ? unsupportedEntries.map(([name, count]) => `${name}:${count}`).join(", ")
+        : null,
+      unsupportedEntityTypes: unsupportedEntries.map(([name, count]) => `${name}:${count}`),
+      warnings: built.warnings,
+      layerOrder: built.layerOrder
+    };
+    const statusSignature = JSON.stringify(statusValues);
+    if (statusSignature !== this.dxfStatusSignatureByActorId.get(actor.id)) {
+      this.dxfStatusSignatureByActorId.set(actor.id, statusSignature);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, {
+        values: statusValues,
+        updatedAtIso: new Date().toISOString()
+      });
+    }
   }
 
   private applyActorTransform(actor: ActorNode): void {

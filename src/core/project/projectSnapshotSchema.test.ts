@@ -58,6 +58,7 @@ describe("project snapshot schema", () => {
       actors: state.actors,
       components: state.components,
       camera: state.camera,
+      lastPerspectiveCamera: state.lastPerspectiveCamera,
       time: state.time,
       materials: state.materials,
       assets: state.assets
@@ -77,6 +78,7 @@ describe("project snapshot schema", () => {
     });
     expect(parsed.actors[curveActorId]?.actorType).toBe("curve");
     expect(parsed.actors[curveActorId]?.params.curveData).toBeTruthy();
+    expect(parsed.lastPerspectiveCamera).toEqual(state.lastPerspectiveCamera);
   });
 
   it("hydrates default tonemapping settings for legacy snapshots", () => {
@@ -130,6 +132,52 @@ describe("project snapshot schema", () => {
       mode: "vsync",
       targetFps: 60
     });
+    expect(parsed.lastPerspectiveCamera).toEqual(parsed.camera);
+  });
+
+  it("migrates legacy DXF reference actors into the DXF drawing plugin", () => {
+    const payload = {
+      schemaVersion: PROJECT_SCHEMA_VERSION - 1,
+      appMode: "electron-rw",
+      projectName: "demo",
+      snapshotName: "main",
+      createdAtIso: "2026-03-02T00:00:00.000Z",
+      updatedAtIso: "2026-03-02T00:00:00.000Z",
+      scene: createInitialState("electron-rw", "demo", "main").scene,
+      actors: {
+        actor_1: {
+          id: "actor_1",
+          name: "Legacy DXF",
+          enabled: true,
+          kind: "actor",
+          actorType: "dxf-reference",
+          visibilityMode: "visible",
+          parentActorId: null,
+          childActorIds: [],
+          componentIds: [],
+          transform: {
+            position: [0, 0, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1]
+          },
+          params: {
+            assetId: "asset_1",
+            inputUnits: "millimeters",
+            drawingPlane: "plan-xz"
+          }
+        }
+      },
+      components: {},
+      camera: createInitialState("electron-rw", "demo", "main").camera,
+      time: createInitialState("electron-rw", "demo", "main").time,
+      materials: {},
+      assets: []
+    };
+
+    const parsed = parseProjectSnapshot(JSON.stringify(payload));
+    expect(parsed.schemaVersion).toBe(PROJECT_SCHEMA_VERSION);
+    expect(parsed.actors.actor_1?.actorType).toBe("plugin");
+    expect(parsed.actors.actor_1?.pluginType).toBe("plugin.dxfDrawing.actor");
   });
 
   it("rejects removed native gaussian splat content with a clear error", () => {
@@ -172,3 +220,4 @@ describe("project snapshot schema", () => {
     );
   });
 });
+

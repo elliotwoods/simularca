@@ -57,7 +57,7 @@ export interface SortFrameStats {
   framesSinceFullSort: number;
   angleSinceSort: number;
   modelChange: ModelChangeKind;
-  projectionDirty: boolean;
+  viewDirty: boolean;
 }
 
 function nextPowerOfTwo(n: number): number {
@@ -349,8 +349,8 @@ export class GpuSorter {
    * Update the chunk visibility buffer from CPU-side frustum culling results.
    * Call this before sort() each frame.
    */
-  updateChunkVisibility(visibility: Uint32Array): void {
-    if (!this.chunkVisibilityBuffer) return;
+  updateChunkVisibility(visibility: Uint32Array): boolean {
+    if (!this.chunkVisibilityBuffer) return false;
     const arr = this.chunkVisibilityBuffer.array as Uint32Array;
     // Only mark dirty if data actually changed (avoid forcing full sort every frame)
     let changed = false;
@@ -360,6 +360,7 @@ export class GpuSorter {
     arr.set(visibility);
     this.chunkVisibilityBuffer.needsUpdate = true;
     if (changed) this.visibilityDirty = true;
+    return changed;
   }
 
   /**
@@ -375,7 +376,7 @@ export class GpuSorter {
         framesSinceFullSort: this.framesSinceSort,
         angleSinceSort: 0,
         modelChange: "none",
-        projectionDirty: false
+        viewDirty: false
       };
     }
 
@@ -386,7 +387,7 @@ export class GpuSorter {
     const angleSinceSort = this.hasSortedOnce ? this.angleSinceLastSort(camera) : 0;
 
     const cameraMoved = this.hasCameraMoved(camera);
-    const projectionDirty = !this.hasSortedOnce || cameraMoved || this.visibilityDirty || modelChange !== "none";
+    const viewDirty = !this.hasSortedOnce || cameraMoved || this.visibilityDirty || modelChange !== "none";
     if (!cameraMoved && !this.visibilityDirty && modelChange === "none" && this.hasSortedOnce) {
       this.lastModelMatrix.copy(modelWorldMatrix);
       this.hasModelSnapshot = true;
@@ -396,7 +397,7 @@ export class GpuSorter {
         framesSinceFullSort: this.framesSinceSort,
         angleSinceSort,
         modelChange,
-        projectionDirty
+        viewDirty
       };
     }
 
@@ -472,7 +473,7 @@ export class GpuSorter {
       framesSinceFullSort: this.framesSinceSort,
       angleSinceSort,
       modelChange,
-      projectionDirty
+      viewDirty
     };
   }
 

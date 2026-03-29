@@ -74,6 +74,7 @@ import {
   ColorField,
   DigitScrubInput,
   DrillInRow,
+  DxfLayerStatesField,
   FileField,
   NumberField,
   SegmentedControl,
@@ -3682,6 +3683,54 @@ export function InspectorPane() {
                   ? defaultValue.filter((entry): entry is string => typeof entry === "string")
                   : [];
                 updateSelectedActorParams(definition.key, resetList);
+              }}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "dxf-layer-states") {
+          const layerStates = (typeof current === "object" && current !== null && !Array.isArray(current)
+            ? current
+            : {}) as Record<string, { name?: string; sourceColor?: string; color?: string; visible?: boolean }>;
+          const layerOrder = Array.isArray(runtimeStatus?.values.layerOrder)
+            ? (runtimeStatus?.values.layerOrder as string[]).filter((entry) => typeof entry === "string")
+            : undefined;
+          return (
+            <DxfLayerStatesField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={Object.fromEntries(
+                Object.entries(layerStates).map(([name, entry]) => [
+                  name,
+                  {
+                    name: typeof entry.name === "string" ? entry.name : name,
+                    sourceColor: typeof entry.sourceColor === "string" ? entry.sourceColor : "#ffffff",
+                    color: typeof entry.color === "string" ? entry.color : "#ffffff",
+                    visible: entry.visible !== false
+                  }
+                ])
+              )}
+              layerOrder={layerOrder}
+              disabled={readOnly || !singleSelection}
+              onReset={() => {
+                updateSelectedActorParams(
+                  definition.key,
+                  Object.fromEntries(
+                    Object.entries(layerStates).map(([name, entry]) => [
+                      name,
+                      {
+                        name: typeof entry.name === "string" ? entry.name : name,
+                        sourceColor: typeof entry.sourceColor === "string" ? entry.sourceColor : "#ffffff",
+                        color: typeof entry.sourceColor === "string" ? entry.sourceColor : "#ffffff",
+                        visible: entry.visible !== false
+                      }
+                    ])
+                  )
+                );
               }}
               onChange={(next) => {
                 updateSelectedActorParams(definition.key, next);

@@ -20,6 +20,7 @@ function buildManifest(projectName: string, snapshotName = "main", assets: Proje
     actors: state.actors,
     components: state.components,
     camera: state.camera,
+    lastPerspectiveCamera: state.lastPerspectiveCamera,
     time: state.time,
     materials: state.materials,
     assets

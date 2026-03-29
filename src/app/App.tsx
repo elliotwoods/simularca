@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { BUILD_INFO, buildInfoSummary } from "@/app/buildInfo";
+import { resolveDroppedFileSourcePath } from "@/app/dragDropFilePath";
+import { installRendererDebugBridge } from "@/app/liveDebugBridge";
 import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
 import { isMacPlatform, isViewportFullscreenShortcut } from "@/app/viewportFullscreenShortcut";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
@@ -218,7 +220,9 @@ export function App() {
       const elapsed = nowMs - active.startAtMs;
       const t = Math.max(0, Math.min(1, elapsed / active.durationMs));
       const nextCamera = interpolateCameraState(active.from, active.to, t);
-      kernel.store.getState().actions.setCameraState(nextCamera, active.markDirty);
+      kernel.store.getState().actions.setCameraState(nextCamera, active.markDirty, {
+        rememberPerspective: false
+      });
       if (t >= 1) {
         kernel.store.getState().actions.setCameraState(active.to, active.markDirty);
         cameraTransitionRef.current = null;
@@ -250,7 +254,7 @@ export function App() {
       }
       const fileName = file.name;
       const fileExtension = fileExtensionFromName(fileName);
-      const sourcePath = (file as File & { path?: string }).path ?? null;
+      const sourcePath = resolveDroppedFileSourcePath(file, window.electronAPI);
       const options = listCompatibleActorFileImportOptions(kernel, fileName);
       return {
         fileName,
@@ -267,7 +271,7 @@ export function App() {
       if (!input.sourcePath) {
         kernel.store
           .getState()
-          .actions.setStatus("Drag-and-drop import requires desktop (Electron) mode with local file path access.");
+          .actions.setStatus("Unable to import dropped file: local file path could not be resolved from Electron.");
         return;
       }
       try {
@@ -533,7 +537,9 @@ export function App() {
             const alpha = (warmupIndex + 1) / warmupStepCount;
             const simTime = startTime + settings.preRunSeconds * alpha;
             kernel.store.getState().actions.setElapsedSimSeconds(simTime);
-            kernel.store.getState().actions.setCameraState(previousCamera, false);
+            kernel.store.getState().actions.setCameraState(previousCamera, false, {
+              rememberPerspective: false
+            });
             pushProgress({
               phase: "pre-run",
               phaseIndex: warmupIndex + 1,
@@ -562,7 +568,9 @@ export function App() {
             frameSimTime(0, frameIndex, settings.fps),
             settings.cameraPathId
           );
-          kernel.store.getState().actions.setCameraState(nextCamera, false);
+          kernel.store.getState().actions.setCameraState(nextCamera, false, {
+            rememberPerspective: false
+          });
           pushProgress({
             phase: "render",
             phaseIndex: frameIndex + 1,
@@ -609,7 +617,9 @@ export function App() {
         if (viewport) {
           viewport.stop();
         }
-        kernel.store.getState().actions.setCameraState(previousCamera, false);
+        kernel.store.getState().actions.setCameraState(previousCamera, false, {
+          rememberPerspective: false
+        });
         kernel.store.getState().actions.setElapsedSimSeconds(previousTime.elapsedSimSeconds);
         kernel.store.getState().actions.setTimeRunning(previousTime.running);
         kernel.store.getState().actions.setTimeSpeed(previousTime.speed);
@@ -695,6 +705,13 @@ export function App() {
       return;
     }
     return startLocalPluginAutoReload(kernel);
+  }, [kernel]);
+
+  useEffect(() => {
+    if (!window.electronAPI || BUILD_INFO.buildKind !== "dev") {
+      return;
+    }
+    return installRendererDebugBridge(kernel);
   }, [kernel]);
 
   useEffect(() => {

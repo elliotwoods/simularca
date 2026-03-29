@@ -177,7 +177,26 @@ describe("appStore undo/redo", () => {
     });
 
     expect(store.getState().state.camera.position).toEqual([2, 3, 4]);
+    expect(store.getState().state.lastPerspectiveCamera?.position).toEqual([2, 3, 4]);
     expect(store.getState().state.dirty).toBe(true);
+  });
+
+  it("does not overwrite remembered perspective state when explicitly disabled", () => {
+    const store = createAppStore("electron-rw");
+    const rememberedBefore = structuredClone(store.getState().state.lastPerspectiveCamera);
+
+    store.getState().actions.setCameraState(
+      {
+        position: [2, 3, 4],
+        fov: 120
+      },
+      false,
+      { rememberPerspective: false }
+    );
+
+    expect(store.getState().state.camera.position).toEqual([2, 3, 4]);
+    expect(store.getState().state.camera.fov).toBe(120);
+    expect(store.getState().state.lastPerspectiveCamera).toEqual(rememberedBefore);
   });
 });
 

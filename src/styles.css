@@ -2182,6 +2182,43 @@ select {
   align-items: start;
 }
 
+.dxf-layer-states-list {
+  display: grid;
+  gap: 6px;
+}
+
+.dxf-layer-states-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dxf-layer-states-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.dxf-layer-states-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dxf-layer-states-color {
+  inline-size: 36px;
+  block-size: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .widget-reset-button {
   inline-size: 28px;
   block-size: 28px;

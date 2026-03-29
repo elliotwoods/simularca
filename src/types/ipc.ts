@@ -61,8 +61,76 @@ export interface LocalPluginCandidate {
   updatedAtMs: number;
 }
 
+export interface LiveDebugExecutionSuccess {
+  ok: true;
+  summary: string;
+  result?: unknown;
+  details?: string;
+}
+
+export interface LiveDebugExecutionError {
+  ok: false;
+  summary: string;
+  error: string;
+  details?: string;
+}
+
+export type LiveDebugExecutionResult = LiveDebugExecutionSuccess | LiveDebugExecutionError;
+
+export interface RendererDebugExecuteRequest {
+  source: string;
+  mode: "console" | "eval";
+  windowId?: number;
+}
+
+export interface MainDebugExecuteRequest {
+  source: string;
+}
+
+export interface CodexDebugSessionWindowInfo {
+  id: number;
+  title: string;
+  url: string;
+  focused: boolean;
+  visible: boolean;
+}
+
+export interface CodexDebugSessionManifest {
+  pid: number;
+  startedAtIso: string;
+  port: number;
+  token: string;
+  baseUrl: string;
+  windowIds: number[];
+  build: {
+    appVersion: string;
+    buildKind: "dev" | "build";
+    electronVersion: string;
+    nodeVersion: string;
+  };
+}
+
+export interface RendererDebugSessionInfo {
+  ready: boolean;
+  buildKind: string;
+  activeProjectName: string;
+  activeSnapshotName: string;
+  mode: string;
+  selection: Array<{ kind: string; id: string }>;
+  actorCount: number;
+  componentCount: number;
+  statusMessage: string;
+}
+
+export interface RendererDebugBridge {
+  executeConsole(source: string): Promise<LiveDebugExecutionResult>;
+  executeEval(source: string): Promise<LiveDebugExecutionResult>;
+  sessionInfo(): RendererDebugSessionInfo;
+}
+
 export interface ElectronApi {
   mode: AppMode;
+  getPathForFile(file: File): string | null;
   listProjects(): Promise<string[]>;
   listSnapshots(projectName: string): Promise<ProjectSnapshotListEntry[]>;
   loadDefaults(): Promise<DefaultProjectPointer>;

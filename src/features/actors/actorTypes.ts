@@ -787,6 +787,86 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
   ]
 };
 
+export const DXF_REFERENCE_ACTOR_SCHEMA: ParameterSchema = {
+  id: "actor.dxfReference",
+  title: "DXF Drawing",
+  params: [
+    {
+      key: "assetId",
+      label: "DXF Asset",
+      type: "file",
+      accept: [".dxf"],
+      dialogTitle: "Select DXF drawing",
+      import: {
+        mode: "import-asset",
+        kind: "generic"
+      }
+    },
+    {
+      key: "inputUnits",
+      label: "Input Units",
+      type: "select",
+      groupKey: "source",
+      groupLabel: "Source",
+      options: ["millimeters", "centimeters", "meters", "inches", "feet"],
+      defaultValue: "millimeters"
+    },
+    {
+      key: "sourcePlane",
+      label: "Source Plane",
+      type: "select",
+      groupKey: "source",
+      groupLabel: "Source",
+      options: ["auto", "xy", "yz", "xz"],
+      defaultValue: "auto"
+    },
+    {
+      key: "drawingPlane",
+      label: "Drawing Plane",
+      type: "select",
+      groupKey: "source",
+      groupLabel: "Source",
+      options: ["plan-xz", "front-xy", "side-zy"],
+      defaultValue: "plan-xz"
+    },
+    {
+      key: "curveResolution",
+      label: "Curve Resolution",
+      type: "number",
+      groupKey: "source",
+      groupLabel: "Source",
+      min: 4,
+      max: 256,
+      step: 1,
+      defaultValue: 32
+    },
+    {
+      key: "invertColors",
+      label: "Invert Colors",
+      type: "boolean",
+      groupKey: "display",
+      groupLabel: "Display",
+      defaultValue: false
+    },
+    {
+      key: "showText",
+      label: "Show Text",
+      type: "boolean",
+      groupKey: "display",
+      groupLabel: "Display",
+      defaultValue: true
+    },
+    {
+      key: "layerStates",
+      label: "Layers",
+      type: "dxf-layer-states",
+      groupKey: "layers",
+      groupLabel: "Layers",
+      defaultValue: {}
+    }
+  ]
+};
+
 export const PRIMITIVE_ACTOR_SCHEMA: ParameterSchema = {
   id: "actor.primitive",
   title: "Primitive",
@@ -931,4 +1011,5 @@ export const CAMERA_PATH_ACTOR_SCHEMA: ParameterSchema = {
     }
   ]
 };
+
 

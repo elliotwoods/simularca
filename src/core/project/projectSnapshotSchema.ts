@@ -29,6 +29,47 @@ function assertNoRemovedNativeGaussianSplatContent(input: unknown): void {
   }
 }
 
+function migrateLegacyDxfActors(input: unknown): unknown {
+  if (!input || typeof input !== "object") {
+    return input;
+  }
+  const payload = input as {
+    actors?: Record<string, {
+      actorType?: unknown;
+      pluginType?: unknown;
+    }>;
+    schemaVersion?: unknown;
+  };
+  if (!payload.actors) {
+    return input;
+  }
+  let changed = false;
+  const actors = Object.fromEntries(
+    Object.entries(payload.actors).map(([actorId, actor]) => {
+      if (actor?.actorType !== "dxf-reference") {
+        return [actorId, actor];
+      }
+      changed = true;
+      return [
+        actorId,
+        {
+          ...actor,
+          actorType: "plugin",
+          pluginType: "plugin.dxfDrawing.actor"
+        }
+      ];
+    })
+  );
+  if (!changed) {
+    return input;
+  }
+  return {
+    ...payload,
+    schemaVersion: typeof payload.schemaVersion === "number" ? Math.max(payload.schemaVersion, PROJECT_SCHEMA_VERSION) : PROJECT_SCHEMA_VERSION,
+    actors
+  };
+}
+
 const actorSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -40,6 +81,7 @@ const actorSchema = z.object({
     "gaussian-splat-spark",
     "mist-volume",
     "mesh",
+    "dxf-reference",
     "primitive",
     "curve",
     "camera-path",
@@ -212,6 +254,15 @@ const projectSnapshotSchema = z.object({
     near: z.number(),
     far: z.number()
   }),
+  lastPerspectiveCamera: z.object({
+    mode: z.enum(["perspective", "orthographic"]),
+    position: vector3Schema,
+    target: vector3Schema,
+    fov: z.number(),
+    zoom: z.number(),
+    near: z.number(),
+    far: z.number()
+  }).nullable().optional(),
   cameraBookmarks: z.array(
     z.object({
       id: z.string(),
@@ -248,8 +299,9 @@ const projectSnapshotSchema = z.object({
 
 export function parseProjectSnapshot(payload: string): ProjectSnapshotManifest {
   const input = JSON.parse(payload) as unknown;
-  assertNoRemovedNativeGaussianSplatContent(input);
-  const parsed = projectSnapshotSchema.safeParse(input);
+  const migratedInput = migrateLegacyDxfActors(input);
+  assertNoRemovedNativeGaussianSplatContent(migratedInput);
+  const parsed = projectSnapshotSchema.safeParse(migratedInput);
   if (!parsed.success) {
     throw new Error(`Project snapshot parse failed: ${parsed.error.message}`);
   }
@@ -261,11 +313,16 @@ export function parseProjectSnapshot(payload: string): ProjectSnapshotManifest {
   return {
     ...parsed.data,
     projectName: parsed.data.projectName ?? parsed.data.sessionName ?? "demo",
-    snapshotName: parsed.data.snapshotName ?? "main"
+    snapshotName: parsed.data.snapshotName ?? "main",
+    lastPerspectiveCamera:
+      parsed.data.lastPerspectiveCamera ??
+      (parsed.data.camera.mode === "perspective" ? parsed.data.camera : null)
   };
 }
 
 export function serializeProjectSnapshot(project: ProjectSnapshotManifest): string {
   return JSON.stringify(project, null, 2);
 }
+
+
 

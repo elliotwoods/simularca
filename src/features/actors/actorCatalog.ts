@@ -150,6 +150,17 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
       scaleFactor: 1
     });
   }
+  if (descriptorId === "actor.dxfReference") {
+    kernel.store.getState().actions.updateActorParams(actorId, {
+      inputUnits: "millimeters",
+      sourcePlane: "auto",
+      drawingPlane: "plan-xz",
+      invertColors: false,
+      showText: true,
+      curveResolution: 32,
+      layerStates: {}
+    });
+  }
   if (descriptorId === "actor.mistVolume") {
     kernel.store.getState().actions.updateActorParams(actorId, {
       volumeActorId: "",

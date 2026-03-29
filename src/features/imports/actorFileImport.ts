@@ -29,6 +29,19 @@ function fileExtensionFromName(fileName: string): string {
   return normalizeExtension(fileName.slice(dotIndex));
 }
 
+function actorNameFromFileName(fileName: string): string {
+  const trimmed = fileName.trim();
+  if (!trimmed) {
+    return "Actor";
+  }
+  const dotIndex = trimmed.lastIndexOf(".");
+  if (dotIndex <= 0) {
+    return trimmed;
+  }
+  const stem = trimmed.slice(0, dotIndex).trim();
+  return stem || trimmed;
+}
+
 function fileDefinitionsFromDescriptor(kernel: AppKernel, descriptorId: string): FileParameterDefinition[] {
   const descriptor = kernel.descriptorRegistry.get(descriptorId);
   if (!descriptor) {
@@ -99,6 +112,8 @@ export async function importFileAsActor(
   if (!actorId) {
     throw new Error(`Unable to create actor: ${args.descriptorId}`);
   }
+
+  kernel.store.getState().actions.renameNode({ kind: "actor", id: actorId }, actorNameFromFileName(args.fileName));
 
   const importedAsset = await importFileForActorParam(kernel, {
     projectName: args.projectName,

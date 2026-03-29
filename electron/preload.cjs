@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 function serializeReason(reason) {
   if (reason instanceof Error) {
@@ -36,6 +36,17 @@ window.addEventListener("unhandledrejection", (event) => {
 
 const api = {
   mode: "electron-rw",
+  getPathForFile: (file) => {
+    try {
+      if (!file || typeof webUtils?.getPathForFile !== "function") {
+        return null;
+      }
+      const filePath = webUtils.getPathForFile(file);
+      return typeof filePath === "string" && filePath.length > 0 ? filePath : null;
+    } catch (_error) {
+      return null;
+    }
+  },
   listProjects: () => ipcRenderer.invoke("projects:list"),
   listSnapshots: (projectName) => ipcRenderer.invoke("snapshots:list", projectName),
   loadDefaults: () => ipcRenderer.invoke("defaults:load"),

@@ -146,6 +146,7 @@ export function DigitScrubInput(props: DigitScrubInputProps) {
     let lastSteps = 0;
     let accumulatedDeltaX = 0;
     let lockAcquired = false;
+    let ignoreInitialLockedDelta = false;
     let disposed = false;
     const root = rootRef.current;
 
@@ -211,6 +212,11 @@ export function DigitScrubInput(props: DigitScrubInputProps) {
       if (deltaX === 0) {
         return;
       }
+      if (ignoreInitialLockedDelta) {
+        // Some browsers report the pre-lock threshold movement as the first locked delta.
+        ignoreInitialLockedDelta = false;
+        return;
+      }
       applyDrag(deltaX, moveEvent);
     };
 
@@ -239,6 +245,7 @@ export function DigitScrubInput(props: DigitScrubInputProps) {
     const onPointerLockChange = () => {
       if (document.pointerLockElement === root) {
         lockAcquired = true;
+        ignoreInitialLockedDelta = true;
         draggingRef.current = true;
         setGlobalScrubMode(true);
         return;

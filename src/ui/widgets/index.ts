@@ -4,6 +4,7 @@ export { ActorRefListField } from "@/ui/widgets/ActorRefListField";
 export { BufferedNumberTextInput } from "@/ui/widgets/BufferedNumberTextInput";
 export { ColorField } from "@/ui/widgets/ColorField";
 export { DigitScrubInput } from "@/ui/widgets/DigitScrubInput";
+export { DxfLayerStatesField } from "@/ui/widgets/DxfLayerStatesField";
 export { FileField } from "@/ui/widgets/FileField";
 export { InspectorFieldRow } from "@/ui/widgets/InspectorFieldRow";
 export { NumberField } from "@/ui/widgets/NumberField";

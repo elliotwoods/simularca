@@ -331,7 +331,7 @@ export class CameraInteractionController {
       camera.position.add(translation);
       this.controls.target.add(translation);
       updateCameraLookAt(camera, this.controls.target);
-      this.panState.lastPoint.copy(currentPoint);
+      this.panState.lastPoint.copy(currentPoint).add(translation);
       this.processedPointerClient.copy(this.pointerClient);
       return;
     }

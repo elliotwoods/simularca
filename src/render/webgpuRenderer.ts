@@ -4,9 +4,10 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { pass } from "three/tsl";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
-import type { SceneFramePacingSettings } from "@/core/types";
+import type { CameraState, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "./actorTransformController";
 import { CameraInteractionController } from "./cameraInteractionController";
+import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "./cameraSync";
 import { SceneController } from "./sceneController";
 import { incompatibilityReason } from "./engineCompatibility";
 import { FramePacer } from "./framePacing";
@@ -38,7 +39,7 @@ export class WebGpuViewport {
   private frameLastAt = performance.now();
   private fastStatsLastSampleAt = performance.now();
   private slowStatsLastSampleAt = performance.now();
-  private lastAppliedCameraSignature = "";
+  private lastAppliedCameraState: CameraState | null = null;
   private readonly geometryByteCache = new WeakMap<object, number>();
   private readonly textureByteCache = new WeakMap<object, number>();
   private started = false;
@@ -312,26 +313,26 @@ export class WebGpuViewport {
 
   private syncCameraState(): void {
     const cameraState = this.kernel.store.getState().state.camera;
-    const signature = JSON.stringify(cameraState);
     this.activeCamera = cameraState.mode === "orthographic" ? this.orthographicCamera : this.perspectiveCamera;
     this.controls.object = this.activeCamera;
-    if (signature !== this.lastAppliedCameraSignature) {
-      if (this.activeCamera instanceof THREE.PerspectiveCamera) {
-        this.activeCamera.fov = cameraState.fov;
-        this.activeCamera.near = cameraState.near;
-        this.activeCamera.far = cameraState.far;
-        this.activeCamera.position.set(...cameraState.position);
-        this.activeCamera.updateProjectionMatrix();
-      } else {
-        this.activeCamera.near = cameraState.near;
-        this.activeCamera.far = cameraState.far;
-        this.activeCamera.zoom = cameraState.zoom;
-        this.activeCamera.position.set(...cameraState.position);
-        this.activeCamera.updateProjectionMatrix();
-      }
-      this.controls.target.set(...cameraState.target);
-      this.lastAppliedCameraSignature = signature;
+    if (cameraStatesApproximatelyEqual(cameraState, this.lastAppliedCameraState)) {
+      return;
     }
+    if (this.activeCamera instanceof THREE.PerspectiveCamera) {
+      this.activeCamera.fov = cameraState.fov;
+      this.activeCamera.near = cameraState.near;
+      this.activeCamera.far = cameraState.far;
+      this.activeCamera.position.set(...cameraState.position);
+      this.activeCamera.updateProjectionMatrix();
+    } else {
+      this.activeCamera.near = cameraState.near;
+      this.activeCamera.far = cameraState.far;
+      this.activeCamera.zoom = cameraState.zoom;
+      this.activeCamera.position.set(...cameraState.position);
+      this.activeCamera.updateProjectionMatrix();
+    }
+    this.controls.target.set(...cameraState.target);
+    this.lastAppliedCameraState = cloneCameraState(cameraState);
   }
 
   private enforceActorCompatibility(engine: "webgpu"): void {
@@ -652,30 +653,15 @@ export class WebGpuViewport {
   }
 
   private syncCameraToState(): void {
-    const camera = this.activeCamera;
-    const target = this.controls.target;
-    const cameraUpdate = {
-      position: [camera.position.x, camera.position.y, camera.position.z] as [number, number, number],
-      target: [target.x, target.y, target.z] as [number, number, number],
-      zoom: camera instanceof THREE.OrthographicCamera ? camera.zoom : 1,
-      fov: camera instanceof THREE.PerspectiveCamera ? camera.fov : this.kernel.store.getState().state.camera.fov
-    };
     const currentCamera = this.kernel.store.getState().state.camera;
-    const moved =
-      distanceSq3(cameraUpdate.position, currentCamera.position) > 1e-8 ||
-      distanceSq3(cameraUpdate.target, currentCamera.target) > 1e-8 ||
-      Math.abs(cameraUpdate.zoom - currentCamera.zoom) > 1e-6 ||
-      Math.abs(cameraUpdate.fov - currentCamera.fov) > 1e-6;
-    if (!moved) {
+    const nextCameraState = readViewportCameraState(this.activeCamera, this.controls.target, currentCamera);
+    if (cameraStatesApproximatelyEqual(nextCameraState, currentCamera)) {
       return;
     }
 
     // Camera navigation should mark the project as stale so Save captures the current viewpoint.
-    this.kernel.store.getState().actions.setCameraState(cameraUpdate, true);
-    this.lastAppliedCameraSignature = JSON.stringify({
-      ...currentCamera,
-      ...cameraUpdate
-    });
+    this.kernel.store.getState().actions.setCameraState(nextCameraState, true);
+    this.lastAppliedCameraState = cloneCameraState(nextCameraState);
   }
 
   private syncToneMappingOutput(): void {
@@ -705,11 +691,4 @@ export class WebGpuViewport {
   private isWheelZoomEnabled(): boolean {
     return Boolean(this.activeCamera);
   }
-}
-
-function distanceSq3(a: [number, number, number], b: [number, number, number]): number {
-  const dx = a[0] - b[0];
-  const dy = a[1] - b[1];
-  const dz = a[2] - b[2];
-  return dx * dx + dy * dy + dz * dz;
 }

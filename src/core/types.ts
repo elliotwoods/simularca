@@ -1,6 +1,6 @@
 import type { AppMode, HdriTranscodeOptions, ProjectAssetRef } from "@/types/ipc";
 
-export const PROJECT_SCHEMA_VERSION = 4;
+export const PROJECT_SCHEMA_VERSION = 5;
 
 export type SceneNodeKind = "scene" | "actor" | "component";
 export type RenderEngine = "webgl2" | "webgpu";
@@ -13,10 +13,24 @@ export type ActorType =
   | "gaussian-splat-spark"
   | "mist-volume"
   | "mesh"
+  | "dxf-reference"
   | "primitive"
   | "curve"
   | "camera-path"
   | "plugin";
+
+export type DxfInputUnits = "millimeters" | "centimeters" | "meters" | "inches" | "feet";
+export type DxfSourcePlane = "auto" | "xy" | "yz" | "xz";
+export type DxfDrawingPlane = "plan-xz" | "front-xy" | "side-zy";
+
+export interface DxfLayerState {
+  name: string;
+  sourceColor: string;
+  color: string;
+  visible: boolean;
+}
+
+export type DxfLayerStateMap = Record<string, DxfLayerState>;
 
 export type MaterialColorChannel =
   | { mode: "color"; color: string }
@@ -106,7 +120,7 @@ export interface ParameterDefinitionBase {
   key: string;
   label: string;
   description?: string;
-  defaultValue?: number | string | boolean | number[] | string[];
+  defaultValue?: number | string | boolean | number[] | string[] | object;
   groupKey?: string;
   groupLabel?: string;
   visibleWhen?: Array<{
@@ -172,6 +186,10 @@ export interface MaterialSlotsParameterDefinition extends ParameterDefinitionBas
   type: "material-slots";
 }
 
+export interface DxfLayerStatesParameterDefinition extends ParameterDefinitionBase {
+  type: "dxf-layer-states";
+}
+
 export interface FileParameterImportAsset {
   mode: "import-asset";
   kind: ProjectAssetRef["kind"];
@@ -202,6 +220,7 @@ export type ParameterDefinition =
   | ActorRefListParameterDefinition
   | MaterialRefParameterDefinition
   | MaterialSlotsParameterDefinition
+  | DxfLayerStatesParameterDefinition
   | FileParameterDefinition;
 
 export interface ParameterSchema {
@@ -282,6 +301,7 @@ export interface ProjectSnapshotManifest {
   actors: Record<string, ActorNode>;
   components: Record<string, ComponentNode>;
   camera: CameraState;
+  lastPerspectiveCamera: CameraState | null;
   time: TimeState;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];
@@ -368,6 +388,7 @@ export interface AppState {
   actors: Record<string, ActorNode>;
   components: Record<string, ComponentNode>;
   camera: CameraState;
+  lastPerspectiveCamera: CameraState | null;
   time: TimeState;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];
@@ -379,4 +400,5 @@ export interface AppState {
   consoleEntries: ConsoleEntry[];
   actorStatusByActorId: Record<string, ActorRuntimeStatus>;
 }
+
 

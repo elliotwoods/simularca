@@ -32,6 +32,12 @@ import { createSplatMaterial, type SplatBuffers, type SplatUniforms } from "./sp
 import { GpuSorter, type SortFrameStats } from "./splatGpuSort";
 import { SplatProjection } from "./splatProjection";
 import { buildChunks, updateChunkVisibility, type ChunkData } from "./splatChunks";
+import { sanitizeCameraNear } from "./projectionDepth";
+import {
+  captureCameraProjectionSnapshot,
+  hasCameraProjectionChanged,
+  type CameraProjectionSnapshot
+} from "./cameraInvalidation";
 
 function nextPowerOfTwo(n: number): number {
   let p = 1;
@@ -90,6 +96,7 @@ export class SplatController {
 
   // One-shot diagnostics flag
   private hasLoggedDiagnostics = false;
+  private lastProjectionSnapshot: CameraProjectionSnapshot | null = null;
 
   constructor(renderRoot: THREE.Group) {
     this.renderRoot = renderRoot;
@@ -474,8 +481,12 @@ export class SplatController {
     const vpHeight = this.uniforms.viewportSize.value.y;
     const focalX = (proj[0] * vpWidth) / 2;
     const focalY = (proj[5] * vpHeight) / 2;
+    const isOrthographic = camera instanceof THREE.OrthographicCamera;
+    const cameraNear = sanitizeCameraNear((camera as THREE.Camera & { near?: number }).near ?? Number.NaN);
     this.uniforms.focalX.value = focalX;
     this.uniforms.focalY.value = focalY;
+    this.uniforms.cameraNear.value = cameraNear;
+    this.uniforms.isOrthographic.value = isOrthographic ? 1 : 0;
 
     // One-shot diagnostic: log camera/viewport/focal data on first frame
     if (!this.hasLoggedDiagnostics) {
@@ -486,6 +497,7 @@ export class SplatController {
         `[gsplat-webgpu] Camera diagnostics:\n` +
         `  viewport: ${vpWidth} × ${vpHeight}\n` +
         `  focalX: ${focalX.toFixed(2)}, focalY: ${focalY.toFixed(2)}\n` +
+        `  near: ${cameraNear.toFixed(4)}\n` +
         `  proj[0]: ${proj[0].toFixed(4)}, proj[5]: ${proj[5].toFixed(4)}\n` +
         `  camera.position: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})\n` +
         `  renderer type: ${renderer.constructor?.name || "unknown"}\n` +
@@ -502,6 +514,7 @@ export class SplatController {
     }
 
     // Frustum cull chunks on CPU, then upload visibility to GPU
+    let visibilityChanged = false;
     if (this.chunkData && this.chunkVisibilityArray && this.mesh && this.gpuSorter) {
       this.lastVisibleChunks = updateChunkVisibility(
         this.chunkData,
@@ -511,7 +524,7 @@ export class SplatController {
       );
 
       // Upload visibility to GPU (sorter uses this for depth culling + triggers re-sort)
-      this.gpuSorter.updateChunkVisibility(this.chunkVisibilityArray);
+      visibilityChanged = this.gpuSorter.updateChunkVisibility(this.chunkVisibilityArray);
 
       // Workaround: Three.js Bindings._update() doesn't re-sync storage buffers
       // after initialization — it only handles uniform buffers, samplers, and
@@ -533,18 +546,28 @@ export class SplatController {
       this.lastSortStats = this.gpuSorter.sort(renderer, camera, this.mesh.matrixWorld);
     }
 
+    const projectionDirty =
+      visibilityChanged ||
+      (this.lastSortStats?.modelChange ?? "none") !== "none" ||
+      hasCameraProjectionChanged(this.lastProjectionSnapshot, camera, this.uniforms.viewportSize.value);
+
     // GPU projection compute pre-pass: project Cov3D → Cov2D once per splat
     // (instead of 4× per vertex in the vertex shader)
-    if (this.splatProjection && this.mesh && this.lastSortStats?.projectionDirty) {
+    if (this.splatProjection && this.mesh && projectionDirty) {
       this.splatProjection.updateUniforms(
         camera,
         this.mesh.matrixWorld,
         focalX,
         focalY,
+        isOrthographic,
+        cameraNear,
         this.currentSplatSizeScale,
         this.uniforms.viewportSize.value
       );
       this.splatProjection.dispatch(renderer);
+    }
+    if (projectionDirty) {
+      this.lastProjectionSnapshot = captureCameraProjectionSnapshot(camera, this.uniforms.viewportSize.value);
     }
 
     // Update per-frame status (throttled: every 10 frames or on sort mode change)
@@ -562,6 +585,7 @@ export class SplatController {
           boundsMax: this.bounds?.max ?? "n/a",
           sortMethod: "gpu-bitonic-temporal",
           projectionPrepass: this.splatProjection !== null,
+          cameraNear: Math.round(cameraNear * 10000) / 10000,
           chunkCount: this.chunkData?.chunks.length ?? 0,
           visibleChunks: this.lastVisibleChunks,
           // Per-frame sort stats
@@ -612,6 +636,7 @@ export class SplatController {
     this.chunkData = null;
     this.chunkVisibilityArray = null;
     this.lastVisibleChunks = 0;
+    this.lastProjectionSnapshot = null;
     if (this.gpuSorter) {
       this.gpuSorter.dispose();
       this.gpuSorter = null;

@@ -19,8 +19,6 @@ export interface ProjectedViewportDirection {
   depth: number;
 }
 
-let lastPerspectiveReference: CameraState | null = null;
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -52,11 +50,6 @@ export function getCameraViewHeight(camera: CameraState): number {
 
 function zoomForViewHeight(viewHeight: number): number {
   return clamp((ORTHOGRAPHIC_HALF_HEIGHT * 2) / Math.max(EPSILON, viewHeight), MIN_ZOOM, MAX_ZOOM);
-}
-
-function fovForViewHeight(viewHeight: number, distanceValue: number): number {
-  const radians = 2 * Math.atan(Math.max(EPSILON, viewHeight) / (2 * Math.max(EPSILON, distanceValue)));
-  return clamp((radians * 180) / Math.PI, MIN_FOV, MAX_FOV);
 }
 
 function directionVectorForView(direction: CameraViewDirection): THREE.Vector3 {
@@ -203,21 +196,32 @@ export function cameraStateForHomeView(): CameraState {
     near: 0.01,
     far: 1000
   };
-  rememberPerspectiveCamera(next);
   return next;
+}
+
+function resolvePerspectiveReference(
+  current: CameraState,
+  rememberedPerspectiveCamera: CameraState | null = null
+): CameraState | null {
+  if (rememberedPerspectiveCamera?.mode === "perspective") {
+    return rememberedPerspectiveCamera;
+  }
+  return current.mode === "perspective" ? current : null;
 }
 
 export function cameraStateForViewDirection(
   current: CameraState,
   direction: CameraViewDirection,
-  mode: CameraState["mode"] = "orthographic"
+  mode: CameraState["mode"] = "orthographic",
+  rememberedPerspectiveCamera: CameraState | null = null
 ): CameraState {
   const forward = directionVectorForView(direction);
   const target = toVector3(current.target);
   const viewHeight = getCameraViewHeight(current);
+  const reference = resolvePerspectiveReference(current, rememberedPerspectiveCamera);
   const perspectiveDistance =
-    lastPerspectiveReference && direction !== "isometric"
-      ? getCameraDistance(lastPerspectiveReference)
+    reference && direction !== "isometric"
+      ? getCameraDistance(reference)
       : getCameraDistance(current);
   const orbitDistance = mode === "perspective" ? perspectiveDistance : getCameraDistance(current);
   const position = target.clone().sub(forward.clone().multiplyScalar(Math.max(EPSILON, orbitDistance)));
@@ -226,37 +230,34 @@ export function cameraStateForViewDirection(
     mode,
     position: toTuple(position),
     target: toTuple(target),
-    fov: mode === "perspective" ? (lastPerspectiveReference?.fov ?? current.fov) : current.fov,
+    fov: mode === "perspective" ? (reference?.fov ?? current.fov) : current.fov,
     zoom: mode === "orthographic" ? zoomForViewHeight(viewHeight) : current.zoom
   };
-  if (mode === "perspective") {
-    rememberPerspectiveCamera(next);
-  }
   return next;
 }
 
-export function toggleCameraProjectionMode(current: CameraState): CameraState {
+export function toggleCameraProjectionMode(
+  current: CameraState,
+  rememberedPerspectiveCamera: CameraState | null = null
+): CameraState {
   const forward = getCameraForward(current);
   const target = toVector3(current.target);
   const viewHeight = getCameraViewHeight(current);
   if (current.mode === "perspective") {
-    rememberPerspectiveCamera(current);
     return {
       ...current,
       mode: "orthographic",
       zoom: zoomForViewHeight(viewHeight)
     };
   }
-  const reference = lastPerspectiveReference;
-  const perspectiveDistance = reference ? getCameraDistance(reference) : DEFAULT_PERSPECTIVE_DISTANCE;
-  const next: CameraState = {
+  const reference = resolvePerspectiveReference(current, rememberedPerspectiveCamera);
+  const perspectiveDistance = reference ? getCameraDistance(reference) : Math.max(EPSILON, getCameraDistance(current));
+  return {
     ...current,
     mode: "perspective",
     position: toTuple(target.clone().sub(forward.multiplyScalar(perspectiveDistance))),
-    fov: reference ? reference.fov : fovForViewHeight(viewHeight, perspectiveDistance)
+    fov: clamp(reference?.fov ?? current.fov, MIN_FOV, MAX_FOV)
   };
-  rememberPerspectiveCamera(next);
-  return next;
 }
 
 export function stepOrbitAroundTarget(current: CameraState, yawDelta: number, pitchDelta: number): CameraState {
@@ -307,11 +308,4 @@ export function flipCameraAroundTarget(current: CameraState): CameraState {
     ...current,
     position: toTuple(target.clone().add(offset))
   };
-}
-
-export function rememberPerspectiveCamera(camera: CameraState): void {
-  if (camera.mode !== "perspective") {
-    return;
-  }
-  lastPerspectiveReference = structuredClone(camera);
 }

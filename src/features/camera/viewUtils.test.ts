@@ -8,7 +8,6 @@ import {
   getCameraViewHeight,
   orbitCameraFromPointerDelta,
   projectWorldDirectionsAtViewportCenter,
-  rememberPerspectiveCamera,
   resolveRepeatedDirectionalShortcut,
   stepOrbitAroundTarget,
   toggleCameraProjectionMode
@@ -61,17 +60,23 @@ describe("viewUtils", () => {
   });
 
   it("restores the remembered perspective distance when leaving orthographic mode", () => {
-    rememberPerspectiveCamera(PERSPECTIVE_CAMERA);
-    const next = toggleCameraProjectionMode(ORTHOGRAPHIC_CAMERA);
+    const next = toggleCameraProjectionMode(ORTHOGRAPHIC_CAMERA, PERSPECTIVE_CAMERA);
     expect(next.mode).toBe("perspective");
     expect(getCameraDistance(next)).toBeCloseTo(getCameraDistance(PERSPECTIVE_CAMERA), 5);
+    expect(next.fov).toBe(PERSPECTIVE_CAMERA.fov);
   });
 
   it("preserves look direction when toggling projection modes", () => {
-    rememberPerspectiveCamera(PERSPECTIVE_CAMERA);
     const orthographic = toggleCameraProjectionMode(PERSPECTIVE_CAMERA);
-    const backToPerspective = toggleCameraProjectionMode(orthographic);
+    const backToPerspective = toggleCameraProjectionMode(orthographic, PERSPECTIVE_CAMERA);
     expect(getCameraForward(backToPerspective).dot(getCameraForward(PERSPECTIVE_CAMERA))).toBeGreaterThan(0.999);
+  });
+
+  it("falls back to the current orthographic fov and distance when no perspective memory exists", () => {
+    const next = toggleCameraProjectionMode(ORTHOGRAPHIC_CAMERA, null);
+    expect(next.mode).toBe("perspective");
+    expect(next.fov).toBe(ORTHOGRAPHIC_CAMERA.fov);
+    expect(getCameraDistance(next)).toBeCloseTo(getCameraDistance(ORTHOGRAPHIC_CAMERA), 5);
   });
 
   it("steps orbit around the target without changing orbit distance", () => {

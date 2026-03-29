@@ -111,25 +111,32 @@ function depthToZIndex(depth: number): number {
   return 50 + Math.round((1 - normalizedDepth) * 20);
 }
 
-function applyDirectionalShortcut(camera: CameraState, digit: "1" | "3" | "7"): CameraState {
+function applyDirectionalShortcut(
+  camera: CameraState,
+  rememberedPerspectiveCamera: CameraState | null,
+  digit: "1" | "3" | "7"
+): CameraState {
   switch (digit) {
     case "1":
       return cameraStateForViewDirection(
         camera,
         resolveRepeatedDirectionalShortcut(camera, "front", "back"),
-        "orthographic"
+        "orthographic",
+        rememberedPerspectiveCamera
       );
     case "3":
       return cameraStateForViewDirection(
         camera,
         resolveRepeatedDirectionalShortcut(camera, "right", "left"),
-        "orthographic"
+        "orthographic",
+        rememberedPerspectiveCamera
       );
     case "7":
       return cameraStateForViewDirection(
         camera,
         resolveRepeatedDirectionalShortcut(camera, "top", "bottom"),
-        "orthographic"
+        "orthographic",
+        rememberedPerspectiveCamera
       );
   }
 }
@@ -187,6 +194,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
   const antialiasing = useAppStore((store) => store.state.scene.antialiasing);
   const framePacing = useAppStore((store) => store.state.scene.framePacing);
   const camera = useAppStore((store) => store.state.camera);
+  const rememberedPerspectiveCamera = useAppStore((store) => store.state.lastPerspectiveCamera);
   const loadingBannerText = useAppStore((store) => {
     const statuses = store.state.actorStatusByActorId;
     const actors = store.state.actors;
@@ -526,11 +534,11 @@ export function ViewportPanel(props: ViewportPanelProps) {
       const current = cameraRef.current;
       let next: CameraState | null = null;
       if (shortcut === "1" || shortcut === "3" || shortcut === "7") {
-        next = applyDirectionalShortcut(current, shortcut);
+        next = applyDirectionalShortcut(current, rememberedPerspectiveCamera, shortcut);
       } else if (shortcut === "2" || shortcut === "4" || shortcut === "6" || shortcut === "8") {
         next = applyOrbitShortcut(current, shortcut);
       } else if (shortcut === "5") {
-        next = toggleCameraProjectionMode(current);
+        next = toggleCameraProjectionMode(current, rememberedPerspectiveCamera);
       } else if (shortcut === "9") {
         next = flipCameraAroundTarget(current);
       }
@@ -717,7 +725,9 @@ export function ViewportPanel(props: ViewportPanelProps) {
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                requestCamera(cameraStateForViewDirection(cameraRef.current, handle.view, "orthographic"));
+                requestCamera(
+                  cameraStateForViewDirection(cameraRef.current, handle.view, "orthographic", rememberedPerspectiveCamera)
+                );
               }}
               title={`Snap to ${handle.label} orthographic view`}
               aria-label={`Snap to ${handle.label} orthographic view`}
@@ -735,7 +745,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              requestCamera(toggleCameraProjectionMode(cameraRef.current));
+              requestCamera(toggleCameraProjectionMode(cameraRef.current, rememberedPerspectiveCamera));
             }}
             title={camera.mode === "perspective" ? "Switch to orthographic view (5)" : "Return to perspective view (5)"}
             aria-label={camera.mode === "perspective" ? "Switch to orthographic view" : "Return to perspective view"}

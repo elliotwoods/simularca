@@ -55,6 +55,23 @@ function keydown(element: HTMLElement, key: string) {
   });
 }
 
+function dispatchPointerEvent(target: EventTarget, type: string, init: { clientX?: number; pointerId?: number } = {}) {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperty(event, "clientX", { value: init.clientX ?? 0 });
+  Object.defineProperty(event, "pointerId", { value: init.pointerId ?? 1 });
+  act(() => {
+    target.dispatchEvent(event);
+  });
+}
+
+function dispatchMouseMove(movementX: number) {
+  const event = new MouseEvent("mousemove", { bubbles: true });
+  Object.defineProperty(event, "movementX", { value: movementX });
+  act(() => {
+    window.dispatchEvent(event);
+  });
+}
+
 beforeAll(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
@@ -165,6 +182,58 @@ describe("DigitScrubInput", () => {
 
     expect(onChange).toHaveBeenCalledWith(0.05);
     expect(container.textContent).toContain("0.050");
+  });
+
+  it("ignores the first locked mouse delta when a scrub drag starts", () => {
+    const onChange = vi.fn();
+    const { container } = renderElement(
+      React.createElement(DigitScrubInput, {
+        value: 5,
+        precision: 0,
+        onChange
+      })
+    );
+
+    const digit = container.querySelector(".digit");
+    expect(digit).not.toBeNull();
+
+    const originalRequestPointerLock = HTMLButtonElement.prototype.requestPointerLock;
+    const originalExitPointerLock = document.exitPointerLock;
+    let pointerLockElement: Element | null = null;
+
+    Object.defineProperty(document, "pointerLockElement", {
+      configurable: true,
+      get: () => pointerLockElement
+    });
+
+    HTMLButtonElement.prototype.requestPointerLock = function requestPointerLockStub() {
+      pointerLockElement = this;
+      document.dispatchEvent(new Event("pointerlockchange"));
+    };
+
+    document.exitPointerLock = () => {
+      pointerLockElement = null;
+      document.dispatchEvent(new Event("pointerlockchange"));
+    };
+
+    try {
+      dispatchPointerEvent(digit as Element, "pointerdown", { pointerId: 7, clientX: 100 });
+      dispatchPointerEvent(window, "pointermove", { pointerId: 7, clientX: 104 });
+
+      dispatchMouseMove(8);
+      expect(onChange).not.toHaveBeenCalled();
+
+      dispatchMouseMove(8);
+      expect(onChange).toHaveBeenCalledWith(6);
+
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      });
+    } finally {
+      HTMLButtonElement.prototype.requestPointerLock = originalRequestPointerLock;
+      document.exitPointerLock = originalExitPointerLock;
+      delete (document as Document & { pointerLockElement?: Element | null }).pointerLockElement;
+    }
   });
 });
 

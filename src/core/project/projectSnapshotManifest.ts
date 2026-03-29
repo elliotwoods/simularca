@@ -16,6 +16,7 @@ export function buildProjectSnapshotManifest(
     actors: structuredClone(state.actors),
     components: structuredClone(state.components),
     camera: structuredClone(state.camera),
+    lastPerspectiveCamera: structuredClone(state.lastPerspectiveCamera),
     time: structuredClone(state.time),
     materials: structuredClone(state.materials),
     assets: structuredClone(state.assets)

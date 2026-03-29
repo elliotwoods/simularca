@@ -5,10 +5,11 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
-import type { SceneFramePacingSettings } from "@/core/types";
+import type { CameraState, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "@/render/actorTransformController";
 import { CurveEditController } from "@/render/curveEditController";
 import { CameraInteractionController } from "@/render/cameraInteractionController";
+import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "@/render/cameraSync";
 import { incompatibilityReason } from "@/render/engineCompatibility";
 import { FramePacer } from "@/render/framePacing";
 import { SceneController } from "@/render/sceneController";
@@ -43,8 +44,7 @@ export class WebGlViewport {
   private frameLastAt = performance.now();
   private fastStatsLastSampleAt = performance.now();
   private slowStatsLastSampleAt = performance.now();
-  private lastAppliedCameraSignature = "";
-  private lastDispatchedCameraSignature = "";
+  private lastAppliedCameraState: CameraState | null = null;
   private readonly geometryByteCache = new WeakMap<object, number>();
   private readonly textureByteCache = new WeakMap<object, number>();
   private started = false;
@@ -381,55 +381,36 @@ export class WebGlViewport {
 
   private syncCameraState(): void {
     const cameraState = this.kernel.store.getState().state.camera;
-    const signature = JSON.stringify(cameraState);
     this.activeCamera = cameraState.mode === "orthographic" ? this.orthographicCamera : this.perspectiveCamera;
     this.controls.object = this.activeCamera;
-    if (signature !== this.lastAppliedCameraSignature) {
-      if (this.activeCamera instanceof THREE.PerspectiveCamera) {
-        this.activeCamera.fov = cameraState.fov;
-        this.activeCamera.near = cameraState.near;
-        this.activeCamera.far = cameraState.far;
-        this.activeCamera.position.set(...cameraState.position);
-        this.activeCamera.updateProjectionMatrix();
-      } else {
-        this.activeCamera.near = cameraState.near;
-        this.activeCamera.far = cameraState.far;
-        this.activeCamera.zoom = cameraState.zoom;
-        this.activeCamera.position.set(...cameraState.position);
-        this.activeCamera.updateProjectionMatrix();
-      }
-      this.controls.target.set(...cameraState.target);
-      this.lastAppliedCameraSignature = signature;
+    if (cameraStatesApproximatelyEqual(cameraState, this.lastAppliedCameraState)) {
+      return;
     }
+    if (this.activeCamera instanceof THREE.PerspectiveCamera) {
+      this.activeCamera.fov = cameraState.fov;
+      this.activeCamera.near = cameraState.near;
+      this.activeCamera.far = cameraState.far;
+      this.activeCamera.position.set(...cameraState.position);
+      this.activeCamera.updateProjectionMatrix();
+    } else {
+      this.activeCamera.near = cameraState.near;
+      this.activeCamera.far = cameraState.far;
+      this.activeCamera.zoom = cameraState.zoom;
+      this.activeCamera.position.set(...cameraState.position);
+      this.activeCamera.updateProjectionMatrix();
+    }
+    this.controls.target.set(...cameraState.target);
+    this.lastAppliedCameraState = cloneCameraState(cameraState);
   }
 
   private syncCameraToState(): void {
-    const nextCameraState = {
-      mode: (this.activeCamera === this.orthographicCamera ? "orthographic" : "perspective") as
-        | "orthographic"
-        | "perspective",
-      position: [this.activeCamera.position.x, this.activeCamera.position.y, this.activeCamera.position.z] as [
-        number,
-        number,
-        number
-      ],
-      target: [this.controls.target.x, this.controls.target.y, this.controls.target.z] as [number, number, number],
-      fov:
-        this.activeCamera instanceof THREE.PerspectiveCamera
-          ? this.activeCamera.fov
-          : this.kernel.store.getState().state.camera.fov,
-      zoom:
-        this.activeCamera instanceof THREE.OrthographicCamera
-          ? this.activeCamera.zoom
-          : this.kernel.store.getState().state.camera.zoom,
-      near: this.activeCamera.near,
-      far: this.activeCamera.far
-    };
-
-    const sig = JSON.stringify(nextCameraState);
-    if (sig === this.lastDispatchedCameraSignature) return;
-    this.lastDispatchedCameraSignature = sig;
+    const currentCamera = this.kernel.store.getState().state.camera;
+    const nextCameraState = readViewportCameraState(this.activeCamera, this.controls.target, currentCamera);
+    if (cameraStatesApproximatelyEqual(nextCameraState, currentCamera)) {
+      return;
+    }
     this.kernel.store.getState().actions.setCameraState(nextCameraState, false);
+    this.lastAppliedCameraState = cloneCameraState(nextCameraState);
   }
 
   private onResize = (): void => {
