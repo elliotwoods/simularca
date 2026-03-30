@@ -14,7 +14,9 @@ import { BUILD_INFO, formatBuildTimestamp } from "@/app/buildInfo";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { AboutModal } from "@/ui/components/AboutModal";
+import { GitDirtyBadge } from "@/ui/components/GitDirtyBadge";
 import { WindowControls } from "@/ui/components/WindowControls";
+import { useGitDirtyStatus } from "@/ui/useGitDirtyStatus";
 import type { DefaultProjectPointer, ProjectSnapshotListEntry } from "@/types/ipc";
 import appIconUrl from "../../../icon.png";
 
@@ -64,6 +66,7 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   const snapshotInputRef = useRef<HTMLInputElement | null>(null);
   const isReadOnly = state.mode === "web-ro";
   const buildMeta = `${BUILD_INFO.commitShortSha || "unknown"} | ${formatBuildTimestamp(BUILD_INFO.buildTimestampIso)}`;
+  const gitDirtyStatus = useGitDirtyStatus([]);
 
   const projectOptions = useMemo(() => {
     if (availableProjects.includes(state.activeProjectName)) {
@@ -334,7 +337,10 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
           <div className="titlebar-brand">
             <strong>{APP_NAME}</strong>
             <span>v{BUILD_INFO.version}</span>
-            <span>{buildMeta}</span>
+            <span className="titlebar-build-meta">
+              {buildMeta}
+              <GitDirtyBadge count={gitDirtyStatus.app?.changedFileCount ?? 0} className="git-dirty-badge titlebar-git-dirty-badge" />
+            </span>
           </div>
           <FontAwesomeIcon icon={faCircleInfo} />
         </button>

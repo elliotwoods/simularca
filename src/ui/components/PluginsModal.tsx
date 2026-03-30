@@ -1,4 +1,6 @@
 import type { RegisteredPlugin } from "@/features/plugins/pluginApi";
+import { GitDirtyBadge } from "@/ui/components/GitDirtyBadge";
+import { getPluginGitDirtyBadge, useGitDirtyStatus } from "@/ui/useGitDirtyStatus";
 
 interface PluginsModalProps {
   open: boolean;
@@ -11,6 +13,8 @@ interface PluginsModalProps {
 }
 
 export function PluginsModal(props: PluginsModalProps) {
+  const gitDirtyStatus = useGitDirtyStatus(props.plugins.map((entry) => entry.source?.modulePath));
+
   if (!props.open) {
     return null;
   }
@@ -36,8 +40,15 @@ export function PluginsModal(props: PluginsModalProps) {
               <li key={entry.definition.id} className="plugins-modal-item">
                 <div className="plugins-modal-item-main">
                   <div className="plugins-modal-item-copy">
-                    <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
-                    <span>{entry.manifest?.version ?? "unknown version"}</span>
+                    <span className="plugin-list-title">
+                      <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
+                      <GitDirtyBadge
+                        count={getPluginGitDirtyBadge(gitDirtyStatus, entry.source?.modulePath)?.changedFileCount ?? 0}
+                      />
+                    </span>
+                    <span className="plugin-list-meta">
+                      {entry.manifest?.version ?? "unknown version"}
+                    </span>
                   </div>
                   <div className="plugins-modal-item-actions">
                     {Date.now() - Date.parse(entry.lastLoadedAtIso) < 15000 ? (

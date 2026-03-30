@@ -1,6 +1,6 @@
 import type { AppMode, HdriTranscodeOptions, ProjectAssetRef } from "@/types/ipc";
 
-export const PROJECT_SCHEMA_VERSION = 5;
+export const PROJECT_SCHEMA_VERSION = 6;
 
 export type SceneNodeKind = "scene" | "actor" | "component";
 export type RenderEngine = "webgl2" | "webgpu";
@@ -311,6 +311,17 @@ export interface TimeState {
   elapsedSimSeconds: number;
 }
 
+export interface PluginViewState {
+  id: string;
+  pluginId: string;
+  actorId: string;
+  viewType: string;
+  tabId: string;
+  title: string;
+  open: boolean;
+  preferredTabsetId: string | null;
+}
+
 export interface SelectionEntry {
   kind: SelectionKind;
   id: string;
@@ -329,6 +340,7 @@ export interface ProjectSnapshotManifest {
   camera: CameraState;
   lastPerspectiveCamera: CameraState | null;
   time: TimeState;
+  pluginViews: Record<string, PluginViewState>;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];
 }
@@ -380,6 +392,22 @@ export interface MistVolumeResource {
   lookupNoiseSeed: number;
 }
 
+export interface VolumetricRaySegmentResource {
+  start: [number, number, number];
+  end: [number, number, number];
+  direction: [number, number, number];
+  length: number;
+  weight: number;
+}
+
+export interface VolumetricRayFieldResource {
+  kind: "ray-field";
+  segments: VolumetricRaySegmentResource[];
+  hitPoints: Array<[number, number, number]>;
+  suggestedSampleSpacingMeters: number;
+  suggestedMaxSamples: number;
+}
+
 export interface ConsoleLogEntry {
   kind: "log";
   id: string;
@@ -416,6 +444,8 @@ export interface AppState {
   camera: CameraState;
   lastPerspectiveCamera: CameraState | null;
   time: TimeState;
+  pluginViews: Record<string, PluginViewState>;
+  focusedPluginViewId: string | null;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];
   selection: SelectionEntry[];
@@ -426,5 +456,7 @@ export interface AppState {
   consoleEntries: ConsoleEntry[];
   actorStatusByActorId: Record<string, ActorRuntimeStatus>;
 }
+
+
 
 

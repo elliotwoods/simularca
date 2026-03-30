@@ -169,6 +169,17 @@ const componentSchema = z.object({
   params: z.record(parameterValueSchema)
 });
 
+const pluginViewSchema = z.object({
+  id: z.string(),
+  pluginId: z.string(),
+  actorId: z.string(),
+  viewType: z.string(),
+  tabId: z.string(),
+  title: z.string(),
+  open: z.boolean(),
+  preferredTabsetId: z.string().nullable()
+});
+
 const materialColorChannelSchema = z.union([
   z.object({ mode: z.literal("color"), color: z.string() }),
   z.object({ mode: z.literal("image"), assetId: z.string() }),
@@ -368,6 +379,7 @@ const projectSnapshotSchema = z.object({
     fixedStepSeconds: z.number(),
     elapsedSimSeconds: z.number()
   }),
+  pluginViews: z.record(pluginViewSchema).default({}),
   materials: z.record(materialSchema).default({}),
   assets: z.array(
     z.object({

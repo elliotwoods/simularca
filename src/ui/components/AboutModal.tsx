@@ -1,4 +1,7 @@
 import { BUILD_INFO, formatBuildTimestamp } from "@/app/buildInfo";
+import { GitDirtyBadge } from "@/ui/components/GitDirtyBadge";
+import { useGitDirtyStatus } from "@/ui/useGitDirtyStatus";
+import type { ReactNode } from "react";
 
 interface AboutModalProps {
   open: boolean;
@@ -7,7 +10,7 @@ interface AboutModalProps {
 
 interface AboutRowProps {
   label: string;
-  value: string;
+  value: ReactNode;
 }
 
 function AboutRow(props: AboutRowProps) {
@@ -20,6 +23,8 @@ function AboutRow(props: AboutRowProps) {
 }
 
 export function AboutModal(props: AboutModalProps) {
+  const gitDirtyStatus = useGitDirtyStatus([]);
+
   if (!props.open) {
     return null;
   }
@@ -35,7 +40,6 @@ export function AboutModal(props: AboutModalProps) {
     >
       <div className="about-modal" role="dialog" aria-modal="true" aria-label="About Simularca">
         <h3>About Simularca</h3>
-        <p className="about-modal-summary">{BUILD_INFO.commitSubject}</p>
         <dl className="about-modal-grid">
           <AboutRow label="Version" value={BUILD_INFO.version} />
           <AboutRow label="Base Version" value={BUILD_INFO.baseVersion} />
@@ -44,6 +48,17 @@ export function AboutModal(props: AboutModalProps) {
           <AboutRow label="Commits Since Anchor" value={String(BUILD_INFO.commitsSinceAnchor)} />
           <AboutRow label="Commit" value={BUILD_INFO.commitShortSha || "Unknown"} />
           <AboutRow label="Commit SHA" value={BUILD_INFO.commitSha || "Unknown"} />
+          <AboutRow label="Last commit message" value={BUILD_INFO.commitSubject || "Unknown"} />
+          <AboutRow
+            label="Uncomitted files"
+            value={
+              gitDirtyStatus.app?.changedFileCount ? (
+                <span className="about-modal-inline-value">
+                  <GitDirtyBadge count={gitDirtyStatus.app.changedFileCount} />
+                </span>
+              ) : "0"
+            }
+          />
         </dl>
         <div className="about-modal-actions">
           <button type="button" onClick={props.onClose}>

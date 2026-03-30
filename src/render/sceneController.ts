@@ -25,6 +25,7 @@ import { estimateCurveLength, sampleCurvePositionAndTangent } from "@/features/c
 import { parseDxf } from "@/features/dxf/parseDxf";
 import { buildDxfScene, createDxfObject, disposeDxfObject, syncDxfAppearance } from "@/features/dxf/dxfToScene";
 import type { BuiltDxfScene, ParsedDxfDocument } from "@/features/dxf/dxfTypes";
+import { PluginActorRuntimeController } from "@/features/plugins/pluginActorRuntimeController";
 import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
 import { MistVolumeController, type MistVolumeQualityMode } from "@/render/mistVolumeController";
@@ -434,6 +435,7 @@ export class SceneController {
   private gaussianSortDirty = true;
   private previousSimTimeSeconds = 0;
   private readonly mistVolumeController: MistVolumeController;
+  private readonly pluginActorRuntimeController: PluginActorRuntimeController;
   private readonly showDebugHelpers: boolean;
   private debugHelpersVisible: boolean;
 
@@ -452,8 +454,18 @@ export class SceneController {
     this.mistVolumeController = new MistVolumeController(this.kernel, {
       getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
       getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
-      sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t)
+      sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t),
+      getVolumetricRayResource: (actorId) => this.pluginActorRuntimeController.getVolumetricResource(actorId)
     }, options.qualityMode ?? "interactive");
+    this.pluginActorRuntimeController = new PluginActorRuntimeController({
+      resolveDescriptor: (actor) => this.resolveActorDescriptor(actor),
+      setActorStatus: (actorId, status) => {
+        this.kernel.store.getState().actions.setActorStatus(actorId, status);
+      },
+      addLog: (entry) => {
+        this.kernel.store.getState().actions.addLog(entry);
+      }
+    });
   }
 
   public getDebugHelpersVisible(): boolean {
@@ -610,6 +622,8 @@ export class SceneController {
       }
     }
 
+    this.pluginActorRuntimeController.sync(state, dtSeconds);
+
     const tA = performance.now();
     for (const actor of Object.values(state.actors)) {
       const _ta0 = performance.now();
@@ -720,6 +734,7 @@ export class SceneController {
   }
 
   public dispose(): void {
+    this.pluginActorRuntimeController.dispose();
     this.mistVolumeController.dispose();
   }
 
@@ -2027,7 +2042,6 @@ export class SceneController {
     if (assetId === previousAssetId && reloadToken === previousReloadToken) {
       return; // early exit Ã¢â‚¬â€ expected on every frame after the first load
     }
-    console.log("[simularca] syncMeshAsset LOAD TRIGGERED assetId:", assetId, "reloadToken:", reloadToken, "actor:", actor.id);
     this.meshAssetByActorId.set(actor.id, assetId);
     this.meshReloadTokenByActorId.set(actor.id, reloadToken);
 
@@ -2077,7 +2091,6 @@ export class SceneController {
     this.meshLoadTokenByActorId.set(actor.id, loadToken);
 
     const attachLoaded = (loadedObject: any) => {
-      console.log("[simularca] Mesh loaded OK:", url, "token match:", this.meshLoadTokenByActorId.get(actor.id), loadToken);
       if (this.meshLoadTokenByActorId.get(actor.id) !== loadToken) {
         return;
       }
@@ -2111,7 +2124,6 @@ export class SceneController {
       });
       const slotNames = this.getMeshSlotNames(loadedObject);
       const env = this.resolveEnvironment(actor.id);
-      const _tAL2 = performance.now();
       // Defer Zustand status dispatches to a macrotask (setTimeout). Without this, Zustand's
       // set() triggers a synchronous React re-render (useSyncExternalStore) as a microtask that
       // runs BEFORE syncFromState's continuation microtask, causing the render loop to block for
@@ -2139,8 +2151,6 @@ export class SceneController {
         });
         this.kernel.store.getState().actions.setStatus(statusMsg);
       }, 0);
-      const _tAL3 = performance.now();
-      console.log("[simularca] attachLoaded breakdown | applyMats:", (_tAL1 - _tAL0).toFixed(0), "ms | traverse:", (_tAL2 - _tAL1).toFixed(0), "ms | setStatus(deferred):", (_tAL3 - _tAL2).toFixed(0), "ms | total:", (_tAL3 - _tAL0).toFixed(0), "ms");
     };
 
     const onError = (error: unknown) => {
@@ -2399,14 +2409,60 @@ export class SceneController {
     return null;
   }
 
+  private setMissingPluginStatus(actor: ActorNode): void {
+    if (actor.actorType !== "plugin") {
+      return;
+    }
+    const pluginType = typeof actor.pluginType === "string" && actor.pluginType.trim().length > 0 ? actor.pluginType : "unknown";
+    const reason = `Plugin actor type is unavailable: ${pluginType}`;
+    const current = this.kernel.store.getState().state.actorStatusByActorId[actor.id];
+    if (current?.values?.pluginMissing === true && current.values.pluginMissingReason === reason) {
+      return;
+    }
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        pluginMissing: true,
+        pluginMissingReason: reason,
+        pluginType
+      },
+      updatedAtIso: new Date().toISOString()
+    });
+  }
+
+  private clearMissingPluginStatus(actor: ActorNode): void {
+    const current = this.kernel.store.getState().state.actorStatusByActorId[actor.id];
+    if (current?.values?.pluginMissing !== true) {
+      return;
+    }
+    const nextValues = { ...current.values };
+    delete nextValues.pluginMissing;
+    delete nextValues.pluginMissingReason;
+    delete nextValues.pluginType;
+    const hasValues = Object.keys(nextValues).length > 0;
+    this.kernel.store.getState().actions.setActorStatus(
+      actor.id,
+      hasValues
+        ? {
+            ...current,
+            values: nextValues,
+            updatedAtIso: new Date().toISOString()
+          }
+        : null
+    );
+  }
+
   private createPluginSceneObject(actor: ActorNode): any | null {
     if (actor.actorType !== "plugin") {
       return null;
     }
     const descriptor = this.resolveActorDescriptor(actor);
     if (!descriptor?.sceneHooks?.createObject) {
+      if (!descriptor) {
+        this.setMissingPluginStatus(actor);
+      }
       return null;
     }
+    this.clearMissingPluginStatus(actor);
     try {
       const created = descriptor.sceneHooks.createObject({
         actor,
@@ -2457,7 +2513,12 @@ export class SceneController {
       return;
     }
     const descriptor = this.resolveActorDescriptor(actor);
-    if (!descriptor?.sceneHooks?.syncObject) {
+    if (!descriptor) {
+      this.setMissingPluginStatus(actor);
+      return;
+    }
+    this.clearMissingPluginStatus(actor);
+    if (!descriptor.sceneHooks?.syncObject) {
       return;
     }
     const object = this.actorObjects.get(actor.id);
@@ -2469,12 +2530,15 @@ export class SceneController {
         actor,
         state,
         object,
+        runtime: this.pluginActorRuntimeController.getRuntime(actor.id),
         simTimeSeconds,
         dtSeconds,
         getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
         getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
+        getActorRuntime: (actorId) => this.pluginActorRuntimeController.getRuntime(actorId),
         sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t),
         getMistVolumeResource: (actorId) => this.mistVolumeController.getResource(actorId),
+        getVolumetricRayResource: (actorId) => this.pluginActorRuntimeController.getVolumetricResource(actorId),
         setActorStatus: (status: ActorRuntimeStatus | null) => {
           this.kernel.store.getState().actions.setActorStatus(actor.id, status);
         },

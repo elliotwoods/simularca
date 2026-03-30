@@ -70,7 +70,8 @@ const multiFileDescriptor = {
     ]
   },
   spawn: {
-    actorType: "multi-file",
+    actorType: "plugin",
+    pluginType: "multi-file",
     label: "Multi File",
     description: "Actor with multiple file params",
     iconGlyph: "MF",
@@ -258,7 +259,8 @@ describe("importFileAsActor", () => {
   it("does not expose a replacement target when the selected actor has multiple file parameters", () => {
     const kernel = createKernelStub();
     const actorId = kernel.store.getState().actions.createActorNoHistory({
-      actorType: "multi-file",
+      actorType: "plugin",
+      pluginType: "multi-file",
       name: "Multi file actor",
       select: false
     });
@@ -295,3 +297,5 @@ describe("importFileAsActor", () => {
     expect(actor?.params.materialSlots).toBeNull();
   });
 });
+
+

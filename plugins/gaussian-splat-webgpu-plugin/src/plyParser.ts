@@ -271,11 +271,6 @@ export function parsePlyGaussianData(bytes: Uint8Array): PlyGaussianData {
     // Negative values → definitely log-encoded (real scales are always positive)
     // Values outside [0, 10] → likely log-encoded (exp(10) = 22026, unrealistic scale)
     useLogScale = hasNegative || sMin < -0.5 || sMax > 10;
-    console.log(
-      `[gsplat-ply] Scale detection: sampled ${sampleCount}/${vertexCount}, ` +
-      `range=[${sMin.toFixed(3)}, ${sMax.toFixed(3)}], hasNeg=${hasNegative}, ` +
-      `useLogScale=${useLogScale}`
-    );
   }
 
   // Detect color denominator for packed colors

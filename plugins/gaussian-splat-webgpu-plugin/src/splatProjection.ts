@@ -88,7 +88,6 @@ export class SplatProjection {
     const uFY = this.uFocalY;
     const uNear = this.uCameraNear;
     const uSS = this.uSizeScale;
-    const uVP = this.uViewportSize;
     const uOrtho = this.uIsOrthographic;
 
     // Compute kernel

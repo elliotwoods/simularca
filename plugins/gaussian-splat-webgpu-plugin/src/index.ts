@@ -1,4 +1,5 @@
 import { createGaussianSplatDescriptor } from "./splatDescriptor";
+import { PLUGIN_VERSION } from "./pluginBuildInfo.generated";
 
 export interface ParameterSchema {
   id: string;
@@ -71,7 +72,7 @@ const handshake: PluginHandshakeModule = {
     handshakeVersion: 1,
     id: "gaussianSplat",
     name: "Gaussian Splat",
-    version: "0.1.0",
+    version: PLUGIN_VERSION,
     description: "Renders Gaussian splats using the active scene render engine.",
     engine: {
       minApiVersion: 1,

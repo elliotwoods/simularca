@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolvePluginModuleSpecifier } from "@/features/plugins/pluginLoader";
+import { applyPluginVersionOverride, resolvePluginModuleSpecifier } from "@/features/plugins/pluginLoader";
 
 describe("resolvePluginModuleSpecifier", () => {
   it("rewrites local file URL to vite @fs path in http runtime", () => {
@@ -31,5 +31,43 @@ describe("resolvePluginModuleSpecifier", () => {
       123
     );
     expect(resolved).toBe("/@fs/C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js?v=123");
+  });
+});
+
+describe("applyPluginVersionOverride", () => {
+  it("overrides the manifest version when discovery provides one", () => {
+    expect(
+      applyPluginVersionOverride(
+        {
+          handshakeVersion: 1,
+          id: "example.wave",
+          name: "Example Wave Plugin",
+          version: "0.1.0",
+          engine: {
+            minApiVersion: 1,
+            maxApiVersion: 1
+          }
+        },
+        "0.1.7"
+      ).version
+    ).toBe("0.1.7");
+  });
+
+  it("keeps the manifest version when no override exists", () => {
+    expect(
+      applyPluginVersionOverride(
+        {
+          handshakeVersion: 1,
+          id: "example.wave",
+          name: "Example Wave Plugin",
+          version: "0.1.0",
+          engine: {
+            minApiVersion: 1,
+            maxApiVersion: 1
+          }
+        },
+        undefined
+      ).version
+    ).toBe("0.1.0");
   });
 });

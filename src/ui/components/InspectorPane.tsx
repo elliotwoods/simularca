@@ -18,6 +18,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
+import { resolveActorPlugin } from "@/features/plugins/pluginViews";
 import { usePluginRegistryRevision } from "@/features/plugins/usePluginRegistryRevision";
 import { DEFAULT_POST_PROCESSING, DEFAULT_SCENE_HELPERS } from "@/core/defaults";
 import type {
@@ -2679,6 +2680,19 @@ export function InspectorPane() {
     tone: entry.tone === "error" ? "error" : entry.tone === "warning" ? "warning" : "default"
   }));
   const statusGroups = singleSelection ? buildStatusGroups(statusRows) : [];
+  const pluginViewDescriptors = useMemo(() => {
+    if (!singleSelection) {
+      return [];
+    }
+    const plugin = resolveActorPlugin(singleSelection, kernel.pluginApi.listPlugins());
+    return plugin
+      ? plugin.definition.viewDescriptors.map((descriptor) => ({
+          pluginId: plugin.definition.id,
+          viewType: descriptor.viewType,
+          title: descriptor.title
+        }))
+      : [];
+  }, [kernel, singleSelection]);
   const enabledValues = actorSelection.map((actor) => actor.enabled);
   const enabledMixed = enabledValues.some((value) => value !== enabledValues[0]);
   const enabledValue = enabledValues[0] ?? true;
@@ -3175,8 +3189,8 @@ export function InspectorPane() {
       : 0;
 
   return (
-    <div className="inspector-pane-root custom-inspector">
-      <section className="inspector-common-card">
+      <div className="inspector-pane-root custom-inspector">
+        <section className="inspector-common-card">
         <header>
           <h4>Actor</h4>
         </header>
@@ -3330,7 +3344,36 @@ export function InspectorPane() {
             </div>
           </div>
         </div>
-      </section>
+        </section>
+      {singleSelection && pluginViewDescriptors.length > 0 ? (
+        <section className="widget-row">
+          <div className="widget-row-header">
+            <h4>Plugin Views</h4>
+          </div>
+          <div className="widget-value">
+            <div className="inspector-component-list">
+              {pluginViewDescriptors.map((descriptor) => (
+                <button
+                  key={descriptor.viewType}
+                  type="button"
+                  className="drill-in-row"
+                  onClick={() => {
+                    const view = kernel.store.getState().actions.openPluginView({
+                      pluginId: descriptor.pluginId,
+                      actorId: singleSelection.id,
+                      viewType: descriptor.viewType,
+                      title: descriptor.title
+                    });
+                    kernel.store.getState().actions.focusPluginView(view.id);
+                  }}
+                >
+                  <span>{`Open ${descriptor.title}`}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
       {actorSelection.length > 0 && actorSelection.every((actor) => actor.actorType === "mist-volume") ? (
         <section className="widget-row">
           <div className="widget-row-header">

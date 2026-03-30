@@ -12,6 +12,8 @@ src/**/*.js
 src/**/*.js.map
 logs/
 .simularca-build-info.json
+plugins/*/.simularca-plugin-build-info.json
+plugins/*/src/pluginBuildInfo.generated.ts
 
 # Local environment and OS files
 .env
@@ -46,3 +48,8 @@ plugins-local/
 
 .codex/
 .claude/
+
+tests/mylar-baseline/.live-cache/
+tests/mylar-baseline/
+scripts/generate-mylar-baselines.mjs
+scripts/compare-mylar-live.mjs

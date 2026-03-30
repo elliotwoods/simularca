@@ -207,4 +207,44 @@ describe("SceneTree", () => {
       root.unmount();
     });
   });
+
+  it("shows a warning indicator for plugin actors whose plugin type is unavailable", async () => {
+    const kernel = createKernelStub();
+    const pluginActorId = kernel.store.getState().actions.createActorNoHistory({
+      actorType: "plugin",
+      pluginType: "plugin.missing.actor",
+      name: "Missing Plugin Actor"
+    });
+    kernel.store.getState().actions.setActorStatus(pluginActorId, {
+      values: {
+        pluginMissing: true,
+        pluginMissingReason: "Plugin actor type is unavailable: plugin.missing.actor"
+      },
+      updatedAtIso: new Date().toISOString()
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          KernelProvider as React.ComponentType<{ kernel: AppKernel; children?: React.ReactNode }>,
+          { kernel },
+          React.createElement(SceneTree)
+        )
+      );
+    });
+
+    const warning = container.querySelector(
+      `[data-actor-row-id="${pluginActorId}"] .scene-tree-load-state.conflict`
+    ) as HTMLSpanElement | null;
+    expect(warning).not.toBeNull();
+    expect(warning?.getAttribute("title")).toBe("Plugin actor type is unavailable: plugin.missing.actor");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

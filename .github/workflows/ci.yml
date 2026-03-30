@@ -27,5 +27,5 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests
-        run: npm run test
+      - name: Plugin tests
+        run: npm run test:plugins

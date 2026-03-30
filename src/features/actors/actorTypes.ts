@@ -100,9 +100,9 @@ export const MIST_VOLUME_ACTOR_SCHEMA: ParameterSchema = {
       type: "actor-ref-list",
       groupKey: "emission",
       groupLabel: "Emission",
-      allowedActorTypes: ["empty", "curve"],
+      allowedActorTypes: ["empty", "curve", "plugin"],
       allowSelf: false,
-      description: "Actors that inject mist into the volume. Empty actors emit from a point, and curves emit along their sampled length."
+      description: "Actors that inject mist into the volume. Empty actors emit from a point, curves emit along their sampled length, and compatible plugin actors can export volumetric ray resources."
     },
     {
       key: "resolutionX",

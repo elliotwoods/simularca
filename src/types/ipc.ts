@@ -59,6 +59,21 @@ export interface LocalPluginCandidate {
   modulePath: string;
   sourceGroup: "plugins-local" | "plugins";
   updatedAtMs: number;
+  version: string;
+}
+
+export interface GitDirtyBadge {
+  repoRoot: string;
+  changedFileCount: number;
+}
+
+export interface GitDirtyStatusRequest {
+  pluginModulePaths: string[];
+}
+
+export interface GitDirtyStatusResponse {
+  app: GitDirtyBadge | null;
+  plugins: Record<string, GitDirtyBadge | null>;
 }
 
 export interface LiveDebugExecutionSuccess {
@@ -171,6 +186,7 @@ export interface ElectronApi {
   openSaveDialog(args: SaveDialogArgs): Promise<string | null>;
   openDirectoryDialog(args: DirectoryDialogArgs): Promise<string | null>;
   discoverLocalPlugins(): Promise<LocalPluginCandidate[]>;
+  getGitDirtyStatus(args: GitDirtyStatusRequest): Promise<GitDirtyStatusResponse>;
   writeClipboardImagePng(args: { pngBytes: Uint8Array }): Promise<void>;
   renderPipeOpen(args: {
     outputPath: string;

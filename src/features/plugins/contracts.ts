@@ -1,4 +1,4 @@
-import type { PluginDefinition } from "./pluginApi";
+import type { PluginDefinition, PluginDefinitionInput } from "./pluginApi";
 
 export const PLUGIN_HANDSHAKE_VERSION = 1;
 
@@ -16,7 +16,7 @@ export interface PluginManifest {
 
 export interface PluginHandshakeModule {
   manifest: PluginManifest;
-  createPlugin(): PluginDefinition;
+  createPlugin(): PluginDefinitionInput;
 }
 
 export interface PluginLoaderResult {

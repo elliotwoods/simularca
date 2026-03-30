@@ -97,8 +97,9 @@ describe("AddActorMenu", () => {
         id: "spark-plugin",
         name: "Spark Plugin",
         actorDescriptors: [pluginDescriptor],
-        componentDescriptors: []
-      },
+        componentDescriptors: [],
+        viewDescriptors: []
+        },
       manifest: {
         handshakeVersion: 1,
         id: "spark-plugin",

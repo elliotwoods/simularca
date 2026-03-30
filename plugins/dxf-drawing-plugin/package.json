@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "node ../../scripts/plugin-build.mjs"
   },
   "dependencies": {
     "dxf-parser": "^1.1.2"

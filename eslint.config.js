@@ -7,6 +7,32 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ["**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        Buffer: "readonly",
+        URL: "readonly",
+        URLSearchParams: "readonly",
+        TextDecoder: "readonly",
+        TextEncoder: "readonly",
+        AbortController: "readonly",
+        AbortSignal: "readonly",
+        Headers: "readonly",
+        Request: "readonly",
+        Response: "readonly",
+        fetch: "readonly",
+        performance: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        structuredClone: "readonly"
+      }
+    }
+  },
+  {
     files: ["**/*.{ts,tsx}"],
     plugins: {
       "react-hooks": reactHooks,
@@ -31,9 +57,14 @@ export default tseslint.config(
       "dist-electron/**",
       "coverage/**",
       "node_modules/**",
+      ".claude/**",
       "electron/preload.mjs",
       "electron/preload.cjs",
-      "plugins-local/**/dist/**"
+      "plugins/**/dist/**",
+      "plugins-local/**",
+      "plugins-local/**/dist/**",
+      "tests/mylar-baseline/**",
+      "tests/mylar-baseline/.live-cache/**"
     ]
   }
 );

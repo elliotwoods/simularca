@@ -46,6 +46,7 @@ export class ProjectService {
       components: manifest.components,
       camera: manifest.camera,
       time: manifest.time,
+      pluginViews: manifest.pluginViews,
       materials: manifest.materials,
       assets: manifest.assets,
       dirty: false

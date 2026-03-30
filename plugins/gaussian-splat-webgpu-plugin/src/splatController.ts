@@ -94,8 +94,6 @@ export class SplatController {
   private statusFrameCounter = 0;
   private lastReportedSortMode = "";
 
-  // One-shot diagnostics flag
-  private hasLoggedDiagnostics = false;
   private lastProjectionSnapshot: CameraProjectionSnapshot | null = null;
 
   constructor(renderRoot: THREE.Group) {
@@ -387,52 +385,6 @@ export class SplatController {
         },
         updatedAtIso: new Date().toISOString()
       });
-
-      console.log(
-        `[gsplat-webgpu] Loaded: ${count.toLocaleString()} splats, ` +
-        `${numChunks} chunks, ` +
-        `bounds: [${bounds.min.map(v => v.toFixed(2)).join(",")}] → [${bounds.max.map(v => v.toFixed(2)).join(",")}], ` +
-        `color source: ${data.colorSource}`
-      );
-
-      // Diagnostic: log scale and covariance statistics for sizing investigation
-      {
-        const sampleCount = Math.min(count, 10);
-        const scaleStats = { min: Infinity, max: -Infinity, sum: 0 };
-        const covStats = { min: Infinity, max: -Infinity };
-        for (let i = 0; i < count; i++) {
-          const i3 = i * 3;
-          const sx = data.scales[i3], sy = data.scales[i3 + 1], sz = data.scales[i3 + 2];
-          const maxS = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz));
-          scaleStats.min = Math.min(scaleStats.min, maxS);
-          scaleStats.max = Math.max(scaleStats.max, maxS);
-          scaleStats.sum += maxS;
-          const i6 = i * 6;
-          const diagMax = Math.max(Math.abs(cov[i6]), Math.abs(cov[i6 + 3]), Math.abs(cov[i6 + 5]));
-          covStats.min = Math.min(covStats.min, diagMax);
-          covStats.max = Math.max(covStats.max, diagMax);
-        }
-        console.log(
-          `[gsplat-webgpu] Scale stats: min=${scaleStats.min.toExponential(3)}, ` +
-          `max=${scaleStats.max.toExponential(3)}, avg=${(scaleStats.sum / count).toExponential(3)}`
-        );
-        console.log(
-          `[gsplat-webgpu] Cov3D diagonal stats: min=${covStats.min.toExponential(3)}, ` +
-          `max=${covStats.max.toExponential(3)}`
-        );
-        // Sample first few splats
-        const samples: string[] = [];
-        for (let i = 0; i < sampleCount; i++) {
-          const i3 = i * 3;
-          const i6 = i * 6;
-          samples.push(
-            `  splat[${i}]: scale=(${data.scales[i3].toFixed(4)}, ${data.scales[i3+1].toFixed(4)}, ${data.scales[i3+2].toFixed(4)}) ` +
-            `cov_diag=(${cov[i6].toExponential(3)}, ${cov[i6+3].toExponential(3)}, ${cov[i6+5].toExponential(3)}) ` +
-            `opacity=${data.opacities[i].toFixed(3)}`
-          );
-        }
-        console.log(`[gsplat-webgpu] Sample splats:\n${samples.join("\n")}`);
-      }
     } catch (error) {
       // Stale guard
       if (this.loadToken !== localToken) return;
@@ -488,31 +440,6 @@ export class SplatController {
     this.uniforms.focalY.value = focalY;
     this.uniforms.cameraNear.value = cameraNear;
     this.uniforms.isOrthographic.value = isOrthographic ? 1 : 0;
-
-    // One-shot diagnostic: log camera/viewport/focal data on first frame
-    if (!this.hasLoggedDiagnostics) {
-      this.hasLoggedDiagnostics = true;
-      const backendName = renderer.backend?.constructor?.name ?? "unknown";
-      const isWebGPUBackend = renderer.backend?.isWebGPUBackend === true;
-      console.log(
-        `[gsplat-webgpu] Camera diagnostics:\n` +
-        `  viewport: ${vpWidth} × ${vpHeight}\n` +
-        `  focalX: ${focalX.toFixed(2)}, focalY: ${focalY.toFixed(2)}\n` +
-        `  near: ${cameraNear.toFixed(4)}\n` +
-        `  proj[0]: ${proj[0].toFixed(4)}, proj[5]: ${proj[5].toFixed(4)}\n` +
-        `  camera.position: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})\n` +
-        `  renderer type: ${renderer.constructor?.name || "unknown"}\n` +
-        `  backend: ${backendName} (WebGPU: ${isWebGPUBackend})\n` +
-        `  has compute: ${typeof renderer.compute === "function"}`
-      );
-      if (!isWebGPUBackend) {
-        console.warn(
-          `[gsplat-webgpu] WARNING: Renderer is NOT using WebGPU backend (got ${backendName}). ` +
-          `GPU compute sort and storage buffers may not work correctly. ` +
-          `Ensure the scene render engine is set to "webgpu".`
-        );
-      }
-    }
 
     // Frustum cull chunks on CPU, then upload visibility to GPU
     let visibilityChanged = false;
@@ -648,3 +575,4 @@ export class SplatController {
     }
   }
 }
+

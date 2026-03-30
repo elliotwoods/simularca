@@ -1,3 +1,5 @@
+import { PLUGIN_VERSION } from "./pluginBuildInfo.generated";
+
 export interface ParameterSchema {
   id: string;
   title: string;
@@ -99,7 +101,7 @@ const handshake: PluginHandshakeModule = {
     handshakeVersion: 1,
     id: "template.artwork.plugin",
     name: "Template Artwork Actor Plugin",
-    version: "0.1.0",
+    version: PLUGIN_VERSION,
     description: "Starter template for artwork-specific plugin actors.",
     engine: {
       minApiVersion: 1,

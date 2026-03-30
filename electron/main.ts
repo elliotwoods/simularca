@@ -3,13 +3,16 @@ import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { execFileSync, spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { normalizeRenderPipeFrameBytes } from "./renderPipeFrameBytes.js";
 import type {
   DefaultProjectPointer,
   DaeImportResult,
   FileDialogFilter,
+  GitDirtyBadge,
+  GitDirtyStatusRequest,
+  GitDirtyStatusResponse,
   HdriTranscodeOptions,
   ProjectAssetRef,
   ProjectSnapshotListEntry
@@ -25,6 +28,11 @@ const FALLBACK_IMAGE_PNG = Buffer.from(
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_DEV = Boolean(DEV_SERVER_URL);
+
+if (IS_DEV) {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
+}
+
 const APP_DISPLAY_NAME = "Simularca";
 const DEFAULTS_FILE_NAME = "defaults.json";
 const LEGACY_PROJECT_FILE_NAME = "session.json";
@@ -283,12 +291,31 @@ function getAssetDirectory(projectName: string, kind: ProjectAssetRef["kind"]): 
   return path.join(getProjectDirectory(projectName), "assets", kind);
 }
 
-async function discoverLocalPlugins(): Promise<Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins"; updatedAtMs: number }>> {
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function readPluginPackageVersion(packageJsonPath: string): Promise<string> {
+  try {
+    const raw = await fs.readFile(packageJsonPath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.trim().length > 0 ? parsed.version.trim() : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+async function discoverLocalPlugins(): Promise<Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins"; updatedAtMs: number; version: string }>> {
   const roots: Array<{ sourceGroup: "plugins-local" | "plugins"; directory: string }> = [
     { sourceGroup: "plugins-local", directory: path.join(getRepoRoot(), "plugins-local") },
     { sourceGroup: "plugins", directory: path.join(getRepoRoot(), "plugins") }
   ];
-  const discovered: Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins"; updatedAtMs: number }> = [];
+  const discovered: Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins"; updatedAtMs: number; version: string }> = [];
   for (const root of roots) {
     try {
       const entries = await fs.readdir(root.directory, { withFileTypes: true });
@@ -298,12 +325,17 @@ async function discoverLocalPlugins(): Promise<Array<{ modulePath: string; sourc
         .sort((a, b) => a.localeCompare(b));
       for (const childName of directories) {
         const builtEntry = path.join(root.directory, childName, "dist", "index.js");
+        const builtPackageJsonPath = path.join(root.directory, childName, "dist", "package.json");
+        const sourcePackageJsonPath = path.join(root.directory, childName, "package.json");
         try {
           const stat = await fs.stat(builtEntry);
           discovered.push({
             modulePath: `file:///${builtEntry.replaceAll("\\", "/")}`,
             sourceGroup: root.sourceGroup,
-            updatedAtMs: stat.mtimeMs
+            updatedAtMs: stat.mtimeMs,
+            version: await readPluginPackageVersion(
+              (await fileExists(builtPackageJsonPath)) ? builtPackageJsonPath : sourcePackageJsonPath
+            )
           });
         } catch {
           // Ignore entries without built output.
@@ -314,6 +346,95 @@ async function discoverLocalPlugins(): Promise<Array<{ modulePath: string; sourc
     }
   }
   return discovered;
+}
+
+function runGit(args: string[], cwd: string): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  }).trim();
+}
+
+function tryFindGitRoot(startPath: string): string | null {
+  try {
+    return path.resolve(runGit(["rev-parse", "--show-toplevel"], startPath));
+  } catch {
+    return null;
+  }
+}
+
+function countDirtyFiles(gitRoot: string): number | null {
+  try {
+    const porcelain = runGit(["status", "--porcelain"], gitRoot);
+    if (!porcelain) {
+      return 0;
+    }
+    return porcelain
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0).length;
+  } catch {
+    return null;
+  }
+}
+
+function resolveModuleFilePath(modulePath: string): string | null {
+  try {
+    const parsed = new URL(modulePath);
+    if (parsed.protocol !== "file:") {
+      return null;
+    }
+    return fileURLToPath(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function buildGitDirtyBadge(repoRoot: string | null, changedFileCount: number | null): GitDirtyBadge | null {
+  if (!repoRoot || changedFileCount === null) {
+    return null;
+  }
+  return {
+    repoRoot,
+    changedFileCount
+  };
+}
+
+function getGitDirtyStatus(args: GitDirtyStatusRequest): GitDirtyStatusResponse {
+  if (!IS_DEV) {
+    return {
+      app: null,
+      plugins: {}
+    };
+  }
+
+  const appRepoRoot = tryFindGitRoot(getRepoRoot());
+  const countsByRepoRoot = new Map<string, number | null>();
+  const getRepoCount = (repoRoot: string): number | null => {
+    const normalizedRepoRoot = path.resolve(repoRoot);
+    if (!countsByRepoRoot.has(normalizedRepoRoot)) {
+      countsByRepoRoot.set(normalizedRepoRoot, countDirtyFiles(normalizedRepoRoot));
+    }
+    return countsByRepoRoot.get(normalizedRepoRoot) ?? null;
+  };
+
+  const plugins: Record<string, GitDirtyBadge | null> = {};
+  for (const modulePath of args.pluginModulePaths) {
+    const moduleFilePath = resolveModuleFilePath(modulePath);
+    const moduleDir = moduleFilePath ? path.dirname(moduleFilePath) : null;
+    const pluginRepoRoot = moduleDir ? tryFindGitRoot(moduleDir) : null;
+    if (!pluginRepoRoot || (appRepoRoot && path.resolve(pluginRepoRoot) === path.resolve(appRepoRoot))) {
+      plugins[modulePath] = null;
+      continue;
+    }
+    plugins[modulePath] = buildGitDirtyBadge(pluginRepoRoot, getRepoCount(pluginRepoRoot));
+  }
+
+  return {
+    app: buildGitDirtyBadge(appRepoRoot, appRepoRoot ? getRepoCount(appRepoRoot) : null),
+    plugins
+  };
 }
 
 function mimeTypeForPath(filePath: string): string {
@@ -943,6 +1064,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("plugins:discover-local", async () => {
     return await discoverLocalPlugins();
+  });
+  ipcMain.handle("git:dirty-status", async (_event, args: GitDirtyStatusRequest) => {
+    return getGitDirtyStatus(args);
   });
   ipcMain.handle(
     "clipboard:write-image-png",

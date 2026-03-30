@@ -1,5 +1,6 @@
 import type { PluginHandshakeModule } from "./contracts";
 import { createBeamCrossoverPlugin } from "./beamPlugin";
+import { PLUGIN_VERSION } from "./pluginBuildInfo.generated";
 
 export { beamEmitterArrayDescriptor, beamEmitterDescriptor } from "./beamPlugin";
 export {
@@ -14,7 +15,7 @@ const handshake: PluginHandshakeModule = {
     handshakeVersion: 1,
     id: "beam.crossover",
     name: "Beam Crossover",
-    version: "0.1.0",
+    version: PLUGIN_VERSION,
     description: "Volumetric beam emitters that analytically target primitive silhouettes.",
     engine: {
       minApiVersion: 1,

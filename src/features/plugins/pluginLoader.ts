@@ -4,6 +4,7 @@ import type { AppKernel } from "@/app/kernel";
 export interface PluginLoadSource {
   sourceGroup?: "plugins-local" | "plugins" | "manual";
   updatedAtMs?: number;
+  version?: string;
 }
 
 export interface PluginLoadOptions {
@@ -80,6 +81,16 @@ function assertCompatibleEngine(
   }
 }
 
+export function applyPluginVersionOverride<T extends { version: string }>(manifest: T, versionOverride?: string): T {
+  if (!versionOverride) {
+    return manifest;
+  }
+  return {
+    ...manifest,
+    version: versionOverride
+  };
+}
+
 export async function loadPluginFromModule(
   kernel: AppKernel,
   modulePath: string,
@@ -107,15 +118,16 @@ export async function loadPluginFromModule(
   assertCompatibleHandshake(candidate.manifest.handshakeVersion, modulePath);
   assertCompatibleEngine(candidate.manifest.engine, modulePath);
 
+  const manifest = applyPluginVersionOverride(candidate.manifest, source?.version);
   const plugin = candidate.createPlugin();
-  kernel.pluginApi.registerPlugin(plugin, candidate.manifest, {
+  const registration = kernel.pluginApi.registerPlugin(plugin, manifest, {
     modulePath,
     sourceGroup: source?.sourceGroup ?? "manual",
     loadedAtIso: new Date().toISOString(),
     updatedAtMs: source?.updatedAtMs
   });
   return {
-    manifest: candidate.manifest,
-    plugin
+    manifest,
+    plugin: registration.plugin.definition
   };
 }

@@ -25,7 +25,8 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.app.json --noEmit --pretty false && tsc -p tsconfig.electron.json --noEmit --pretty false",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:plugins": "vitest run src/features/plugins src/features/actors/actorCatalog.test.ts src/ui/components/InspectorPane.beamEmitter.test.ts src/render/mistVolumeController.test.ts src/render/mistVolumeController.pluginSources.test.ts src/render/engineCompatibility.test.ts src/render/stats.test.ts"
   },
   "dependencies": {
     "@fortawesome/fontawesome-svg-core": "^6.7.2",

@@ -14,7 +14,6 @@ import {
   normalWorld,
   positionWorld,
   select,
-  texture,
   texture3D,
   uniform,
   varying,
@@ -90,7 +89,7 @@ interface WebGpuGhostUniforms {
   beamAlpha: NodeUniform;
 }
 
-interface WebGpuNormalsUniforms {}
+type WebGpuNormalsUniforms = Record<string, never>;
 
 interface WebGpuMistUniforms {
   mistEnabled: NodeUniform;
@@ -2225,3 +2224,5 @@ export function createBeamCrossoverPlugin(): PluginDefinition {
     componentDescriptors: []
   };
 }
+
+

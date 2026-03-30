@@ -1,5 +1,6 @@
 import type { PluginHandshakeModule, PluginDefinition, ReloadableDescriptor, ParameterSchema } from "./contracts";
 import { createDxfController } from "./dxfController";
+import { PLUGIN_VERSION } from "./pluginBuildInfo.generated";
 
 const DESCRIPTOR_ID = "plugin.dxfDrawing.actor";
 
@@ -160,7 +161,7 @@ const handshake: PluginHandshakeModule = {
     handshakeVersion: 1,
     id: "dxf.drawing",
     name: "DXF Drawing",
-    version: "0.1.0",
+    version: PLUGIN_VERSION,
     description: "DXF drawing import with recursive block insert support.",
     engine: {
       minApiVersion: 1,

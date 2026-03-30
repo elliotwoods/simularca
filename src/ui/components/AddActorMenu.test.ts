@@ -46,7 +46,9 @@ function createKernelStub(
       listByKind: (kind: string) => (kind === "actor" ? descriptors : [])
     } as unknown as AppKernel["descriptorRegistry"],
     pluginApi: {
-      listPlugins: () => plugins
+      listPlugins: () => plugins,
+      subscribe: () => () => {},
+      getRevision: () => 0
     } as unknown as AppKernel["pluginApi"],
     clock: {} as AppKernel["clock"]
   };
@@ -97,8 +99,9 @@ describe("AddActorMenu", () => {
         id: "spark-plugin",
         name: "Spark Plugin",
         actorDescriptors: [pluginDescriptor],
-        componentDescriptors: []
-      },
+        componentDescriptors: [],
+        viewDescriptors: []
+        },
       lastLoadedAtIso: "2026-03-09T00:00:00.000Z",
       reloadCount: 0,
       manifest: {
@@ -122,7 +125,8 @@ describe("AddActorMenu", () => {
     expect(document.body.textContent).toContain("Spark Emitter");
 
     await act(async () => {
-      searchInput!.value = "spark";
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(searchInput, "spark");
       searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
     });
 

@@ -2,6 +2,8 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { SceneTree } from "@/ui/components/SceneTree";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
+import { GitDirtyBadge } from "@/ui/components/GitDirtyBadge";
+import { getPluginGitDirtyBadge, useGitDirtyStatus } from "@/ui/useGitDirtyStatus";
 import { usePluginRegistryRevision } from "@/features/plugins/usePluginRegistryRevision";
 
 interface LeftPanelProps {
@@ -14,6 +16,7 @@ export function LeftPanel(props: LeftPanelProps) {
   const mode = useAppStore((store) => store.state.mode);
   const readOnly = mode === "web-ro";
   const plugins = kernel.pluginApi.listPlugins();
+  const gitDirtyStatus = useGitDirtyStatus(plugins.map((entry) => entry.source?.modulePath));
 
   return (
     <div className="left-panel">
@@ -37,8 +40,13 @@ export function LeftPanel(props: LeftPanelProps) {
           <ul className="plugin-list">
             {plugins.map((entry) => (
               <li key={entry.definition.id}>
-                <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
-                <span>{entry.manifest?.version ?? "unknown version"}</span>
+                <span className="plugin-list-title">
+                  <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
+                  <GitDirtyBadge count={getPluginGitDirtyBadge(gitDirtyStatus, entry.source?.modulePath)?.changedFileCount ?? 0} />
+                </span>
+                <span className="plugin-list-meta">
+                  {entry.manifest?.version ?? "unknown version"}
+                </span>
               </li>
             ))}
           </ul>

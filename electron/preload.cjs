@@ -69,6 +69,7 @@ const api = {
   openSaveDialog: (args) => ipcRenderer.invoke("dialog:save-file", args),
   openDirectoryDialog: (args) => ipcRenderer.invoke("dialog:open-directory", args),
   discoverLocalPlugins: () => ipcRenderer.invoke("plugins:discover-local"),
+  getGitDirtyStatus: (args) => ipcRenderer.invoke("git:dirty-status", args),
   writeClipboardImagePng: (args) => ipcRenderer.invoke("clipboard:write-image-png", args),
   renderPipeOpen: (args) => ipcRenderer.invoke("render:pipe-open", args),
   renderPipeWriteFrame: (args) => {

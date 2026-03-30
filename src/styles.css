@@ -813,6 +813,12 @@ select {
   font-size: 11px;
 }
 
+.titlebar-build-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .titlebar-brand-button:hover .titlebar-brand span,
 .titlebar-brand-button:hover .titlebar-brand strong {
   color: var(--text);
@@ -2001,9 +2007,50 @@ select {
   color: var(--text);
 }
 
+.plugin-list-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .plugin-list span {
   color: var(--text-muted);
   font-family: var(--font-mono);
+}
+
+.plugin-list-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-dirty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #d64545;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.titlebar-build-meta .git-dirty-badge,
+.plugin-list-meta .git-dirty-badge,
+.plugin-list-title .git-dirty-badge,
+.about-modal-inline-value .git-dirty-badge {
+  color: #ffffff;
+}
+
+.titlebar-git-dirty-badge {
+  min-width: 16px;
+  min-height: 16px;
+  padding: 0 5px;
 }
 
 .inspector-pane-root {
@@ -3207,13 +3254,6 @@ body.is-dragging-viewport-axes * {
   letter-spacing: 0.08em;
 }
 
-.about-modal-summary {
-  margin: 0;
-  color: var(--accent-2);
-  font-size: 13px;
-  line-height: 1.4;
-}
-
 .about-modal-grid {
   margin: 0;
   display: grid;
@@ -3234,6 +3274,12 @@ body.is-dragging-viewport-axes * {
   font-family: var(--font-mono);
   font-size: 12px;
   word-break: break-word;
+}
+
+.about-modal-inline-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .about-modal-actions {

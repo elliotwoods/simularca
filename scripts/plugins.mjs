@@ -105,6 +105,23 @@ function attachWatchLogging(pluginPackage, child) {
   attach(child.stderr, console.error);
 }
 
+function createDirectNodeSpec(pluginPackage, scriptCommand, extraArgs = []) {
+  const trimmed = typeof scriptCommand === "string" ? scriptCommand.trim() : "";
+  const match = /^node\s+(.+)$/.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+  const scriptPath = match[1]?.trim();
+  if (!scriptPath) {
+    return null;
+  }
+  return {
+    command: process.execPath,
+    args: [path.resolve(pluginPackage.path, scriptPath), ...extraArgs],
+    restartOnExit: false
+  };
+}
+
 function createCommandForPackage(pluginPackage) {
   const runNpm = (...npmArgs) => {
     if (npmCliPath) {
@@ -117,17 +134,33 @@ function createCommandForPackage(pluginPackage) {
   }
   if (mode === "watch") {
     if (typeof pluginPackage.scripts.dev === "string") {
+      const direct = createDirectNodeSpec(pluginPackage, pluginPackage.scripts.dev);
+      if (direct) {
+        return direct;
+      }
       return runNpm("--silent", "run", "dev");
     }
     if (typeof pluginPackage.scripts.watch === "string") {
+      const direct = createDirectNodeSpec(pluginPackage, pluginPackage.scripts.watch);
+      if (direct) {
+        return direct;
+      }
       return runNpm("--silent", "run", "watch");
     }
     if (typeof pluginPackage.scripts.build === "string") {
+      const direct = createDirectNodeSpec(pluginPackage, pluginPackage.scripts.build, ["--watch", "--pretty", "false"]);
+      if (direct) {
+        return direct;
+      }
       return runNpm("--silent", "run", "build", "--", "--watch", "--pretty", "false");
     }
     return null;
   }
   if (typeof pluginPackage.scripts.build === "string") {
+    const direct = createDirectNodeSpec(pluginPackage, pluginPackage.scripts.build);
+    if (direct) {
+      return direct;
+    }
     return runNpm("--silent", "run", "build");
   }
   return null;

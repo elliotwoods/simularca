@@ -1,13 +1,45 @@
+import type { ReactNode, ComponentType } from "react";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import { DescriptorRegistry } from "@/core/hotReload/descriptorRegistry";
 import type { HotReloadManager } from "@/core/hotReload/hotReloadManager";
+import type { ActorNode, ActorRuntimeStatus, ParameterValues, PluginViewState } from "@/core/types";
 import type { PluginManifest } from "./contracts";
+
+export interface PluginViewActions {
+  updateActorParams(partial: ParameterValues): void;
+  openSiblingView(viewType: string): void;
+  focusView(viewId: string): void;
+  closeView(viewId: string): void;
+}
+
+export interface PluginViewComponentProps {
+  pluginView: PluginViewState;
+  actor: ActorNode | null;
+  runtimeStatus: ActorRuntimeStatus | null;
+  actions: PluginViewActions;
+}
+
+export interface PluginViewDescriptor {
+  viewType: string;
+  title: string;
+  component?: ComponentType<PluginViewComponentProps>;
+  render?: (props: PluginViewComponentProps) => ReactNode;
+}
 
 export interface PluginDefinition {
   id: string;
   name: string;
   actorDescriptors: ReloadableDescriptor[];
   componentDescriptors: ReloadableDescriptor[];
+  viewDescriptors: PluginViewDescriptor[];
+}
+
+export interface PluginDefinitionInput {
+  id: string;
+  name: string;
+  actorDescriptors: ReloadableDescriptor[];
+  componentDescriptors: ReloadableDescriptor[];
+  viewDescriptors?: PluginViewDescriptor[];
 }
 
 export interface RegisteredPlugin {
@@ -30,7 +62,7 @@ export interface PluginRegistrationResult {
 
 export interface PluginApi {
   registerPlugin(
-    plugin: PluginDefinition,
+    plugin: PluginDefinitionInput,
     manifest?: PluginManifest,
     source?: RegisteredPlugin["source"]
   ): PluginRegistrationResult;
@@ -40,6 +72,28 @@ export interface PluginApi {
   getRevision(): number;
   registerActorType(descriptor: ReloadableDescriptor): void;
   registerComponentType(descriptor: ReloadableDescriptor): void;
+  getViewDescriptor(pluginId: string, viewType: string): PluginViewDescriptor | null;
+}
+
+function normalizePluginDefinition(plugin: PluginDefinitionInput): PluginDefinition {
+  return {
+    ...plugin,
+    viewDescriptors: [...(plugin.viewDescriptors ?? [])]
+  };
+}
+
+function validateViewDescriptors(plugin: PluginDefinition): void {
+  const seen = new Set<string>();
+  for (const descriptor of plugin.viewDescriptors) {
+    if (!descriptor.viewType.trim()) {
+      throw new Error(`Plugin ${plugin.id} has a view descriptor with an empty viewType.`);
+    }
+    const key = descriptor.viewType;
+    if (seen.has(key)) {
+      throw new Error(`Plugin ${plugin.id} declares duplicate view descriptor ${key}.`);
+    }
+    seen.add(key);
+  }
 }
 
 export function createPluginApi(registry: DescriptorRegistry, hotReloadManager: HotReloadManager): PluginApi {
@@ -56,10 +110,12 @@ export function createPluginApi(registry: DescriptorRegistry, hotReloadManager: 
 
   return {
     registerPlugin(plugin, manifest, source) {
-      const existing = plugins.get(plugin.id);
+      const normalizedPlugin = normalizePluginDefinition(plugin);
+      validateViewDescriptors(normalizedPlugin);
+      const existing = plugins.get(normalizedPlugin.id);
       const loadedAtIso = new Date().toISOString();
       const registeredPlugin: RegisteredPlugin = {
-        definition: plugin,
+        definition: normalizedPlugin,
         manifest,
         source: source
           ? {
@@ -72,14 +128,14 @@ export function createPluginApi(registry: DescriptorRegistry, hotReloadManager: 
       };
       if (existing) {
         const applied = hotReloadManager.applyDescriptorSetUpdate(
-          source?.modulePath ?? `plugin:${plugin.id}`,
+          source?.modulePath ?? `plugin:${normalizedPlugin.id}`,
           [
             ...existing.definition.actorDescriptors.map((descriptor) => descriptor.id),
             ...existing.definition.componentDescriptors.map((descriptor) => descriptor.id)
           ],
           [
-          ...plugin.actorDescriptors,
-          ...plugin.componentDescriptors
+          ...normalizedPlugin.actorDescriptors,
+          ...normalizedPlugin.componentDescriptors
           ]
         );
         if (!applied) {
@@ -95,11 +151,11 @@ export function createPluginApi(registry: DescriptorRegistry, hotReloadManager: 
           plugin: registeredPlugin
         };
       }
-      plugins.set(plugin.id, registeredPlugin);
-      for (const descriptor of plugin.actorDescriptors) {
+      plugins.set(normalizedPlugin.id, registeredPlugin);
+      for (const descriptor of normalizedPlugin.actorDescriptors) {
         registry.register(descriptor);
       }
-      for (const descriptor of plugin.componentDescriptors) {
+      for (const descriptor of normalizedPlugin.componentDescriptors) {
         registry.register(descriptor);
       }
       emit();
@@ -135,6 +191,9 @@ export function createPluginApi(registry: DescriptorRegistry, hotReloadManager: 
     registerComponentType(descriptor) {
       registry.register(descriptor);
       emit();
+    },
+    getViewDescriptor(pluginId, viewType) {
+      return plugins.get(pluginId)?.definition.viewDescriptors.find((descriptor) => descriptor.viewType === viewType) ?? null;
     }
   };
 }

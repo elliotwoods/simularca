@@ -195,7 +195,9 @@ describe("DigitScrubInput", () => {
     );
 
     const digit = container.querySelector(".digit");
+    const scrubButton = container.querySelector("button.widget-digit-input") as HTMLButtonElement | null;
     expect(digit).not.toBeNull();
+    expect(scrubButton).not.toBeNull();
 
     const originalRequestPointerLock = HTMLButtonElement.prototype.requestPointerLock;
     const originalExitPointerLock = document.exitPointerLock;
@@ -207,8 +209,9 @@ describe("DigitScrubInput", () => {
     });
 
     HTMLButtonElement.prototype.requestPointerLock = function requestPointerLockStub() {
-      pointerLockElement = this;
+      pointerLockElement = scrubButton;
       document.dispatchEvent(new Event("pointerlockchange"));
+      return Promise.resolve();
     };
 
     document.exitPointerLock = () => {
@@ -232,7 +235,7 @@ describe("DigitScrubInput", () => {
     } finally {
       HTMLButtonElement.prototype.requestPointerLock = originalRequestPointerLock;
       document.exitPointerLock = originalExitPointerLock;
-      delete (document as Document & { pointerLockElement?: Element | null }).pointerLockElement;
+      Reflect.deleteProperty(document, "pointerLockElement");
     }
   });
 });
@@ -309,3 +312,4 @@ describe("inferDisplayPrecision", () => {
     expect(inferDisplayPrecision(undefined, 0.125)).toBe(3);
   });
 });
+

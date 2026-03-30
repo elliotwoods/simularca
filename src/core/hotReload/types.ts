@@ -5,6 +5,7 @@ import type {
   AppState,
   ActorType,
   MistVolumeResource,
+  VolumetricRayFieldResource,
   ParameterSchema,
   ParameterValues
 } from "@/core/types";
@@ -32,10 +33,12 @@ export interface SceneHookContext {
   actor: ActorNode;
   state: AppState;
   object: unknown;
+  runtime: unknown | null;
   simTimeSeconds: number;
   dtSeconds: number;
   getActorById(actorId: string): ActorNode | null;
   getActorObject(actorId: string): unknown | null;
+  getActorRuntime(actorId: string): unknown | null;
   sampleCurveWorldPoint(
     actorId: string,
     t: number
@@ -44,6 +47,7 @@ export interface SceneHookContext {
     tangent: [number, number, number];
   } | null;
   getMistVolumeResource(actorId: string): MistVolumeResource | null;
+  getVolumetricRayResource(actorId: string): VolumetricRayFieldResource | null;
   setActorStatus(status: ActorRuntimeStatus | null): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
 }

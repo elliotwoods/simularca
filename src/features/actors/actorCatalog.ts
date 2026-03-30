@@ -1,5 +1,5 @@
 import type { AppKernel } from "@/app/kernel";
-import type { ActorType } from "@/core/types";
+import type { ActorType, ParameterDefinition, ParameterValue, ParameterValues } from "@/core/types";
 import { buildDefaultCameraPathKeyframes, buildSinglePointCurveData } from "@/features/cameraPath/model";
 import { createDefaultCurveData } from "@/features/curves/types";
 import { buildMistLookupNoiseParams } from "@/features/actors/mistVolumeLookupNoise";
@@ -17,6 +17,45 @@ export interface ActorCreationOption {
   groupKey: string;
   groupLabel: string;
   pluginName?: string;
+}
+
+function defaultValueForDefinition(definition: ParameterDefinition): ParameterValue {
+  if (definition.defaultValue !== undefined) {
+    return structuredClone(definition.defaultValue as ParameterValue);
+  }
+  if (definition.type === "vector3") {
+    return [0, 0, 0];
+  }
+  if (definition.type === "number") {
+    return 0;
+  }
+  if (definition.type === "boolean") {
+    return false;
+  }
+  if (definition.type === "color") {
+    return "#000000";
+  }
+  if (definition.type === "select") {
+    return definition.options[0] ?? "";
+  }
+  if (definition.type === "actor-ref-list") {
+    return [];
+  }
+  return "";
+}
+
+function buildSchemaDefaultParams(kernel: AppKernel, descriptorId: string): ParameterValues {
+  const descriptor = kernel.descriptorRegistry
+    .listByKind("actor")
+    .find((entry) => entry.id === descriptorId);
+  if (!descriptor) {
+    return {};
+  }
+  const defaults: ParameterValues = {};
+  for (const definition of descriptor.schema.params) {
+    defaults[definition.key] = defaultValueForDefinition(definition);
+  }
+  return defaults;
 }
 
 export function listActorCreationOptions(kernel: AppKernel): ActorCreationOption[] {
@@ -135,6 +174,10 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
     pluginType: option.pluginType,
     name: option.label
   });
+  const schemaDefaults = buildSchemaDefaultParams(kernel, descriptorId);
+  if (Object.keys(schemaDefaults).length > 0) {
+    kernel.store.getState().actions.updateActorParams(actorId, schemaDefaults);
+  }
   // Seed known core actor defaults so inspector bindings start with stable values.
   if (descriptorId === "actor.mesh") {
     kernel.store.getState().actions.updateActorParams(actorId, {

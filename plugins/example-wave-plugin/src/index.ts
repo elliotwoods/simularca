@@ -1,3 +1,5 @@
+import { PLUGIN_VERSION } from "./pluginBuildInfo.generated";
+
 export interface ParameterSchema {
   id: string;
   title: string;
@@ -143,7 +145,7 @@ const handshake: PluginHandshakeModule = {
     handshakeVersion: 1,
     id: "example.wave",
     name: "Example Wave Plugin",
-    version: "0.1.0",
+    version: PLUGIN_VERSION,
     description: "Reference plugin demonstrating handshake contract and actor registration.",
     engine: {
       minApiVersion: 1,

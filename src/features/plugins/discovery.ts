@@ -55,7 +55,8 @@ export async function loadLocalPluginCandidates(
         candidate.modulePath,
         {
           sourceGroup: candidate.sourceGroup,
-          updatedAtMs: candidate.updatedAtMs
+          updatedAtMs: candidate.updatedAtMs,
+          version: candidate.version
         },
         existing
           ? {
@@ -69,9 +70,15 @@ export async function loadLocalPluginCandidates(
         addedCount += 1;
       }
     } catch (error) {
-      failed.push({
+      const failure = {
         modulePath: candidate.modulePath,
         error: toMessage(error)
+      };
+      failed.push(failure);
+      kernel.store.getState().actions.addLog({
+        level: "warn",
+        message: `Plugin load failed: ${candidate.modulePath}`,
+        details: failure.error
       });
     }
   }

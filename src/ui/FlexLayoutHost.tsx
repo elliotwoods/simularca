@@ -1,9 +1,14 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { Actions, Layout, Model, type IJsonModel, type TabNode } from "flexlayout-react";
+import { useKernel } from "@/app/useKernel";
+import { useAppStore } from "@/app/useAppStore";
+import { sortOpenPluginViews } from "@/features/plugins/pluginViews";
 import { LeftPanel } from "@/ui/panels/LeftPanel";
 import { RightPanel } from "@/ui/panels/RightPanel";
 import { ViewportPanel } from "@/ui/panels/ViewportPanel";
 import { ConsolePanel } from "@/ui/panels/ConsolePanel";
+import { PluginViewPanel } from "@/ui/panels/PluginViewPanel";
+import { focusPluginViewTab, listPluginViewTabs, syncPluginViewTabs } from "@/ui/pluginViewLayout";
 
 const LAYOUT_STORAGE_KEY = "simularca:flex-layout:v1";
 
@@ -233,6 +238,10 @@ interface FlexLayoutHostProps {
 }
 
 export function FlexLayoutHost(props: FlexLayoutHostProps) {
+  const kernel = useKernel();
+  const pluginViewMap = useAppStore((store) => store.state.pluginViews);
+  const focusedPluginViewId = useAppStore((store) => store.state.focusedPluginViewId);
+  const pluginViews = useMemo(() => sortOpenPluginViews(pluginViewMap), [pluginViewMap]);
   const model = useMemo(() => createLayoutModel(), []);
   const viewportTabsetId = useMemo(() => findViewportTabsetId(model), [model]);
 
@@ -246,6 +255,34 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
     }
     model.doAction(Actions.maximizeToggle(viewportTabsetId));
   }, [model, props.viewportFullscreen, viewportTabsetId]);
+
+  useEffect(() => {
+    syncPluginViewTabs(model, pluginViews, viewportTabsetId);
+  }, [model, pluginViews, viewportTabsetId]);
+
+  useEffect(() => {
+    focusPluginViewTab(model, focusedPluginViewId);
+  }, [focusedPluginViewId, model]);
+
+  const handleModelChange = useCallback(
+    (nextModel: Model) => {
+      persistLayoutConfig(nextModel);
+      const tabs = listPluginViewTabs(nextModel);
+      const tabByViewId = new Map(tabs.map((tab) => [tab.viewId, tab]));
+      const actions = kernel.store.getState().actions;
+      for (const view of pluginViews) {
+        const tab = tabByViewId.get(view.id);
+        if (!tab) {
+          actions.closePluginView(view.id);
+          continue;
+        }
+        if (tab.tabsetId !== view.preferredTabsetId) {
+          actions.setPluginViewTabset(view.id, tab.tabsetId);
+        }
+      }
+    },
+    [kernel, pluginViews]
+  );
 
   const factory = (node: TabNode): React.ReactNode => {
     const component = node.getComponent();
@@ -264,6 +301,10 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
         return <RightPanel />;
       case "console":
         return <ConsolePanel />;
+      case "plugin-view": {
+        const config = (node.getConfig() ?? {}) as { pluginViewId?: string };
+        return config.pluginViewId ? <PluginViewPanel pluginViewId={config.pluginViewId} /> : null;
+      }
       default:
         return null;
     }
@@ -274,7 +315,7 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
       <div className="layout-shell-title">{props.titleBar}</div>
       <div className="layout-shell-toolbar">{props.topBar}</div>
       <div className="flex-layout-host">
-        <Layout model={model} factory={factory} onModelChange={persistLayoutConfig} />
+        <Layout model={model} factory={factory} onModelChange={handleModelChange} />
       </div>
     </div>
   );

@@ -22,6 +22,7 @@ function buildManifest(projectName: string, snapshotName = "main", assets: Proje
     camera: state.camera,
     lastPerspectiveCamera: state.lastPerspectiveCamera,
     time: state.time,
+    pluginViews: {},
     materials: state.materials,
     assets
   };
@@ -225,3 +226,4 @@ describe("project service", () => {
     expect(store.getState().state.activeSnapshotName).toBe("draft-2");
   });
 });
+

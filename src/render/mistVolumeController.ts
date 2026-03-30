@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { AppKernel } from "@/app/kernel";
-import type { ActorNode, AppState, MistVolumeResource } from "@/core/types";
+import type { ActorNode, AppState, MistVolumeResource, VolumetricRayFieldResource } from "@/core/types";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
 
 export type MistVolumeQualityMode = "interactive" | "export";
@@ -30,6 +30,113 @@ interface MistBoundarySettings {
 interface MistVolumeSourceSample {
   positionLocal: THREE.Vector3;
   directionLocal: THREE.Vector3;
+  strength: number;
+}
+
+function clampSourceStrength(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(0, value);
+}
+
+function clampMaxSourceSamples(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 512;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
+function buildVolumetricSourceSample(
+  worldPosition: THREE.Vector3,
+  worldDirection: THREE.Vector3,
+  worldToLocal: THREE.Matrix4,
+  strength: number
+): MistVolumeSourceSample {
+  return {
+    positionLocal: worldPosition.clone().applyMatrix4(worldToLocal),
+    directionLocal: worldDirection.clone().transformDirection(worldToLocal).normalize(),
+    strength: clampSourceStrength(strength)
+  };
+}
+
+export function collectMistSourcesFromVolumetricRayResourceForTest(
+  resource: VolumetricRayFieldResource | null,
+  worldToLocalElements?: number[]
+): Array<{
+  positionLocal: [number, number, number];
+  directionLocal: [number, number, number];
+  strength: number;
+}> {
+  const worldToLocal = new THREE.Matrix4();
+  if (Array.isArray(worldToLocalElements) && worldToLocalElements.length === 16) {
+    worldToLocal.fromArray(worldToLocalElements);
+  } else {
+    worldToLocal.identity();
+  }
+  return collectMistSourcesFromVolumetricRayResource(resource, worldToLocal).map((source) => ({
+    positionLocal: [source.positionLocal.x, source.positionLocal.y, source.positionLocal.z],
+    directionLocal: [source.directionLocal.x, source.directionLocal.y, source.directionLocal.z],
+    strength: source.strength
+  }));
+}
+
+function collectMistSourcesFromVolumetricRayResource(
+  resource: VolumetricRayFieldResource | null,
+  worldToLocal: THREE.Matrix4
+): MistVolumeSourceSample[] {
+  if (!resource || resource.kind !== "ray-field" || resource.segments.length === 0) {
+    return [];
+  }
+  const maxSamples = clampMaxSourceSamples(resource.suggestedMaxSamples);
+  const spacing = Math.max(1e-3, resource.suggestedSampleSpacingMeters);
+  const samplePlan = resource.segments.map((segment) => Math.max(1, Math.ceil(segment.length / spacing)));
+  const totalRequested = samplePlan.reduce((sum, count) => sum + count, 0);
+  const downsample = totalRequested > maxSamples ? totalRequested / maxSamples : 1;
+  const samples: MistVolumeSourceSample[] = [];
+  let emittedBudget = 0;
+  for (let segmentIndex = 0; segmentIndex < resource.segments.length; segmentIndex += 1) {
+    const segment = resource.segments[segmentIndex]!;
+    const requestedSamples = samplePlan[segmentIndex]!;
+    const worldStart = new THREE.Vector3(...segment.start);
+    const worldEnd = new THREE.Vector3(...segment.end);
+    const worldDirection = new THREE.Vector3(...segment.direction);
+    if (worldDirection.lengthSq() <= 1e-12) {
+      continue;
+    }
+    worldDirection.normalize();
+    let emittedForSegment = 0;
+    for (let sampleIndex = 0; sampleIndex < requestedSamples; sampleIndex += 1) {
+      emittedBudget += 1;
+      const currentBucket = Math.floor(emittedBudget / downsample);
+      const previousBucket = Math.floor((emittedBudget - 1) / downsample);
+      if (currentBucket === previousBucket && downsample > 1) {
+        continue;
+      }
+      const alpha = requestedSamples <= 1 ? 0.5 : sampleIndex / Math.max(1, requestedSamples - 1);
+      const worldPosition = worldStart.clone().lerp(worldEnd, alpha);
+      emittedForSegment += 1;
+      samples.push(
+        buildVolumetricSourceSample(
+          worldPosition,
+          worldDirection,
+          worldToLocal,
+          segment.weight / requestedSamples
+        )
+      );
+    }
+    if (emittedForSegment === 0) {
+      samples.push(
+        buildVolumetricSourceSample(
+          worldStart.clone().lerp(worldEnd, 0.5),
+          worldDirection,
+          worldToLocal,
+          segment.weight
+        )
+      );
+    }
+  }
+  return samples.slice(0, maxSamples);
 }
 
 interface MistVolumeQualitySettings {
@@ -75,6 +182,7 @@ interface MistVolumeHelpers {
     position: [number, number, number];
     tangent: [number, number, number];
   } | null;
+  getVolumetricRayResource(actorId: string): VolumetricRayFieldResource | null;
 }
 
 interface MistVolumeBinding {
@@ -477,6 +585,7 @@ function uploadMistDensityBytes(density: Float32Array, uploadBytes: Uint8Array):
 interface MistInjectionSource {
   positionLocal: THREE.Vector3;
   directionLocal: THREE.Vector3;
+  strength: number;
 }
 
 function injectMistSourcesIntoField(
@@ -494,6 +603,10 @@ function injectMistSourcesIntoField(
   emissionNoiseSpeed: number
 ): void {
   for (const source of sources) {
+    const sourceStrength = Math.max(0, Number.isFinite(source.strength) ? source.strength : 1);
+    if (sourceStrength <= 1e-8) {
+      continue;
+    }
     const [noiseX, noiseY, noiseZ] = emissionNoiseStrength > 1e-4
       ? sampleVectorNoise4D(
         source.positionLocal.x,
@@ -516,8 +629,8 @@ function injectMistSourcesIntoField(
         emissionNoiseSpeed
       ) * 2 - 1
       : 0;
-    const noisyDensityGain = densityGain * Math.max(0, 1 + emissionNoiseValue * emissionNoiseStrength * 0.6);
-    const noisyInitialSpeed = initialSpeed * Math.max(0, 1 + emissionNoiseValue * emissionNoiseStrength * 0.35);
+    const noisyDensityGain = densityGain * sourceStrength * Math.max(0, 1 + emissionNoiseValue * emissionNoiseStrength * 0.6);
+    const noisyInitialSpeed = initialSpeed * sourceStrength * Math.max(0, 1 + emissionNoiseValue * emissionNoiseStrength * 0.35);
     const noisyDirection = emissionNoiseStrength > 1e-4
       ? source.directionLocal.clone().add(new THREE.Vector3(noiseX, noiseY, noiseZ).multiplyScalar(emissionNoiseStrength * 0.45)).normalize()
       : source.directionLocal;
@@ -555,7 +668,7 @@ function injectMistSourcesIntoField(
 
 export function simulateMistCpuInjectionForTest(options?: {
   resolution?: [number, number, number];
-  sources?: Array<{ positionLocal: [number, number, number]; directionLocal: [number, number, number] }>;
+  sources?: Array<{ positionLocal: [number, number, number]; directionLocal: [number, number, number]; strength?: number }>;
   radiusCells?: number;
   densityGain?: number;
   initialSpeed?: number;
@@ -567,10 +680,11 @@ export function simulateMistCpuInjectionForTest(options?: {
   const velocity = new Float32Array(count * 3);
   const uploadBytes = new Uint8Array(count);
   const sources = (options?.sources ?? [
-    { positionLocal: [0, 0, 0] as [number, number, number], directionLocal: [0, -1, 0] as [number, number, number] }
+    { positionLocal: [0, 0, 0] as [number, number, number], directionLocal: [0, -1, 0] as [number, number, number], strength: 1 }
   ]).map((source) => ({
     positionLocal: new THREE.Vector3(...source.positionLocal),
-    directionLocal: new THREE.Vector3(...source.directionLocal).normalize()
+    directionLocal: new THREE.Vector3(...source.directionLocal).normalize(),
+    strength: source.strength ?? 1
   }));
   injectMistSourcesIntoField(
     density,
@@ -992,7 +1106,7 @@ export function runMistCpuSimulationForTest(options?: {
   steps?: number;
   dtSeconds?: number;
   simulationSubsteps?: number;
-  sources?: Array<{ positionLocal: [number, number, number]; directionLocal: [number, number, number] }>;
+  sources?: Array<{ positionLocal: [number, number, number]; directionLocal: [number, number, number]; strength?: number }>;
   initialDensityBlobs?: Array<{ positionLocal: [number, number, number]; value: number; radiusCells?: number }>;
   sourceRadius?: number;
   injectionRate?: number;
@@ -1046,10 +1160,11 @@ export function runMistCpuSimulationForTest(options?: {
     seedMistDensityBlobsForTest(density, resolution, options.initialDensityBlobs);
   }
   const sources = (options?.sources ?? [
-    { positionLocal: [0, 0, 0] as [number, number, number], directionLocal: [0, -1, 0] as [number, number, number] }
+    { positionLocal: [0, 0, 0] as [number, number, number], directionLocal: [0, -1, 0] as [number, number, number], strength: 1 }
   ]).map((source) => ({
     positionLocal: new THREE.Vector3(...source.positionLocal),
-    directionLocal: new THREE.Vector3(...source.directionLocal).normalize()
+    directionLocal: new THREE.Vector3(...source.directionLocal).normalize(),
+    strength: source.strength ?? 1
   }));
   const steps = Math.max(0, Math.floor(options?.steps ?? 1));
   const simulationSubsteps = Math.max(1, Math.floor(options?.simulationSubsteps ?? 1));
@@ -2287,8 +2402,14 @@ export class MistVolumeController {
       if (sourceActor.actorType === "empty") {
         samples.push({
           positionLocal: new THREE.Vector3().setFromMatrixPosition(sourceObject.matrixWorld).applyMatrix4(worldToLocal),
-          directionLocal: directionWorld.clone().transformDirection(worldToLocal).normalize()
+          directionLocal: directionWorld.clone().transformDirection(worldToLocal).normalize(),
+          strength: 1
         });
+        continue;
+      }
+      if (sourceActor.actorType === "plugin") {
+        const resource = this.helpers.getVolumetricRayResource(sourceActor.id);
+        samples.push(...collectMistSourcesFromVolumetricRayResource(resource, worldToLocal));
         continue;
       }
       if (sourceActor.actorType !== "curve") {
@@ -2306,7 +2427,8 @@ export class MistVolumeController {
         }
         samples.push({
           positionLocal: new THREE.Vector3(...sampled.position).applyMatrix4(worldToLocal),
-          directionLocal: directionWorld.clone().transformDirection(worldToLocal).normalize()
+          directionLocal: directionWorld.clone().transformDirection(worldToLocal).normalize(),
+          strength: 1
         });
       }
     }

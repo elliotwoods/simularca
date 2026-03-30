@@ -3,6 +3,7 @@ import { produce } from "immer";
 import { createId } from "@/core/ids";
 import { createInitialState } from "@/core/defaults";
 import { cameraStateForPreset } from "@/features/camera/viewUtils";
+import { createPluginViewInstanceId, createPluginViewTabId } from "@/features/plugins/pluginViews";
 import {
   DEFAULT_CAMERA_TRANSITION_DURATION_MS,
   cancelCameraTransition as cancelRequestedCameraTransition,
@@ -20,6 +21,7 @@ import type {
   LogLevel,
   Material,
   ParameterValues,
+  PluginViewState,
   RenderEngine,
   RuntimeDebugState,
   SceneFramePacingSettings,
@@ -106,6 +108,16 @@ export interface AppActions {
   stepTime(stepMultiplier?: number): void;
   setTimeSpeed(speed: TimeSpeedPreset): void;
   setElapsedSimSeconds(seconds: number): void;
+  openPluginView(input: {
+    pluginId: string;
+    actorId: string;
+    viewType: string;
+    title: string;
+    preferredTabsetId?: string | null;
+  }): PluginViewState;
+  closePluginView(viewId: string): void;
+  focusPluginView(viewId: string): void;
+  setPluginViewTabset(viewId: string, tabsetId: string | null): void;
   applyCameraPreset(preset: CameraPreset): void;
   requestCameraState(camera: AppState["camera"], options?: CameraTransitionRequestOptions): void;
   cancelCameraTransition(): void;
@@ -212,6 +224,14 @@ function removeActorRecursive(state: AppState, actorId: string): void {
 
   delete state.actors[actorId];
   delete state.actorStatusByActorId[actorId];
+  for (const view of Object.values(state.pluginViews)) {
+    if (view.actorId === actorId) {
+      if (state.focusedPluginViewId === view.id) {
+        state.focusedPluginViewId = null;
+      }
+      delete state.pluginViews[view.id];
+    }
+  }
   state.selection = state.selection.filter((entry) => entry.id !== actorId);
 }
 
@@ -807,6 +827,71 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         set({
           state: produce(get().state, (draft) => {
             draft.time.elapsedSimSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : draft.time.elapsedSimSeconds;
+          })
+        });
+      },
+      openPluginView({ pluginId, actorId, viewType, title, preferredTabsetId = null }) {
+        const viewId = createPluginViewInstanceId(pluginId, actorId, viewType);
+        const existing = get().state.pluginViews[viewId];
+        const nextView: PluginViewState = existing
+          ? {
+              ...existing,
+              title,
+              open: true,
+              preferredTabsetId: preferredTabsetId ?? existing.preferredTabsetId
+            }
+          : {
+              id: viewId,
+              pluginId,
+              actorId,
+              viewType,
+              tabId: createPluginViewTabId(pluginId, actorId, viewType),
+              title,
+              open: true,
+              preferredTabsetId
+            };
+        set({
+          state: produce(get().state, (draft) => {
+            draft.pluginViews[viewId] = nextView;
+            draft.focusedPluginViewId = viewId;
+            draft.dirty = true;
+          })
+        });
+        return nextView;
+      },
+      closePluginView(viewId) {
+        set({
+          state: produce(get().state, (draft) => {
+            const view = draft.pluginViews[viewId];
+            if (!view) {
+              return;
+            }
+            view.open = false;
+            if (draft.focusedPluginViewId === viewId) {
+              draft.focusedPluginViewId = null;
+            }
+            draft.dirty = true;
+          })
+        });
+      },
+      focusPluginView(viewId) {
+        set({
+          state: produce(get().state, (draft) => {
+            if (!draft.pluginViews[viewId]?.open) {
+              return;
+            }
+            draft.focusedPluginViewId = viewId;
+          })
+        });
+      },
+      setPluginViewTabset(viewId, tabsetId) {
+        set({
+          state: produce(get().state, (draft) => {
+            const view = draft.pluginViews[viewId];
+            if (!view) {
+              return;
+            }
+            view.preferredTabsetId = tabsetId;
           })
         });
       },

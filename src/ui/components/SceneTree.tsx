@@ -160,10 +160,15 @@ function ActorItem(props: ActorItemProps) {
   const isLoading = loadState === "loading";
   const hasError = Boolean(runtimeStatus?.error);
   const hasConflict = runtimeStatus?.values?.renderIncompatible === true;
+  const hasPluginWarning = runtimeStatus?.values?.pluginMissing === true;
   const incompatibilityReason =
     typeof runtimeStatus?.values?.renderIncompatibleReason === "string"
       ? runtimeStatus.values.renderIncompatibleReason
       : "Incompatible with current render engine.";
+  const pluginWarningReason =
+    typeof runtimeStatus?.values?.pluginMissingReason === "string"
+      ? runtimeStatus.values.pluginMissingReason
+      : "Plugin actor type is unavailable.";
   const readOnly = mode === "web-ro";
   const visibilityMode = props.actor.visibilityMode ?? "visible";
   const siblingIds = props.actor.parentActorId ? (actors[props.actor.parentActorId]?.childActorIds ?? []) : rootActorIds;
@@ -334,6 +339,11 @@ function ActorItem(props: ActorItemProps) {
         {isLoading ? <span className="scene-tree-load-state loading" title="Loading asset..." /> : null}
         {hasConflict ? (
           <span className="scene-tree-load-state conflict" title={incompatibilityReason}>
+            <FontAwesomeIcon icon={faTriangleExclamation} />
+          </span>
+        ) : null}
+        {!hasConflict && hasPluginWarning ? (
+          <span className="scene-tree-load-state conflict" title={pluginWarningReason}>
             <FontAwesomeIcon icon={faTriangleExclamation} />
           </span>
         ) : null}

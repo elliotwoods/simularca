@@ -125,6 +125,7 @@ This is a local launch path only. The repository does not currently produce an i
 ```bash
 npm run test
 npm run test:watch
+npm run test:plugins
 npm run typecheck
 npm run lint
 ```
@@ -143,6 +144,7 @@ npm run lint
   - `plugins-local/*/dist/index.js`
 - Reference plugin packages live in `plugins/`
 - Recommended local external plugin workspace: `plugins-local/` (gitignored)
+- Plugin-specific regression harnesses should live with their standalone plugin repos under `plugins-local/`
 - Host/plugin contract notes: `docs/plugin-handshake.md`
 - See `plugins/README.md` for the reference package layout
 

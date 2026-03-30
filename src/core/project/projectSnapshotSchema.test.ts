@@ -60,6 +60,7 @@ describe("project snapshot schema", () => {
       camera: state.camera,
       lastPerspectiveCamera: state.lastPerspectiveCamera,
       time: state.time,
+      pluginViews: {},
       materials: state.materials,
       assets: state.assets
     });
@@ -323,4 +324,7 @@ describe("project snapshot schema", () => {
     );
   });
 });
+
+
+
 

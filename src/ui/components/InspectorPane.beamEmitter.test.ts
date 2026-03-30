@@ -22,7 +22,9 @@ function createKernelStub(): AppKernel {
     projectService: { queueAutosave() {} } as AppKernel["projectService"],
     hotReloadManager: {} as AppKernel["hotReloadManager"],
     pluginApi: {
-      listPlugins: () => []
+      listPlugins: () => [],
+      subscribe: () => () => {},
+      getRevision: () => 0
     } as unknown as AppKernel["pluginApi"],
     descriptorRegistry: {
       listByKind: () => [beamEmitterDescriptor, beamEmitterArrayDescriptor, mistVolumeActorDescriptor]
