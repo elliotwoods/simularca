@@ -65,7 +65,7 @@ const schema: ParameterSchema = {
     },
     {
       key: "colorInputSpace",
-      label: "Captured Color Space",
+      label: "Splat Output Transform",
       type: "select",
       options: ["srgb", "iphone-sdr", "apple-log", "linear"],
       defaultValue: "srgb"
@@ -195,9 +195,11 @@ export function createGaussianSplatDescriptor(): ReloadableDescriptor {
             ? [
                 { label: "Projection", value: rs?.values?.projectionPrepass ? "compute pre-pass" : "vertex shader" },
                 { label: "Camera Near", value: rs?.values?.cameraNear ?? "n/a" },
-                { label: "Visible Splats", value: rs?.values?.visibleSplats ?? "n/a" },
-                { label: "Culled Splats", value: rs?.values?.culledSplats ?? "n/a" },
-                { label: "Visible Ratio", value: rs?.values?.visibleSplatRatio ?? "n/a" },
+                { label: "Chunk Kept Splats", value: rs?.values?.chunkKeptSplats ?? "n/a" },
+                { label: "Chunk Culled Splats", value: rs?.values?.chunkCulledSplats ?? "n/a" },
+                { label: "Chunk Kept Ratio", value: rs?.values?.chunkKeptRatio ?? "n/a" },
+                { label: "Exact Visible Centers", value: rs?.values?.exactVisibleCenters ?? "n/a" },
+                { label: "Exact Visible Ratio", value: rs?.values?.exactVisibleRatio ?? "n/a" },
                 { label: "Sort Mode", value: rs?.values?.sortMode ?? "n/a" },
                 { label: "Sort Dispatches", value: rs?.values?.sortDispatches ?? "n/a" },
                 { label: "Frames Since Sort", value: rs?.values?.framesSinceFullSort ?? "n/a" },

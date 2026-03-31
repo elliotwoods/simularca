@@ -26,7 +26,7 @@ export interface ChunkData {
   chunkPointCounts: Uint32Array;
 }
 
-const SPLATS_PER_CHUNK_TARGET = 1024;
+const SPLATS_PER_CHUNK_TARGET = 256;
 const MIN_EXTENT = 0.001;
 const SPLAT_SIGMA_EXTENT = 3.0;
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { decodeSplatInputColor, parseSplatColorInputSpace } from "@/features/splats/colorSpace";
+import { applySplatOutputTransform, parseSplatColorInputSpace } from "@/features/splats/colorSpace";
 
-describe("splat color space decoding", () => {
-  it("accepts Apple Log as an input space", () => {
+describe("splat output transforms", () => {
+  it("accepts Apple Log as an output transform", () => {
     expect(parseSplatColorInputSpace("apple-log")).toBe("apple-log");
   });
 
@@ -11,19 +11,19 @@ describe("splat color space decoding", () => {
   });
 
   it("passes linear colors through unchanged", () => {
-    expect(decodeSplatInputColor([0.1, 0.2, 0.3], "linear")).toEqual([0.1, 0.2, 0.3]);
+    expect(applySplatOutputTransform([0.1, 0.2, 0.3], "linear")).toEqual([0.1, 0.2, 0.3]);
   });
 
-  it("decodes sRGB into linear light", () => {
-    const [r, g, b] = decodeSplatInputColor([0.5, 0.5, 0.5], "srgb");
-    expect(r).toBeCloseTo(0.214041, 5);
-    expect(g).toBeCloseTo(0.214041, 5);
-    expect(b).toBeCloseTo(0.214041, 5);
+  it("encodes linear light into sRGB", () => {
+    const [r, g, b] = applySplatOutputTransform([0.214041, 0.214041, 0.214041], "srgb");
+    expect(r).toBeCloseTo(0.5, 5);
+    expect(g).toBeCloseTo(0.5, 5);
+    expect(b).toBeCloseTo(0.5, 5);
   });
 
-  it("decodes Apple Log into a finite linear RGB triplet", () => {
-    const decoded = decodeSplatInputColor([0.58, 0.42, 0.31], "apple-log");
-    for (const channel of decoded) {
+  it("encodes linear sRGB into a finite Apple Log triplet", () => {
+    const encoded = applySplatOutputTransform([0.58, 0.42, 0.31], "apple-log");
+    for (const channel of encoded) {
       expect(Number.isFinite(channel)).toBe(true);
       expect(channel).toBeGreaterThanOrEqual(0);
       expect(channel).toBeLessThanOrEqual(1);

@@ -32,7 +32,7 @@ function formatLoadError(error: unknown): string {
 function readUnsupportedWarning(actor: { params: Record<string, unknown> }): string | null {
   const colorInputSpace = parseSparkColorInputSpace(actor.params.colorInputSpace);
   if (colorInputSpace !== "srgb") {
-    return `Captured Color Space "${colorInputSpace}" is ignored in WebGL2.`;
+    return `Splat Output Transform "${colorInputSpace}" is ignored in WebGL2.`;
   }
   const splatSizeScale = actor.params.splatSizeScale;
   if (typeof splatSizeScale === "number" && Number.isFinite(splatSizeScale) && Math.abs(splatSizeScale - 1) > 1e-6) {

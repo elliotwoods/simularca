@@ -4,36 +4,34 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function srgbChannelToLinear(value: number): number {
-  if (value <= 0.04045) {
-    return value / 12.92;
+function linearChannelToSrgb(value: number): number {
+  const safeValue = Math.max(0, value);
+  if (safeValue <= 0.0031308) {
+    return safeValue * 12.92;
   }
-  return Math.pow((value + 0.055) / 1.055, 2.4);
+  return 1.055 * Math.pow(safeValue, 1 / 2.4) - 0.055;
 }
 
-function appleLogDecode(value: number): number {
+function appleLogEncode(value: number): number {
   const r0 = -0.05641088;
   const rt = 0.01;
   const c = 47.28711236;
   const beta = 0.00964052;
   const gamma = 0.08550479;
   const delta = 0.69336945;
-  const pt = c * (rt - r0) ** 2;
+  const safeValue = Math.max(0, value);
 
-  if (value >= pt) {
-    return 2 ** ((value - delta) / gamma) - beta;
+  if (safeValue >= rt) {
+    return gamma * Math.log2(safeValue + beta) + delta;
   }
-  if (value >= 0) {
-    return Math.sqrt(value / c) + r0;
-  }
-  return r0;
+  return c * (safeValue - r0) ** 2;
 }
 
-function rec2020ToLinearSrgb(r: number, g: number, b: number): [number, number, number] {
+function linearSrgbToRec2020(r: number, g: number, b: number): [number, number, number] {
   return [
-    clamp01(1.6604962191478271 * r - 0.5876564949750909 * g - 0.0728397241727355 * b),
-    clamp01(-0.12454709558601268 * r + 1.132895151076045 * g - 0.008348055490032559 * b),
-    clamp01(-0.01815076335490582 * r - 0.1005973716857425 * g + 1.1187481346535225 * b)
+    clamp01(0.6274018484653516 * r + 0.32929195634007197 * g + 0.043306195211340874 * b),
+    clamp01(0.06909546764265984 * r + 0.9195442442082263 * g + 0.011360288153511802 * b),
+    clamp01(0.016392112176216878 * r + 0.08802752955722451 * g + 0.8955803586132608 * b)
   ];
 }
 
@@ -43,24 +41,24 @@ export function parseSplatColorInputSpace(value: unknown): SplatColorInputSpace 
     : "srgb";
 }
 
-export function decodeSplatInputColor(
+export function applySplatOutputTransform(
   rgb: [number, number, number],
-  inputSpace: SplatColorInputSpace
+  outputTransform: SplatColorInputSpace
 ): [number, number, number] {
-  if (inputSpace === "linear") {
+  if (outputTransform === "linear") {
     return [clamp01(rgb[0]), clamp01(rgb[1]), clamp01(rgb[2])];
   }
-  if (inputSpace === "srgb" || inputSpace === "iphone-sdr") {
+  if (outputTransform === "srgb" || outputTransform === "iphone-sdr") {
     return [
-      clamp01(srgbChannelToLinear(rgb[0])),
-      clamp01(srgbChannelToLinear(rgb[1])),
-      clamp01(srgbChannelToLinear(rgb[2]))
+      clamp01(linearChannelToSrgb(rgb[0])),
+      clamp01(linearChannelToSrgb(rgb[1])),
+      clamp01(linearChannelToSrgb(rgb[2]))
     ];
   }
-  const linear2020: [number, number, number] = [
-    clamp01(appleLogDecode(rgb[0])),
-    clamp01(appleLogDecode(rgb[1])),
-    clamp01(appleLogDecode(rgb[2]))
+  const linear2020 = linearSrgbToRec2020(clamp01(rgb[0]), clamp01(rgb[1]), clamp01(rgb[2]));
+  return [
+    clamp01(appleLogEncode(linear2020[0])),
+    clamp01(appleLogEncode(linear2020[1])),
+    clamp01(appleLogEncode(linear2020[2]))
   ];
-  return rec2020ToLinearSrgb(linear2020[0], linear2020[1], linear2020[2]);
 }

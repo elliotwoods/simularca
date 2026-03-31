@@ -72,6 +72,7 @@ export class SplatController {
   private uniforms: SplatUniforms | null = null;
   private pointCount = 0;
   private bounds: { min: [number, number, number]; max: [number, number, number] } | null = null;
+  private positionsData4: Float32Array | null = null;
 
   // GPU sorting state
   private gpuSorter: GpuSorter | null = null;
@@ -87,7 +88,8 @@ export class SplatController {
   private chunkData: ChunkData | null = null;
   private chunkVisibilityArray: Uint32Array | null = null;
   private lastVisibleChunks = 0;
-  private lastVisibleSplats = 0;
+  private lastChunkKeptSplats = 0;
+  private lastExactVisibleCenters = 0;
 
   // Per-frame status reporting
   private setActorStatusRef: ((status: unknown) => void) | null = null;
@@ -359,13 +361,15 @@ export class SplatController {
       this.buffers = buffers;
       this.uniforms = uniforms;
       this.pointCount = count;
+      this.positionsData4 = positionsData4;
       this.bounds = bounds;
       this.gpuSorter = gpuSorter;
       this.splatProjection = splatProjection;
       this.chunkData = chunkData;
       this.chunkVisibilityArray = visibilityArray;
       this.lastVisibleChunks = numChunks;
-      this.lastVisibleSplats = count;
+      this.lastChunkKeptSplats = count;
+      this.lastExactVisibleCenters = count;
       this.loadedAssetId = assetId;
       this.pendingAssetId = "";
 
@@ -395,9 +399,11 @@ export class SplatController {
           projectionPrepass: splatProjection !== null,
           chunkCount: numChunks,
           visibleChunks: numChunks,
-          visibleSplats: count,
-          culledSplats: 0,
-          visibleSplatRatio: 1,
+          chunkKeptSplats: count,
+          chunkCulledSplats: 0,
+          chunkKeptRatio: 1,
+          exactVisibleCenters: count,
+          exactVisibleRatio: 1,
           cullingDebug: "chunk-local-obb"
         },
         updatedAtIso: new Date().toISOString()
@@ -474,7 +480,7 @@ export class SplatController {
           visibleSplats += chunkPointCounts[i] ?? 0;
         }
       }
-      this.lastVisibleSplats = visibleSplats;
+      this.lastChunkKeptSplats = visibleSplats;
 
       // Upload visibility to GPU (sorter uses this for depth culling + triggers re-sort)
       visibilityChanged = this.gpuSorter.updateChunkVisibility(this.chunkVisibilityArray);
@@ -529,6 +535,7 @@ export class SplatController {
     if (this.setActorStatusRef && this.lastSortStats && (sortModeChanged || this.statusFrameCounter >= 10)) {
       this.statusFrameCounter = 0;
       this.lastReportedSortMode = this.lastSortStats.sortMode;
+      this.lastExactVisibleCenters = this.computeExactVisibleCenterCount(camera);
       this.setActorStatusRef({
         values: {
           backend: "webgpu-tsl",
@@ -541,9 +548,11 @@ export class SplatController {
           cameraNear: Math.round(cameraNear * 10000) / 10000,
           chunkCount: this.chunkData?.chunks.length ?? 0,
           visibleChunks: this.lastVisibleChunks,
-          visibleSplats: this.lastVisibleSplats,
-          culledSplats: Math.max(0, this.pointCount - this.lastVisibleSplats),
-          visibleSplatRatio: this.pointCount > 0 ? Math.round((this.lastVisibleSplats / this.pointCount) * 1000) / 1000 : 0,
+          chunkKeptSplats: this.lastChunkKeptSplats,
+          chunkCulledSplats: Math.max(0, this.pointCount - this.lastChunkKeptSplats),
+          chunkKeptRatio: this.pointCount > 0 ? Math.round((this.lastChunkKeptSplats / this.pointCount) * 1000) / 1000 : 0,
+          exactVisibleCenters: this.lastExactVisibleCenters,
+          exactVisibleRatio: this.pointCount > 0 ? Math.round((this.lastExactVisibleCenters / this.pointCount) * 1000) / 1000 : 0,
           cullingDebug: "chunk-local-obb",
           // Per-frame sort stats
           sortMode: this.lastSortStats.sortMode,
@@ -598,6 +607,38 @@ export class SplatController {
   // Cleanup
   // ---------------------------------------------------------------------------
 
+  private computeExactVisibleCenterCount(camera: THREE.Camera): number {
+    if (!this.positionsData4 || !this.mesh || this.pointCount <= 0) {
+      return 0;
+    }
+
+    const usesWebGpuDepth = camera.coordinateSystem === THREE.WebGPUCoordinateSystem;
+    const viewProjection = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const worldPosition = new THREE.Vector3();
+    const clipPosition = new THREE.Vector4();
+    let visibleCount = 0;
+
+    for (let index = 0; index < this.pointCount; index += 1) {
+      const i4 = index * 4;
+      worldPosition
+        .set(this.positionsData4[i4] ?? 0, this.positionsData4[i4 + 1] ?? 0, this.positionsData4[i4 + 2] ?? 0)
+        .applyMatrix4(this.mesh.matrixWorld);
+      clipPosition.set(worldPosition.x, worldPosition.y, worldPosition.z, 1).applyMatrix4(viewProjection);
+      if (clipPosition.w === 0) {
+        continue;
+      }
+      const ndcX = clipPosition.x / clipPosition.w;
+      const ndcY = clipPosition.y / clipPosition.w;
+      const ndcZ = clipPosition.z / clipPosition.w;
+      const visibleDepth = usesWebGpuDepth ? ndcZ >= 0 && ndcZ <= 1 : ndcZ >= -1 && ndcZ <= 1;
+      if (ndcX >= -1 && ndcX <= 1 && ndcY >= -1 && ndcY <= 1 && visibleDepth) {
+        visibleCount += 1;
+      }
+    }
+
+    return visibleCount;
+  }
+
   private disposeRendering(): void {
     if (this.mesh) {
       this.mesh.onBeforeRender = () => {};
@@ -611,11 +652,13 @@ export class SplatController {
     this.buffers = null;
     this.uniforms = null;
     this.pointCount = 0;
+    this.positionsData4 = null;
     this.bounds = null;
     this.chunkData = null;
     this.chunkVisibilityArray = null;
     this.lastVisibleChunks = 0;
-    this.lastVisibleSplats = 0;
+    this.lastChunkKeptSplats = 0;
+    this.lastExactVisibleCenters = 0;
     this.lastProjectionSnapshot = null;
     if (this.gpuSorter) {
       this.gpuSorter.dispose();

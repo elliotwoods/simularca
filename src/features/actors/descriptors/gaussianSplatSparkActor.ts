@@ -58,7 +58,7 @@ export const gaussianSplatSparkActorDescriptor: ReloadableDescriptor<GaussianSpl
           value: typeof actor.params.brightness === "number" ? actor.params.brightness : 1
         },
       {
-        label: "Captured Color Space",
+        label: "Splat Output Transform",
         value: typeof actor.params.colorInputSpace === "string" ? actor.params.colorInputSpace : "srgb"
       },
       {

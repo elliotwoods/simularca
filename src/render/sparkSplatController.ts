@@ -18,7 +18,7 @@ function readUnsupportedWarning(actor: Pick<ActorNode, "params">): string | null
   const warnings: string[] = [];
   const colorInputSpace = parseSplatColorInputSpace(actor.params.colorInputSpace);
   if (colorInputSpace !== "srgb") {
-    warnings.push(`Captured Color Space "${colorInputSpace}" is ignored in WebGL2.`);
+    warnings.push(`Splat Output Transform "${colorInputSpace}" is ignored in WebGL2.`);
   }
   const splatSizeScale = actor.params.splatSizeScale;
   if (typeof splatSizeScale === "number" && Number.isFinite(splatSizeScale) && Math.abs(splatSizeScale - 1) > 1e-6) {

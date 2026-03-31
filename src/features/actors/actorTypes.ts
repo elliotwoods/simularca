@@ -101,7 +101,7 @@ export const GAUSSIAN_SPLAT_SPARK_SCHEMA: ParameterSchema = {
     },
     {
       key: "colorInputSpace",
-      label: "Captured Color Space",
+      label: "Splat Output Transform",
       type: "select",
       options: ["srgb", "iphone-sdr", "apple-log", "linear"],
       defaultValue: "srgb"

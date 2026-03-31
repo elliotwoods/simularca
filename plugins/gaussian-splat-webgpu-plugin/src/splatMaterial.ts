@@ -116,55 +116,59 @@ export function createSplatMaterial(
   let vertexNode: any;
 
   const colorSpaceNode = uColorInputSpace;
-  const srgbToLinearNode = (channel: any): any =>
+  const linearToSrgbNode = (channel: any): any =>
     select(
-      channel.lessThanEqual(float(0.04045)),
-      channel.div(float(12.92)),
-      pow(channel.add(float(0.055)).div(float(1.055)), float(2.4))
+      channel.lessThanEqual(float(0.0031308)),
+      channel.mul(float(12.92)),
+      float(1.055).mul(pow(max(channel, float(0.0)), float(1.0 / 2.4))).sub(float(0.055))
     );
-  const appleLogDecodeNode = (channel: any): any => {
+  const appleLogEncodeNode = (channel: any): any => {
     const r0 = float(-0.05641088);
     const rt = float(0.01);
     const c = float(47.28711236);
     const beta = float(0.00964052);
     const gamma = float(0.08550479);
     const delta = float(0.69336945);
-    const pt = c.mul(rt.sub(r0).mul(rt.sub(r0)));
-    const linearSegment = channel.greaterThanEqual(pt);
-    const encoded = pow(float(2.0), channel.sub(delta).div(gamma)).sub(beta);
-    const logDecoded = sqrt(max(channel.div(c), float(0.0))).add(r0);
-    return select(channel.greaterThanEqual(float(0.0)), select(linearSegment, encoded, logDecoded), r0);
+    const safeChannel = max(channel, float(0.0));
+    const encoded = gamma.mul(safeChannel.add(beta).log2()).add(delta);
+    const toeEncoded = c.mul(safeChannel.sub(r0).mul(safeChannel.sub(r0)));
+    return select(safeChannel.greaterThanEqual(rt), encoded, toeEncoded);
   };
-  const linearizeCapturedColor = (rgb: any): any => {
-    const srgbDecoded = vec3(
-      srgbToLinearNode(rgb.x),
-      srgbToLinearNode(rgb.y),
-      srgbToLinearNode(rgb.z)
+  const linearSrgbToRec2020Node = (rgb: any): any =>
+    vec3(
+      float(0.6274018484653516).mul(rgb.x).add(float(0.32929195634007197).mul(rgb.y)).add(float(0.043306195211340874).mul(rgb.z)),
+      float(0.06909546764265984).mul(rgb.x).add(float(0.9195442442082263).mul(rgb.y)).add(float(0.011360288153511802).mul(rgb.z)),
+      float(0.016392112176216878).mul(rgb.x).add(float(0.08802752955722451).mul(rgb.y)).add(float(0.8955803586132608).mul(rgb.z))
     );
-    const appleLinear2020 = vec3(
-      appleLogDecodeNode(rgb.x),
-      appleLogDecodeNode(rgb.y),
-      appleLogDecodeNode(rgb.z)
+  const applySplatOutputTransform = (rgb: any): any => {
+    const srgbEncoded = vec3(
+      linearToSrgbNode(rgb.x),
+      linearToSrgbNode(rgb.y),
+      linearToSrgbNode(rgb.z)
     );
-    const appleDecoded = vec3(
-      float(1.6604962191478271).mul(appleLinear2020.x).sub(float(0.5876564949750909).mul(appleLinear2020.y)).sub(float(0.0728397241727355).mul(appleLinear2020.z)),
-      float(-0.12454709558601268).mul(appleLinear2020.x).add(float(1.132895151076045).mul(appleLinear2020.y)).sub(float(0.008348055490032559).mul(appleLinear2020.z)),
-      float(-0.01815076335490582).mul(appleLinear2020.x).sub(float(0.1005973716857425).mul(appleLinear2020.y)).add(float(1.1187481346535225).mul(appleLinear2020.z))
+    const linear2020 = linearSrgbToRec2020Node(rgb);
+    const appleLogEncoded = vec3(
+      appleLogEncodeNode(linear2020.x),
+      appleLogEncodeNode(linear2020.y),
+      appleLogEncodeNode(linear2020.z)
     );
     return select(
       colorSpaceNode.equal(float(COLOR_SPACE_LINEAR)),
       rgb,
       select(
         colorSpaceNode.equal(float(COLOR_SPACE_SRGB)),
-        srgbDecoded,
+        srgbEncoded,
         select(
           colorSpaceNode.equal(float(COLOR_SPACE_IPHONE_SDR)),
-          srgbDecoded,
-          appleDecoded
+          srgbEncoded,
+          appleLogEncoded
         )
       )
     );
   };
+  const splatBlackOffset = applySplatOutputTransform(vec3(0.0, 0.0, 0.0));
+  const applyZeroPreservingPremulTransform = (premulRgb: any): any =>
+    max(applySplatOutputTransform(premulRgb).sub(splatBlackOffset), vec3(0.0, 0.0, 0.0));
   if (hasPrepass) {
     // ---- Pre-pass path: lightweight vertex shader reads precomputed ellipse data ----
     // The compute pre-pass already did Cov3D → Cov2D once per splat.
@@ -206,7 +210,7 @@ export function createSplatMaterial(
       );
 
       // Pass varyings to fragment
-      vColor.assign(linearizeCapturedColor(vec3(colorData.x, colorData.y, colorData.z)).mul(uBrightness));
+      vColor.assign(vec3(colorData.x, colorData.y, colorData.z).mul(uBrightness));
       vOpacity.assign(colorData.w.mul(uOpacity));
       vQuadUV.assign(quadPos);
 
@@ -370,7 +374,7 @@ export function createSplatMaterial(
       );
 
       // Pass varyings to fragment
-      vColor.assign(linearizeCapturedColor(vec3(colorData.x, colorData.y, colorData.z)).mul(uBrightness));
+      vColor.assign(vec3(colorData.x, colorData.y, colorData.z).mul(uBrightness));
       vOpacity.assign(colorData.w.mul(uOpacity));
       vQuadUV.assign(quadPos);
 
