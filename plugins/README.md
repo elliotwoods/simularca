@@ -7,11 +7,11 @@ This folder contains reference plugin package layouts that can be moved into ind
 - `example-wave-plugin`
 - `template-artwork-actor-plugin`
 
-## Local Plugin Workspace (Gitignored)
-- Use `plugins-local/` for plugin repos developed alongside the app but not tracked in this repository.
-- Each plugin in `plugins-local/` should be its own Git repository with its own `.gitignore`.
+## External Plugin Workspace (Gitignored)
+- Use `plugins-external/` for plugin repos developed alongside the app but not tracked in this repository.
+- Each plugin in `plugins-external/` should be its own Git repository with its own `.gitignore`.
 - Desktop app auto-discovers built plugin entries at startup:
-  - `plugins-local/*/dist/index.js`
+  - `plugins-external/*/dist/index.js`
   - `plugins/*/dist/index.js`
 
 ## Suggested Separate-Repo Structure

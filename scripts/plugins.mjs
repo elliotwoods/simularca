@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 
 const repoRoot = process.cwd();
 const mode = process.argv[2] === "watch" ? "watch" : "build";
-const rootNames = ["plugins", "plugins-local"];
+const rootNames = ["plugins", "plugins-external"];
 const npmCliPath = process.env.npm_execpath ?? null;
 const npmBinary = process.platform === "win32" ? "npm.cmd" : "npm";
 

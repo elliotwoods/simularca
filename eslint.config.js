@@ -61,8 +61,8 @@ export default tseslint.config(
       "electron/preload.mjs",
       "electron/preload.cjs",
       "plugins/**/dist/**",
-      "plugins-local/**",
-      "plugins-local/**/dist/**",
+      "plugins-external/**",
+      "plugins-external/**/dist/**",
       "tests/mylar-baseline/**",
       "tests/mylar-baseline/.live-cache/**"
     ]

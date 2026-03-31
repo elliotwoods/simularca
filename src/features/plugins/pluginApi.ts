@@ -45,12 +45,12 @@ export interface PluginDefinitionInput {
 export interface RegisteredPlugin {
   definition: PluginDefinition;
   manifest?: PluginManifest;
-  source?: {
-    modulePath: string;
-    sourceGroup?: "plugins-local" | "plugins" | "manual";
-    loadedAtIso: string;
-    updatedAtMs?: number;
-  };
+    source?: {
+      modulePath: string;
+      sourceGroup?: "plugins-external" | "plugins" | "manual";
+      loadedAtIso: string;
+      updatedAtMs?: number;
+    };
   lastLoadedAtIso: string;
   reloadCount: number;
 }

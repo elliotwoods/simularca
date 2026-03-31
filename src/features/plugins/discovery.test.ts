@@ -4,7 +4,7 @@ import { formatPluginDiscoverySummary, type PluginDiscoveryReport } from "@/feat
 describe("formatPluginDiscoverySummary", () => {
   it("formats counts when there are no failures", () => {
     const report: PluginDiscoveryReport = {
-      discovered: [{ modulePath: "file:///plugins/a/dist/index.js", sourceGroup: "plugins-local", updatedAtMs: 1, version: "0.1.0" }],
+      discovered: [{ modulePath: "file:///plugins/a/dist/index.js", sourceGroup: "plugins-external", updatedAtMs: 1, version: "0.1.0" }],
       addedCount: 1,
       reloadedCount: 0,
       failed: []
@@ -14,7 +14,7 @@ describe("formatPluginDiscoverySummary", () => {
 
   it("includes first failure message when failures exist", () => {
     const report: PluginDiscoveryReport = {
-      discovered: [{ modulePath: "file:///plugins/a/dist/index.js", sourceGroup: "plugins-local", updatedAtMs: 1, version: "0.1.0" }],
+      discovered: [{ modulePath: "file:///plugins/a/dist/index.js", sourceGroup: "plugins-external", updatedAtMs: 1, version: "0.1.0" }],
       addedCount: 0,
       reloadedCount: 0,
       failed: [

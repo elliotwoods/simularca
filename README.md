@@ -60,7 +60,7 @@ Use this when the Vite dev server is already running. The script waits for `http
 npm run dev:plugins
 ```
 
-This watches plugin packages under `plugins/` and `plugins-local/` when they expose `dev`, `watch`, or `build` scripts.
+This watches plugin packages under `plugins/` and `plugins-external/` when they expose `dev`, `watch`, or `build` scripts.
 
 ### Reset dev cache
 ```bash
@@ -141,10 +141,10 @@ npm run lint
 ## Plugins
 - Built local plugins are auto-discovered from:
   - `plugins/*/dist/index.js`
-  - `plugins-local/*/dist/index.js`
+  - `plugins-external/*/dist/index.js`
 - Reference plugin packages live in `plugins/`
-- Recommended local external plugin workspace: `plugins-local/` (gitignored)
-- Plugin-specific regression harnesses should live with their standalone plugin repos under `plugins-local/`
+- Recommended local external plugin workspace: `plugins-external/` (gitignored)
+- Plugin-specific regression harnesses should live with their standalone plugin repos under `plugins-external/`
 - Host/plugin contract notes: `docs/plugin-handshake.md`
 - See `plugins/README.md` for the reference package layout
 

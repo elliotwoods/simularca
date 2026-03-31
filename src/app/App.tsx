@@ -22,7 +22,11 @@ import {
   type ActorFileImportOption,
   type SelectedActorFileImportTarget
 } from "@/features/imports/actorFileImport";
-import { discoverAndLoadLocalPlugins, formatPluginDiscoverySummary, startLocalPluginAutoReload } from "@/features/plugins/discovery";
+import {
+  discoverAndLoadExternalPlugins,
+  formatPluginDiscoverySummary,
+  startExternalPluginAutoReload
+} from "@/features/plugins/discovery";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
@@ -839,7 +843,7 @@ export function App() {
     void (async () => {
       if (window.electronAPI) {
         try {
-          const report = await discoverAndLoadLocalPlugins(kernel);
+          const report = await discoverAndLoadExternalPlugins(kernel);
           kernel.store.getState().actions.setStatus(`Plugins discovered. ${formatPluginDiscoverySummary(report)}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unknown plugin discovery error";
@@ -857,7 +861,7 @@ export function App() {
     if (!window.electronAPI) {
       return;
     }
-    return startLocalPluginAutoReload(kernel);
+    return startExternalPluginAutoReload(kernel);
   }, [kernel]);
 
   useEffect(() => {

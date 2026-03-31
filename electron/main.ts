@@ -310,12 +310,12 @@ async function readPluginPackageVersion(packageJsonPath: string): Promise<string
   }
 }
 
-async function discoverLocalPlugins(): Promise<Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins"; updatedAtMs: number; version: string }>> {
-  const roots: Array<{ sourceGroup: "plugins-local" | "plugins"; directory: string }> = [
-    { sourceGroup: "plugins-local", directory: path.join(getRepoRoot(), "plugins-local") },
+async function discoverExternalPlugins(): Promise<Array<{ modulePath: string; sourceGroup: "plugins-external" | "plugins"; updatedAtMs: number; version: string }>> {
+  const roots: Array<{ sourceGroup: "plugins-external" | "plugins"; directory: string }> = [
+    { sourceGroup: "plugins-external", directory: path.join(getRepoRoot(), "plugins-external") },
     { sourceGroup: "plugins", directory: path.join(getRepoRoot(), "plugins") }
   ];
-  const discovered: Array<{ modulePath: string; sourceGroup: "plugins-local" | "plugins"; updatedAtMs: number; version: string }> = [];
+  const discovered: Array<{ modulePath: string; sourceGroup: "plugins-external" | "plugins"; updatedAtMs: number; version: string }> = [];
   for (const root of roots) {
     try {
       const entries = await fs.readdir(root.directory, { withFileTypes: true });
@@ -1062,8 +1062,8 @@ function registerIpcHandlers(): void {
     }
   );
 
-  ipcMain.handle("plugins:discover-local", async () => {
-    return await discoverLocalPlugins();
+  ipcMain.handle("plugins:discover-external", async () => {
+    return await discoverExternalPlugins();
   });
   ipcMain.handle("git:dirty-status", async (_event, args: GitDirtyStatusRequest) => {
     return getGitDirtyStatus(args);

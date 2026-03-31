@@ -1,9 +1,9 @@
 import type { AppKernel } from "@/app/kernel";
 import { loadPluginFromModule } from "@/features/plugins/pluginLoader";
-import type { LocalPluginCandidate } from "@/types/ipc";
+import type { ExternalPluginCandidate } from "@/types/ipc";
 
 export interface PluginDiscoveryReport {
-  discovered: LocalPluginCandidate[];
+  discovered: ExternalPluginCandidate[];
   addedCount: number;
   reloadedCount: number;
   failed: Array<{ modulePath: string; error: string }>;
@@ -33,16 +33,16 @@ function toMessage(error: unknown): string {
   }
 }
 
-export async function discoverLocalPluginCandidates(): Promise<LocalPluginCandidate[]> {
+export async function discoverExternalPluginCandidates(): Promise<ExternalPluginCandidate[]> {
   if (!window.electronAPI) {
     return [];
   }
-  return await window.electronAPI.discoverLocalPlugins();
+  return await window.electronAPI.discoverExternalPlugins();
 }
 
-export async function loadLocalPluginCandidates(
+export async function loadExternalPluginCandidates(
   kernel: AppKernel,
-  candidates: LocalPluginCandidate[]
+  candidates: ExternalPluginCandidate[]
 ): Promise<PluginDiscoveryReport> {
   let addedCount = 0;
   let reloadedCount = 0;
@@ -90,12 +90,12 @@ export async function loadLocalPluginCandidates(
   };
 }
 
-export async function discoverAndLoadLocalPlugins(kernel: AppKernel): Promise<PluginDiscoveryReport> {
-  const discovered = await discoverLocalPluginCandidates();
-  return await loadLocalPluginCandidates(kernel, discovered);
+export async function discoverAndLoadExternalPlugins(kernel: AppKernel): Promise<PluginDiscoveryReport> {
+  const discovered = await discoverExternalPluginCandidates();
+  return await loadExternalPluginCandidates(kernel, discovered);
 }
 
-export function startLocalPluginAutoReload(
+export function startExternalPluginAutoReload(
   kernel: AppKernel,
   options: {
     intervalMs?: number;
@@ -115,14 +115,14 @@ export function startLocalPluginAutoReload(
     }
     inFlight = true;
     try {
-      const candidates = await discoverLocalPluginCandidates();
+      const candidates = await discoverExternalPluginCandidates();
       for (const candidate of candidates) {
         const previousUpdatedAtMs = seenBuildTimes.get(candidate.modulePath);
         const existing = kernel.pluginApi.getPluginByModulePath(candidate.modulePath);
         if (previousUpdatedAtMs === undefined) {
           seenBuildTimes.set(candidate.modulePath, candidate.updatedAtMs);
           if (!existing) {
-            await loadLocalPluginCandidates(kernel, [candidate]);
+            await loadExternalPluginCandidates(kernel, [candidate]);
           }
           continue;
         }
@@ -130,7 +130,7 @@ export function startLocalPluginAutoReload(
           continue;
         }
         seenBuildTimes.set(candidate.modulePath, candidate.updatedAtMs);
-        const report = await loadLocalPluginCandidates(kernel, [candidate]);
+        const report = await loadExternalPluginCandidates(kernel, [candidate]);
         if (report.failed.length > 0) {
           kernel.store.getState().actions.addLog({
             level: "warn",

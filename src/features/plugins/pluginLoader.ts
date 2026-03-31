@@ -2,7 +2,7 @@ import { PLUGIN_HANDSHAKE_VERSION, isPluginHandshakeModule, type PluginLoaderRes
 import type { AppKernel } from "@/app/kernel";
 
 export interface PluginLoadSource {
-  sourceGroup?: "plugins-local" | "plugins" | "manual";
+  sourceGroup?: "plugins-external" | "plugins" | "manual";
   updatedAtMs?: number;
   version?: string;
 }

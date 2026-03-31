@@ -55,9 +55,9 @@ export interface DirectoryDialogArgs {
   title?: string;
 }
 
-export interface LocalPluginCandidate {
+export interface ExternalPluginCandidate {
   modulePath: string;
-  sourceGroup: "plugins-local" | "plugins";
+  sourceGroup: "plugins-external" | "plugins";
   updatedAtMs: number;
   version: string;
 }
@@ -185,7 +185,7 @@ export interface ElectronApi {
   openFileDialog(args: { title?: string; filters?: FileDialogFilter[] }): Promise<string | null>;
   openSaveDialog(args: SaveDialogArgs): Promise<string | null>;
   openDirectoryDialog(args: DirectoryDialogArgs): Promise<string | null>;
-  discoverLocalPlugins(): Promise<LocalPluginCandidate[]>;
+  discoverExternalPlugins(): Promise<ExternalPluginCandidate[]>;
   getGitDirtyStatus(args: GitDirtyStatusRequest): Promise<GitDirtyStatusResponse>;
   writeClipboardImagePng(args: { pngBytes: Uint8Array }): Promise<void>;
   renderPipeOpen(args: {

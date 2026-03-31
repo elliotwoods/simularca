@@ -4,18 +4,18 @@ import { applyPluginVersionOverride, resolvePluginModuleSpecifier } from "@/feat
 describe("resolvePluginModuleSpecifier", () => {
   it("rewrites local file URL to vite @fs path in http runtime", () => {
     const resolved = resolvePluginModuleSpecifier(
-      "file:///C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js",
+      "file:///C:/dev/simularca/plugins-external/thread-spindle-plugin/dist/index.js",
       "http:"
     );
-    expect(resolved).toBe("/@fs/C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js");
+    expect(resolved).toBe("/@fs/C:/dev/simularca/plugins-external/thread-spindle-plugin/dist/index.js");
   });
 
   it("keeps file URL in non-http runtime", () => {
     const resolved = resolvePluginModuleSpecifier(
-      "file:///C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js",
+      "file:///C:/dev/simularca/plugins-external/thread-spindle-plugin/dist/index.js",
       "file:"
     );
-    expect(resolved).toBe("file:///C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js");
+    expect(resolved).toBe("file:///C:/dev/simularca/plugins-external/thread-spindle-plugin/dist/index.js");
   });
 
   it("keeps non-file specifiers unchanged", () => {
@@ -26,11 +26,11 @@ describe("resolvePluginModuleSpecifier", () => {
 
   it("appends a cache-busting token when provided", () => {
     const resolved = resolvePluginModuleSpecifier(
-      "file:///C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js",
+      "file:///C:/dev/simularca/plugins-external/thread-spindle-plugin/dist/index.js",
       "http:",
       123
     );
-    expect(resolved).toBe("/@fs/C:/dev/simularca/plugins-local/thread-spindle-plugin/dist/index.js?v=123");
+    expect(resolved).toBe("/@fs/C:/dev/simularca/plugins-external/thread-spindle-plugin/dist/index.js?v=123");
   });
 });
 
