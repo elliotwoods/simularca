@@ -135,10 +135,20 @@ declare module "three/webgpu" {
       x: number,
       y: number,
       width: number,
-      height: number
+      height: number,
+      textureIndex?: number,
+      faceIndex?: number
     ): Promise<Uint8Array>;
     public renderAsync?(scene: any, camera: any): Promise<void>;
     public render(scene: any, camera: any): void;
+    public dispose(): void;
+  }
+  export class PMREMGenerator {
+    public constructor(renderer: WebGPURenderer);
+    public fromCubemap(cubemap: any): {
+      texture: import("three").Texture;
+      dispose(): void;
+    };
     public dispose(): void;
   }
   export class PostProcessing {

@@ -49,6 +49,7 @@ export class WebGlViewport {
   private started = false;
   private disposed = false;
   private renderInFlight = false;
+  private activeRenderPromise: Promise<void> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
@@ -185,7 +186,7 @@ export class WebGlViewport {
     }
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -197,6 +198,10 @@ export class WebGlViewport {
     if (this.frameHandle) {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
+    }
+    const activeRenderPromise = this.activeRenderPromise;
+    if (activeRenderPromise) {
+      await activeRenderPromise.catch(() => undefined);
     }
     this.cameraController.dispose();
     this.controls.dispose();
@@ -274,7 +279,7 @@ export class WebGlViewport {
     }
     this.kernel.clock.tick(nowMs, this.kernel.store);
     this.renderInFlight = true;
-    void this.renderFrame()
+    const renderPromise = this.renderFrame()
       .catch((error) => {
         if (!this.disposed) {
           console.warn("[rehearse-engine] WebGL2 render frame failed:", error);
@@ -282,7 +287,11 @@ export class WebGlViewport {
       })
       .finally(() => {
         this.renderInFlight = false;
+        if (this.activeRenderPromise === renderPromise) {
+          this.activeRenderPromise = null;
+        }
       });
+    this.activeRenderPromise = renderPromise;
   };
 
   private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
@@ -316,6 +325,7 @@ export class WebGlViewport {
     this.sceneOutputPass.setDitherEnabled(tonemapping.dither);
     this.sceneOutputPass.setPostProcessingSettings(postProcessing);
     this.composer.render();
+    this.sceneController.flushDeferredGpuDisposals();
     const _rf4 = performance.now();
     if (collectStats) {
       reportSlowFrame(this.kernel, {

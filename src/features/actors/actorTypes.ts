@@ -53,8 +53,8 @@ export const ENVIRONMENT_PROBE_ACTOR_SCHEMA: ParameterSchema = {
       key: "preview",
       label: "Preview",
       type: "select",
-      options: ["none", "cube", "sphere"],
-      defaultValue: "none"
+      options: ["cube", "sphere"],
+      defaultValue: "sphere"
     },
     {
       key: "renderMode",

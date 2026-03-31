@@ -111,3 +111,13 @@ Projects should live in their own folders. Also allow for filetype association
 
 * Show seconds ticks along the camera path
 * Better controls in the inspector for controlling keyframes (consider keyframe view at bottom of viewport)
+
+# Inspector controls
+
+* Rangeless slider should auto-show digits correctly when space is reduced (i.e. show the most significant figures)
+
+# Saving and loading
+
+* When quitting / exiting a file without saving, notify the user and suggest that they save
+* Check filesystem for changing the notion of projects to something else
+* Be able to type in the project dialogue and have it search through recent projects and/or snapshots

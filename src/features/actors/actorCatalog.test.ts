@@ -5,6 +5,7 @@ import { createActorFromDescriptor, listActorCreationOptions } from "@/features/
 import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraPathActor";
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
 import { dxfReferenceActorDescriptor } from "@/features/actors/descriptors/dxfReferenceActor";
+import { environmentProbeActorDescriptor } from "@/features/actors/descriptors/environmentProbeActor";
 import { mistVolumeActorDescriptor } from "@/features/actors/descriptors/mistVolumeActor";
 import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
 
@@ -19,7 +20,14 @@ function createKernelStub(): AppKernel {
       listPlugins: () => []
     } as unknown as AppKernel["pluginApi"],
     descriptorRegistry: {
-      listByKind: () => [cameraPathActorDescriptor, curveActorDescriptor, dxfReferenceActorDescriptor, mistVolumeActorDescriptor, primitiveActorDescriptor]
+      listByKind: () => [
+        cameraPathActorDescriptor,
+        curveActorDescriptor,
+        dxfReferenceActorDescriptor,
+        environmentProbeActorDescriptor,
+        mistVolumeActorDescriptor,
+        primitiveActorDescriptor
+      ]
     } as unknown as AppKernel["descriptorRegistry"],
     clock: {} as AppKernel["clock"]
   };
@@ -87,6 +95,20 @@ describe("actorCatalog camera path creation", () => {
     expect(actor?.params.curveType).toBe("circle");
     expect(actor?.params.radius).toBe(1);
     expect(actor?.params.samplesPerSegment).toBe(64);
+  });
+
+  it("defaults new environment probes to sphere preview", () => {
+    const kernel = createKernelStub();
+
+    const actorId = createActorFromDescriptor(kernel, "actor.environmentProbe");
+    expect(actorId).toBeTruthy();
+
+    const actor = actorId ? kernel.store.getState().state.actors[actorId] : null;
+    expect(actor?.actorType).toBe("environment-probe");
+    expect(actor?.params.actorIds).toEqual([]);
+    expect(actor?.params.resolution).toBe(256);
+    expect(actor?.params.preview).toBe("sphere");
+    expect(actor?.params.renderMode).toBe("on-change");
   });
 
   it("seeds new DXF actors with source-plane defaults", () => {

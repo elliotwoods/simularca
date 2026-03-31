@@ -37,6 +37,22 @@ function createState(): AppState {
 }
 
 describe("environmentProbeActorDescriptor", () => {
+  test("falls back legacy none preview values to sphere", () => {
+    const legacyActor = createActor({
+      params: {
+        actorIds: [],
+        resolution: 256,
+        preview: "none",
+        renderMode: "on-change"
+      }
+    });
+    const runtime = environmentProbeActorDescriptor.createRuntime({
+      params: legacyActor.params
+    });
+
+    expect(runtime.preview).toBe("sphere");
+  });
+
   test("reports captured and skipped actors and surfaces warnings", () => {
     const actor = createActor();
     const runtimeStatus: ActorRuntimeStatus = {

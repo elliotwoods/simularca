@@ -47,6 +47,7 @@ export class WebGpuViewport {
   private disposed = false;
   private initialized = false;
   private renderInFlight = false;
+  private activeRenderPromise: Promise<void> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
   private readonly maxRenderDimension = 4096;
@@ -181,7 +182,7 @@ export class WebGpuViewport {
     }
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -194,6 +195,15 @@ export class WebGpuViewport {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
     }
+    const activeRenderPromise = this.activeRenderPromise;
+    if (activeRenderPromise) {
+      await activeRenderPromise.catch(() => undefined);
+    }
+    const rendererWithWait = this.renderer as WebGPURenderer & { waitForGPU?: () => Promise<void> };
+    if (this.initialized && typeof rendererWithWait.waitForGPU === "function") {
+      await rendererWithWait.waitForGPU();
+    }
+    await this.flushDeferredGpuDisposals();
     this.cameraController.dispose();
     this.controls.dispose();
     this.actorTransformController?.dispose();
@@ -280,7 +290,7 @@ export class WebGpuViewport {
     }
     this.kernel.clock.tick(nowMs, this.kernel.store);
     this.renderInFlight = true;
-    void this.renderFrame()
+    const renderPromise = this.renderFrame()
       .catch((error) => {
         if (!this.disposed) {
           console.warn("[rehearse-engine] WebGPU render frame failed:", error);
@@ -288,7 +298,11 @@ export class WebGpuViewport {
       })
       .finally(() => {
         this.renderInFlight = false;
+        if (this.activeRenderPromise === renderPromise) {
+          this.activeRenderPromise = null;
+        }
       });
+    this.activeRenderPromise = renderPromise;
   };
 
   private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
@@ -333,6 +347,7 @@ export class WebGpuViewport {
         throw error;
       }
     }
+    await this.flushDeferredGpuDisposals();
     const _rf3 = performance.now();
     if (collectStats) {
       reportSlowFrame(this.kernel, {
@@ -750,5 +765,16 @@ export class WebGpuViewport {
       visibleCount,
       actorCount
     };
+  }
+
+  private async flushDeferredGpuDisposals(): Promise<void> {
+    if (!this.sceneController.hasDeferredGpuDisposals()) {
+      return;
+    }
+    const rendererWithWait = this.renderer as WebGPURenderer & { waitForGPU?: () => Promise<void> };
+    if (typeof rendererWithWait.waitForGPU === "function") {
+      await rendererWithWait.waitForGPU();
+    }
+    this.sceneController.flushDeferredGpuDisposals();
   }
 }

@@ -55,7 +55,7 @@ const RENDER_PREVIEW_UPDATE_INTERVAL_MS = 125;
 
 interface ExportViewportRuntime {
   start(): Promise<void>;
-  stop(): void;
+  stop(): Promise<void>;
   renderOnce(): Promise<void>;
 }
 
@@ -759,7 +759,7 @@ export function App() {
         }, { immediate: true });
         const result = await queuedExporter.finalize();
         kernel.store.getState().actions.setStatus(`Render finished. ${result.summary}`);
-        viewport.stop();
+        await viewport.stop();
         viewport = null;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown render failure";
@@ -769,7 +769,7 @@ export function App() {
         }
       } finally {
         if (viewport) {
-          viewport.stop();
+          await viewport.stop();
         }
         kernel.store.getState().actions.setCameraState(previousCamera, false, {
           rememberPerspective: false

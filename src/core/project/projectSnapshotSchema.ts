@@ -129,6 +129,53 @@ function migrateLegacyGaussianSplatActors(input: unknown): unknown {
   };
 }
 
+function migrateLegacyEnvironmentProbePreviews(input: unknown): unknown {
+  if (!input || typeof input !== "object") {
+    return input;
+  }
+  const payload = input as {
+    actors?: Record<string, {
+      actorType?: unknown;
+      params?: Record<string, unknown>;
+    }>;
+    schemaVersion?: unknown;
+  };
+  if (!payload.actors) {
+    return input;
+  }
+  let changed = false;
+  const actors = Object.fromEntries(
+    Object.entries(payload.actors).map(([actorId, actor]) => {
+      if (!actor || typeof actor !== "object" || actor.actorType !== "environment-probe") {
+        return [actorId, actor];
+      }
+      const preview = actor.params?.preview;
+      if (preview === "cube" || preview === "sphere") {
+        return [actorId, actor];
+      }
+      changed = true;
+      return [
+        actorId,
+        {
+          ...actor,
+          params: {
+            ...(actor.params ?? {}),
+            preview: "sphere"
+          }
+        }
+      ];
+    })
+  );
+  if (!changed) {
+    return input;
+  }
+  return {
+    ...payload,
+    schemaVersion: typeof payload.schemaVersion === "number" ? Math.max(payload.schemaVersion, PROJECT_SCHEMA_VERSION) : PROJECT_SCHEMA_VERSION,
+    actors
+  };
+}
+
 const actorSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -396,7 +443,9 @@ const projectSnapshotSchema = z.object({
 
 export function parseProjectSnapshot(payload: string): ProjectSnapshotManifest {
   const input = JSON.parse(payload) as unknown;
-  const migratedInput = migrateLegacyGaussianSplatActors(migrateLegacyDxfActors(input));
+  const migratedInput = migrateLegacyEnvironmentProbePreviews(
+    migrateLegacyGaussianSplatActors(migrateLegacyDxfActors(input))
+  );
   assertNoRemovedNativeGaussianSplatContent(migratedInput);
   const parsed = projectSnapshotSchema.safeParse(migratedInput);
   if (!parsed.success) {

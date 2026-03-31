@@ -137,6 +137,52 @@ describe("project snapshot schema", () => {
     expect(parsed.actors[probeActorId]?.params.renderMode).toBe("on-change");
   });
 
+  it("migrates legacy environment probe preview none values to sphere", () => {
+    const payload = {
+      schemaVersion: PROJECT_SCHEMA_VERSION - 1,
+      appMode: "electron-rw",
+      projectName: "demo",
+      snapshotName: "main",
+      createdAtIso: "2026-03-31T00:00:00.000Z",
+      updatedAtIso: "2026-03-31T00:00:00.000Z",
+      scene: createInitialState("electron-rw", "demo", "main").scene,
+      actors: {
+        actor_probe: {
+          id: "actor_probe",
+          name: "Legacy Probe",
+          enabled: true,
+          kind: "actor",
+          actorType: "environment-probe",
+          visibilityMode: "visible",
+          parentActorId: null,
+          childActorIds: [],
+          componentIds: [],
+          transform: {
+            position: [0, 0, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1]
+          },
+          params: {
+            actorIds: [],
+            resolution: 256,
+            preview: "none",
+            renderMode: "on-change"
+          }
+        }
+      },
+      components: {},
+      camera: createInitialState("electron-rw", "demo", "main").camera,
+      lastPerspectiveCamera: createInitialState("electron-rw", "demo", "main").lastPerspectiveCamera,
+      time: createInitialState("electron-rw", "demo", "main").time,
+      pluginViews: {},
+      materials: createInitialState("electron-rw", "demo", "main").materials,
+      assets: createInitialState("electron-rw", "demo", "main").assets
+    };
+
+    const parsed = parseProjectSnapshot(JSON.stringify(payload));
+    expect(parsed.actors.actor_probe?.params.preview).toBe("sphere");
+  });
+
   it("hydrates default tonemapping settings for legacy snapshots", () => {
     const payload = {
       schemaVersion: PROJECT_SCHEMA_VERSION - 1,

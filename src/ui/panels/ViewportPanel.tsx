@@ -28,7 +28,7 @@ import { WebGlViewport } from "@/render/webglRenderer";
 
 interface ViewportRuntime {
   start(): Promise<void>;
-  stop(): void;
+  stop(): Promise<void>;
   captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult>;
   setActorTransformMode(mode: ActorTransformMode): void;
   setActorTransformSnappingEnabled(enabled: boolean): void;
@@ -383,7 +383,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
     });
     return () => {
       cancelled = true;
-      viewport.stop();
+      void viewport.stop();
       viewportRef.current = null;
     };
   }, [antialiasing, backend, kernel, props.suspended]);

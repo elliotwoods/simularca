@@ -4,12 +4,12 @@ import { ENVIRONMENT_PROBE_ACTOR_SCHEMA } from "@/features/actors/actorTypes";
 interface EnvironmentProbeRuntime {
   actorIds: string[];
   resolution: number;
-  preview: "none" | "cube" | "sphere";
+  preview: "cube" | "sphere";
   renderMode: "never" | "on-change" | "always";
 }
 
 function readPreview(value: unknown): EnvironmentProbeRuntime["preview"] {
-  return value === "cube" || value === "sphere" ? value : "none";
+  return value === "cube" ? value : "sphere";
 }
 
 function readRenderMode(value: unknown): EnvironmentProbeRuntime["renderMode"] {

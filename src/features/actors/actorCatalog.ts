@@ -260,7 +260,7 @@ export function createActorFromDescriptor(kernel: AppKernel, descriptorId: strin
     kernel.store.getState().actions.updateActorParams(actorId, {
       actorIds: [],
       resolution: 256,
-      preview: "none",
+      preview: "sphere",
       renderMode: "on-change"
     });
   }

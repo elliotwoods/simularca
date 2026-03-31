@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { PMREMGenerator as WebGpuPMREMGenerator, WebGPURenderer } from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
@@ -101,6 +102,18 @@ type SupportedRenderer = THREE.WebGLRenderer | {
   ): Promise<ArrayBufferView>;
 };
 
+type EnvironmentProbePmremTarget = {
+  isPMREMRenderTarget?: boolean;
+  isRenderTarget?: boolean;
+  texture: THREE.Texture;
+  dispose(): void;
+};
+
+type SupportedPmremGenerator = {
+  fromCubemap(cubemap: THREE.CubeTexture, renderTarget?: EnvironmentProbePmremTarget | null): EnvironmentProbePmremTarget;
+  dispose(): void;
+};
+
 interface EnvironmentSourceResolution {
   actorId: string | null;
   actorType: "environment" | "environment-probe" | null;
@@ -111,13 +124,36 @@ interface EnvironmentSourceResolution {
 interface EnvironmentProbeState {
   cubeCamera: THREE.CubeCamera;
   cubeRenderTarget: THREE.WebGLCubeRenderTarget;
-  pmremTarget: THREE.WebGLRenderTarget | null;
+  pmremTarget: EnvironmentProbePmremTarget | null;
   previewFaceUrls: string[];
   lastCaptureSignature: string;
   lastManualToken: number;
 }
 
+type DeferredGpuDisposable = {
+  dispose(): void;
+};
+
 const ENVIRONMENT_PROBE_FACE_KEYS = ["px", "nx", "py", "ny", "pz", "nz"] as const;
+
+export function buildEnvironmentProbeSelectedActorSignature(
+  actorId: string,
+  state: AppState
+): string {
+  const target = state.actors[actorId];
+  const runtimeStatus = state.actorStatusByActorId[actorId];
+  if (!target) {
+    return `${actorId}:missing`;
+  }
+  return JSON.stringify({
+    id: target.id,
+    enabled: target.enabled,
+    parentActorId: target.parentActorId,
+    transform: target.transform,
+    params: target.params,
+    loadState: runtimeStatus?.values.loadState ?? null
+  });
+}
 
 export interface SceneControllerOptions {
   qualityMode?: MistVolumeQualityMode;
@@ -180,6 +216,10 @@ function getAttribute(geometry: any, names: string[]): any {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function alignTo(value: number, alignment: number): number {
+  return Math.ceil(value / alignment) * alignment;
 }
 
 function detectColorDenominator(attribute: any): number {
@@ -471,6 +511,7 @@ export class SceneController {
   private readonly environmentAssetByActorId = new Map<string, string>();
   private readonly environmentReloadTokenByActorId = new Map<string, number>();
   private readonly environmentProbeStateByActorId = new Map<string, EnvironmentProbeState>();
+  private readonly deferredGpuDisposals: DeferredGpuDisposable[] = [];
   private gaussianSpriteTexture: any | null = null;
   private currentEnvironmentAssetId: string | null = null;
   private gaussianSortFrameCounter = 0;
@@ -484,7 +525,7 @@ export class SceneController {
   private readonly showDebugHelpers: boolean;
   private debugHelpersVisible: boolean;
   private renderer: SupportedRenderer | null = null;
-  private pmremGenerator: THREE.PMREMGenerator | null = null;
+  private pmremGenerator: SupportedPmremGenerator | null = null;
 
   public constructor(private readonly kernel: AppKernel, options: SceneControllerOptions = {}) {
     this.showDebugHelpers = options.showDebugHelpers ?? true;
@@ -810,11 +851,27 @@ export class SceneController {
     for (const actorId of [...this.environmentProbeStateByActorId.keys()]) {
       this.disposeEnvironmentProbe(actorId);
     }
+    this.flushDeferredGpuDisposals();
     this.pmremGenerator?.dispose();
     this.pmremGenerator = null;
     this.renderer = null;
     this.pluginActorRuntimeController.dispose();
     this.mistVolumeController.dispose();
+  }
+
+  public flushDeferredGpuDisposals(): void {
+    while (this.deferredGpuDisposals.length > 0) {
+      const disposable = this.deferredGpuDisposals.shift();
+      try {
+        disposable?.dispose();
+      } catch {
+        // Best-effort cleanup for retired GPU resources.
+      }
+    }
+  }
+
+  public hasDeferredGpuDisposals(): boolean {
+    return this.deferredGpuDisposals.length > 0;
   }
 
   public getGaussianRenderStats(): { drawCalls: number; triangles: number; visibleCount: number } {
@@ -1465,9 +1522,49 @@ export class SceneController {
     if (!probeState) {
       return;
     }
-    probeState.pmremTarget?.dispose();
-    probeState.cubeRenderTarget.dispose();
+    this.replaceEnvironmentTextureReferences(probeState.pmremTarget?.texture ?? null, null);
+    this.deferGpuDisposal(probeState.pmremTarget);
+    this.deferGpuDisposal(probeState.cubeRenderTarget);
     this.environmentProbeStateByActorId.delete(actorId);
+  }
+
+  private deferGpuDisposal(resource: DeferredGpuDisposable | null | undefined): void {
+    if (!resource) {
+      return;
+    }
+    this.deferredGpuDisposals.push(resource);
+  }
+
+  private replaceEnvironmentTextureReferences(
+    previousTexture: THREE.Texture | null,
+    nextTexture: THREE.Texture | null
+  ): void {
+    if (!previousTexture || previousTexture === nextTexture) {
+      return;
+    }
+    if (this.scene.environment === previousTexture) {
+      this.scene.environment = nextTexture;
+    }
+    if (this.scene.background === previousTexture) {
+      this.scene.background = nextTexture;
+    }
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) {
+        return;
+      }
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        if (!material || typeof material !== "object" || !("envMap" in material)) {
+          continue;
+        }
+        const envMappedMaterial = material as THREE.Material & { envMap?: THREE.Texture | null; needsUpdate?: boolean };
+        if (envMappedMaterial.envMap !== previousTexture) {
+          continue;
+        }
+        envMappedMaterial.envMap = nextTexture;
+        envMappedMaterial.needsUpdate = true;
+      }
+    });
   }
 
   private async syncEnvironmentProbes(state: AppState, orderedActors: ActorNode[]): Promise<void> {
@@ -1527,7 +1624,7 @@ export class SceneController {
       generateMipmaps: true,
       minFilter: THREE.LinearMipmapLinearFilter
     });
-    cubeRenderTarget.texture.colorSpace = THREE.SRGBColorSpace;
+    cubeRenderTarget.texture.colorSpace = THREE.NoColorSpace;
     const cubeCamera = new THREE.CubeCamera(0.01, 1000, cubeRenderTarget);
     cubeCamera.name = `environment-probe-camera:${actor.id}`;
     const probeState: EnvironmentProbeState = {
@@ -1547,12 +1644,8 @@ export class SceneController {
     if (!(group instanceof THREE.Group)) {
       return;
     }
-    const previewMode = actor.params.preview === "cube" || actor.params.preview === "sphere" ? actor.params.preview : "none";
+    const previewMode = actor.params.preview === "cube" ? "cube" : "sphere";
     const existing = group.getObjectByName("environment-probe-preview");
-    if (previewMode === "none") {
-      existing?.parent?.remove(existing);
-      return;
-    }
     let mesh = existing as THREE.Mesh | null;
     if (!(mesh instanceof THREE.Mesh)) {
       mesh = new THREE.Mesh(
@@ -1588,22 +1681,7 @@ export class SceneController {
       : [];
     const renderEngine = state.scene.renderEngine;
     const selectedActorSignatures = actorIds
-      .map((actorId) => {
-        const target = state.actors[actorId];
-        const runtimeStatus = state.actorStatusByActorId[actorId];
-        if (!target) {
-          return `${actorId}:missing`;
-        }
-        return JSON.stringify({
-          id: target.id,
-          enabled: target.enabled,
-          parentActorId: target.parentActorId,
-          transform: target.transform,
-          params: target.params,
-          loadState: runtimeStatus?.values.loadState ?? null,
-          updatedAtIso: runtimeStatus?.updatedAtIso ?? null
-        });
-      })
+      .map((actorId) => buildEnvironmentProbeSelectedActorSignature(actorId, state))
       .join("|");
     const compatibilitySummary = actorIds
       .map((actorId) => {
@@ -1707,8 +1785,16 @@ export class SceneController {
       this.gaussianSortDirty = true;
       this.hasGaussianCameraState = false;
       this.renderEnvironmentProbeFaces(probeState);
-      probeState.pmremTarget?.dispose();
-      probeState.pmremTarget = pmremGenerator.fromCubemap(probeState.cubeRenderTarget.texture);
+      const previousPmremTarget = probeState.pmremTarget;
+      const nextPmremTarget = pmremGenerator.fromCubemap(
+        probeState.cubeRenderTarget.texture,
+        previousPmremTarget ?? undefined
+      );
+      probeState.pmremTarget = nextPmremTarget;
+      if (previousPmremTarget !== nextPmremTarget || previousPmremTarget?.texture !== nextPmremTarget.texture) {
+        this.replaceEnvironmentTextureReferences(previousPmremTarget?.texture ?? null, nextPmremTarget.texture);
+        this.deferGpuDisposal(previousPmremTarget);
+      }
       probeState.previewFaceUrls = await this.readEnvironmentProbePreviewFaces(probeState);
       probeState.lastCaptureSignature = captureSignature;
       probeState.lastManualToken = manualToken;
@@ -1809,47 +1895,115 @@ export class SceneController {
     probeState.cubeRenderTarget.texture.needsPMREMUpdate = true;
   }
 
-  private ensurePmremGenerator(): THREE.PMREMGenerator | null {
+  private ensurePmremGenerator(): SupportedPmremGenerator | null {
     if (this.pmremGenerator) {
       return this.pmremGenerator;
     }
     if (!this.renderer) {
       return null;
     }
-    this.pmremGenerator = new THREE.PMREMGenerator(this.renderer as any);
-    return this.pmremGenerator;
+    if (this.renderer instanceof THREE.WebGLRenderer) {
+      this.pmremGenerator = new THREE.PMREMGenerator(this.renderer);
+      return this.pmremGenerator;
+    }
+    if (this.renderer instanceof WebGPURenderer) {
+      this.pmremGenerator = new WebGpuPMREMGenerator(this.renderer);
+      return this.pmremGenerator;
+    }
+    return null;
+  }
+
+  private getWebGpuProbePreviewReadSize(resolution: number): number {
+    const cappedSize = Math.min(128, resolution);
+    const alignedSize = Math.floor(cappedSize / 64) * 64;
+    return alignedSize >= 64 ? alignedSize : 0;
+  }
+
+  private resampleEnvironmentProbePixels(
+    pixels: ArrayBufferView,
+    width: number,
+    height: number,
+    outputWidth: number,
+    outputHeight: number
+  ): Uint8Array {
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = width;
+    sourceCanvas.height = height;
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!sourceContext) {
+      return new Uint8Array(0);
+    }
+    const sourceImageData = sourceContext.createImageData(width, height);
+    const source = pixels instanceof Uint8Array ? pixels : new Uint8Array(pixels.buffer.slice(0));
+    for (let y = 0; y < height; y += 1) {
+      const srcRow = y * width * 4;
+      const dstRow = (height - y - 1) * width * 4;
+      sourceImageData.data.set(source.subarray(srcRow, srcRow + width * 4), dstRow);
+    }
+    sourceContext.putImageData(sourceImageData, 0, 0);
+    if (width === outputWidth && height === outputHeight) {
+      return new Uint8Array(sourceImageData.data);
+    }
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = outputWidth;
+    outputCanvas.height = outputHeight;
+    const outputContext = outputCanvas.getContext("2d");
+    if (!outputContext) {
+      return new Uint8Array(sourceImageData.data);
+    }
+    outputContext.drawImage(sourceCanvas, 0, 0, outputWidth, outputHeight);
+    return new Uint8Array(outputContext.getImageData(0, 0, outputWidth, outputHeight).data);
   }
 
   private async readEnvironmentProbePreviewFaces(probeState: EnvironmentProbeState): Promise<string[]> {
     if (!this.renderer) {
       return [];
     }
-    const faceSize = Math.min(96, probeState.cubeRenderTarget.width);
+    const previewSize = Math.min(96, probeState.cubeRenderTarget.width);
+    const readSize =
+      this.renderer instanceof THREE.WebGLRenderer
+        ? previewSize
+        : this.getWebGpuProbePreviewReadSize(probeState.cubeRenderTarget.width);
     const urls: string[] = [];
+    if (readSize <= 0) {
+      return urls;
+    }
     for (let faceIndex = 0; faceIndex < ENVIRONMENT_PROBE_FACE_KEYS.length; faceIndex += 1) {
       const pixels =
         this.renderer instanceof THREE.WebGLRenderer
           ? await (() => {
-              const buffer = new Uint8Array(faceSize * faceSize * 4);
+              const buffer = new Uint8Array(readSize * readSize * 4);
               return this.renderer!
-                .readRenderTargetPixelsAsync(probeState.cubeRenderTarget, 0, 0, faceSize, faceSize, buffer, faceIndex)
+                .readRenderTargetPixelsAsync(probeState.cubeRenderTarget, 0, 0, readSize, readSize, buffer, faceIndex)
                 .then(() => buffer);
             })()
           : await this.renderer.readRenderTargetPixelsAsync(
               probeState.cubeRenderTarget as any,
               0,
               0,
-              faceSize,
-              faceSize,
+              alignTo(readSize * 4, 256) / 4,
+              readSize,
               0,
               faceIndex
             );
-      urls.push(this.environmentProbePixelsToDataUrl(pixels, faceSize, faceSize));
+      urls.push(
+        this.environmentProbePixelsToDataUrl(
+          this.resampleEnvironmentProbePixels(pixels, readSize, readSize, previewSize, previewSize),
+          previewSize,
+          previewSize,
+          false
+        )
+      );
     }
     return urls;
   }
 
-  private environmentProbePixelsToDataUrl(pixels: ArrayBufferView, width: number, height: number): string {
+  private environmentProbePixelsToDataUrl(
+    pixels: ArrayBufferView,
+    width: number,
+    height: number,
+    flipY = true
+  ): string {
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -1861,7 +2015,7 @@ export class SceneController {
     const source = pixels instanceof Uint8Array ? pixels : new Uint8Array(pixels.buffer.slice(0));
     for (let y = 0; y < height; y += 1) {
       const srcRow = y * width * 4;
-      const dstRow = (height - y - 1) * width * 4;
+      const dstRow = (flipY ? (height - y - 1) : y) * width * 4;
       imageData.data.set(source.subarray(srcRow, srcRow + width * 4), dstRow);
     }
     context.putImageData(imageData, 0, 0);
