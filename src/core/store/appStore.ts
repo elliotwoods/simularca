@@ -24,6 +24,7 @@ import type {
   PluginViewState,
   RenderEngine,
   RuntimeDebugState,
+  SceneColorBufferPrecision,
   SceneFramePacingSettings,
   SceneHelpersSettings,
   ScenePostProcessingSettings,
@@ -58,6 +59,7 @@ export interface AppActions {
       settings: Partial<{
         renderEngine: RenderEngine;
         antialiasing: boolean;
+        colorBufferPrecision: SceneColorBufferPrecision;
         framePacing: Partial<SceneFramePacingSettings>;
         tonemapping: Partial<{
           mode: SceneToneMappingMode;
@@ -435,6 +437,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             if (typeof settings.antialiasing === "boolean") {
               draft.scene.antialiasing = settings.antialiasing;
+            }
+            if (settings.colorBufferPrecision) {
+              draft.scene.colorBufferPrecision = settings.colorBufferPrecision;
             }
             if (settings.framePacing) {
               if (settings.framePacing.mode) {

@@ -83,6 +83,21 @@ interface GaussianSortChunk {
   radius: number;
 }
 
+interface MeshAnimationState {
+  rootObject: THREE.Object3D;
+  clips: THREE.AnimationClip[];
+  mixer: THREE.AnimationMixer | null;
+  action: THREE.AnimationAction | null;
+  activeClipName: string | null;
+  activeClipDurationSeconds: number;
+  enabled: boolean;
+  clipTimeSeconds: number;
+  poseRevision: number;
+  skinnedMeshCount: number;
+  morphTargetMeshCount: number;
+  lastStatusSignature: string;
+}
+
 type SupportedRenderer = THREE.WebGLRenderer | {
   coordinateSystem?: unknown;
   xr: { enabled: boolean };
@@ -160,6 +175,20 @@ export interface SceneControllerOptions {
   showDebugHelpers?: boolean;
 }
 
+function isDebugOnlyActor(actor: Pick<ActorNode, "actorType">): boolean {
+  return actor.actorType === "curve";
+}
+
+export function computeActorObjectVisibility(
+  actor: Pick<ActorNode, "actorType" | "enabled" | "visibilityMode">,
+  isSelected: boolean,
+  debugHelpersVisible: boolean
+): boolean {
+  const visibilityMode = actor.visibilityMode ?? "visible";
+  const visibleByMode = visibilityMode === "visible" || (visibilityMode === "selected" && isSelected);
+  return actor.enabled && visibleByMode && (!isDebugOnlyActor(actor) || debugHelpersVisible);
+}
+
 function formatLoadError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -220,6 +249,54 @@ function clamp01(value: number): number {
 
 function alignTo(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
+}
+
+function sanitizeMeshAnimationSpeed(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 1;
+}
+
+function sanitizeMeshAnimationStartOffset(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function computeAnimationClipTimeSeconds(
+  simTimeSeconds: number,
+  speed: number,
+  startOffsetSeconds: number,
+  durationSeconds: number,
+  loop: boolean
+): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return 0;
+  }
+  const rawTime = simTimeSeconds * speed + startOffsetSeconds;
+  if (loop) {
+    return ((rawTime % durationSeconds) + durationSeconds) % durationSeconds;
+  }
+  return Math.max(0, Math.min(durationSeconds, rawTime));
+}
+
+function countAnimatedMeshFeatures(object: THREE.Object3D): {
+  skinnedMeshCount: number;
+  morphTargetMeshCount: number;
+} {
+  let skinnedMeshCount = 0;
+  let morphTargetMeshCount = 0;
+  object.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) {
+      return;
+    }
+    if (node instanceof THREE.SkinnedMesh) {
+      skinnedMeshCount += 1;
+    }
+    const morphPosition = node.geometry?.morphAttributes?.position;
+    if (Array.isArray(morphPosition) && morphPosition.length > 0) {
+      morphTargetMeshCount += 1;
+    }
+  });
+  return { skinnedMeshCount, morphTargetMeshCount };
 }
 
 function detectColorDenominator(attribute: any): number {
@@ -488,6 +565,7 @@ export class SceneController {
   private readonly dxfStatusSignatureByActorId = new Map<string, string>();
   private readonly gaussianBoundsHelpers = new Map<string, any>();
   private readonly meshLoadTokenByActorId = new Map<string, number>();
+  private readonly meshAnimationStateByActorId = new Map<string, MeshAnimationState>();
   private readonly primitiveSignatureByActorId = new Map<string, string>();
   private readonly materialByMaterialId = new Map<string, THREE.MeshStandardMaterial>();
   private readonly gaussianGeometryByActorId = new Map<string, any>();
@@ -570,10 +648,7 @@ export class SceneController {
       if (actor.actorType !== "curve") {
         continue;
       }
-      const object = this.actorObjects.get(actor.id);
-      if (object) {
-        object.visible = visible;
-      }
+      this.applyActorTransform(actor);
     }
   }
 
@@ -693,6 +768,7 @@ export class SceneController {
         this.dxfAppearanceSignatureByActorId.delete(existing);
         this.dxfStatusSignatureByActorId.delete(existing);
         this.meshLoadTokenByActorId.delete(existing);
+        this.disposeMeshAnimationState(existing);
         const helper = this.gaussianBoundsHelpers.get(existing);
         if (helper) {
           helper.parent?.remove(helper);
@@ -754,6 +830,7 @@ export class SceneController {
         }
         _ta4 = performance.now();
         this.syncMeshMaterials(actor, state);
+        this.syncMeshAnimation(actor, simTimeSeconds);
         _ta5 = performance.now();
       }
       if (actor.actorType === "dxf-reference") {
@@ -2235,6 +2312,161 @@ export class SceneController {
     if (_tsm3 - _tsm2 > 5) this.warnPerformance("[rehearse-engine] reapplyMeshMaterials slow:", (_tsm3 - _tsm2).toFixed(0), "ms");
   }
 
+  private disposeMeshAnimationState(actorId: string): void {
+    const animationState = this.meshAnimationStateByActorId.get(actorId);
+    if (animationState?.mixer && animationState.rootObject) {
+      animationState.mixer.stopAllAction();
+      animationState.mixer.uncacheRoot(animationState.rootObject);
+    }
+    this.meshAnimationStateByActorId.delete(actorId);
+    const object = this.actorObjects.get(actorId);
+    if (object instanceof THREE.Object3D) {
+      delete (object.userData as Record<string, unknown>).meshAnimationInfo;
+    }
+  }
+
+  private updateMeshAnimationObjectInfo(actorId: string, state: MeshAnimationState | null): void {
+    const object = this.actorObjects.get(actorId);
+    if (!(object instanceof THREE.Object3D)) {
+      return;
+    }
+    const userData = object.userData as Record<string, unknown>;
+    if (!state) {
+      delete userData.meshAnimationInfo;
+      return;
+    }
+    userData.meshAnimationInfo = {
+      enabled: state.enabled,
+      animated: state.enabled && state.activeClipName !== null,
+      clipCount: state.clips.length,
+      activeClipName: state.activeClipName,
+      clipDurationSeconds: state.activeClipDurationSeconds,
+      clipTimeSeconds: state.clipTimeSeconds,
+      poseRevision: state.poseRevision,
+      skinnedMeshCount: state.skinnedMeshCount,
+      morphTargetMeshCount: state.morphTargetMeshCount
+    };
+  }
+
+  private updateMeshAnimationStatus(actorId: string, animationState: MeshAnimationState): void {
+    const runtimeStatus = this.kernel.store.getState().state.actorStatusByActorId[actorId];
+    const animationStateLabel =
+      animationState.clips.length <= 0
+        ? "no-clips"
+        : animationState.enabled
+          ? "playing"
+          : "disabled";
+    const animationTimeSeconds =
+      animationState.clips.length > 0
+        ? Number(animationState.clipTimeSeconds.toFixed(3))
+        : 0;
+    const signature = JSON.stringify({
+      animationStateLabel,
+      activeClipName: animationState.activeClipName,
+      clipCount: animationState.clips.length,
+      clipDurationSeconds: Number(animationState.activeClipDurationSeconds.toFixed(3)),
+      animationTimeSeconds: Number(animationTimeSeconds.toFixed(1)),
+      skinnedMeshCount: animationState.skinnedMeshCount,
+      morphTargetMeshCount: animationState.morphTargetMeshCount
+    });
+    if (signature === animationState.lastStatusSignature) {
+      return;
+    }
+    animationState.lastStatusSignature = signature;
+    this.kernel.store.getState().actions.setActorStatus(actorId, {
+      values: {
+        ...(runtimeStatus?.values ?? {}),
+        animationState: animationStateLabel,
+        animationClip: animationState.activeClipName ?? "n/a",
+        animationClipCount: animationState.clips.length,
+        animationDurationSeconds: Number(animationState.activeClipDurationSeconds.toFixed(3)),
+        animationTimeSeconds,
+        skinnedMeshCount: animationState.skinnedMeshCount,
+        morphTargetMeshCount: animationState.morphTargetMeshCount
+      },
+      error: runtimeStatus?.error,
+      updatedAtIso: new Date().toISOString()
+    });
+  }
+
+  private syncMeshAnimation(actor: ActorNode, simTimeSeconds: number): void {
+    const animationState = this.meshAnimationStateByActorId.get(actor.id);
+    if (!animationState) {
+      return;
+    }
+
+    const enabled = Boolean(actor.params.animationEnabled) && animationState.clips.length > 0;
+    const requestedClipName =
+      typeof actor.params.animationClipName === "string" && actor.params.animationClipName.trim().length > 0
+        ? actor.params.animationClipName.trim()
+        : null;
+    const speed = sanitizeMeshAnimationSpeed(actor.params.animationSpeed);
+    const loop = actor.params.animationLoop !== false;
+    const startOffsetSeconds = sanitizeMeshAnimationStartOffset(actor.params.animationStartOffsetSeconds);
+    const nextClip =
+      animationState.clips.find((clip) => clip.name === requestedClipName) ??
+      animationState.clips[0] ??
+      null;
+
+    if (!nextClip || !animationState.mixer) {
+      animationState.enabled = false;
+      animationState.action = null;
+      animationState.activeClipName = nextClip?.name ?? null;
+      animationState.activeClipDurationSeconds = nextClip?.duration ?? 0;
+      animationState.clipTimeSeconds = 0;
+      this.updateMeshAnimationObjectInfo(actor.id, animationState);
+      this.updateMeshAnimationStatus(actor.id, animationState);
+      return;
+    }
+
+    const previousClipName = animationState.activeClipName;
+    if (animationState.activeClipName !== nextClip.name || animationState.action === null) {
+      animationState.mixer.stopAllAction();
+      const action = animationState.mixer.clipAction(nextClip, animationState.rootObject);
+      action.enabled = true;
+      action.clampWhenFinished = !loop;
+      action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+      action.play();
+      animationState.action = action;
+      animationState.activeClipName = nextClip.name;
+      animationState.activeClipDurationSeconds = nextClip.duration;
+    }
+
+    const previousEnabled = animationState.enabled;
+    const previousTimeSeconds = animationState.clipTimeSeconds;
+    const nextTimeSeconds = enabled
+      ? computeAnimationClipTimeSeconds(
+          simTimeSeconds,
+          speed,
+          startOffsetSeconds,
+          animationState.activeClipDurationSeconds,
+          loop
+        )
+      : 0;
+
+    const action = animationState.action;
+    action.clampWhenFinished = !loop;
+    action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+    animationState.enabled = enabled;
+    animationState.mixer.setTime(nextTimeSeconds);
+    animationState.rootObject.updateMatrixWorld(true);
+    animationState.rootObject.traverse((node) => {
+      if (node instanceof THREE.SkinnedMesh) {
+        node.skeleton?.update?.();
+      }
+    });
+    if (
+      Math.abs(previousTimeSeconds - nextTimeSeconds) > 1e-6 ||
+      previousEnabled !== enabled ||
+      previousClipName !== animationState.activeClipName
+    ) {
+      animationState.poseRevision += 1;
+    }
+    animationState.clipTimeSeconds = nextTimeSeconds;
+    this.updateMeshAnimationObjectInfo(actor.id, animationState);
+    this.updateMeshAnimationStatus(actor.id, animationState);
+  }
+
   private createPrimitiveMesh(actor: ActorNode): any {
     const dimensions = this.getPrimitiveDimensions(actor);
     const materialId = typeof actor.params.materialId === "string" ? actor.params.materialId : undefined;
@@ -2609,9 +2841,7 @@ export class SceneController {
     }
     const selection = this.kernel.store.getState().state.selection;
     const isSelected = selection.some((entry) => entry.kind === "actor" && entry.id === actor.id);
-    const visibilityMode = actor.visibilityMode ?? "visible";
-    const visibleByMode = visibilityMode === "visible" || (visibilityMode === "selected" && isSelected);
-    object.visible = actor.enabled && visibleByMode;
+    object.visible = computeActorObjectVisibility(actor, isSelected, this.debugHelpersVisible);
     object.position.set(...actor.transform.position);
     object.rotation.set(...actor.transform.rotation);
     object.scale.set(...actor.transform.scale);
@@ -2872,6 +3102,7 @@ export class SceneController {
     }
     this.meshAssetByActorId.set(actor.id, assetId);
     this.meshReloadTokenByActorId.set(actor.id, reloadToken);
+    this.disposeMeshAnimationState(actor.id);
 
     renderRoot.clear();
 
@@ -2918,7 +3149,7 @@ export class SceneController {
     const loadToken = (this.meshLoadTokenByActorId.get(actor.id) ?? 0) + 1;
     this.meshLoadTokenByActorId.set(actor.id, loadToken);
 
-    const attachLoaded = (loadedObject: any) => {
+    const attachLoaded = (loadedObject: any, animations?: THREE.AnimationClip[]) => {
       if (this.meshLoadTokenByActorId.get(actor.id) !== loadToken) {
         return;
       }
@@ -2950,6 +3181,34 @@ export class SceneController {
           triangleCount += Math.floor(positionCount / 3);
         }
       });
+      const clips = Array.isArray(animations)
+        ? animations
+        : Array.isArray((loadedObject as { animations?: unknown }).animations)
+          ? ((loadedObject as { animations?: THREE.AnimationClip[] }).animations ?? [])
+          : [];
+      const { skinnedMeshCount, morphTargetMeshCount } = countAnimatedMeshFeatures(loadedObject);
+      const animationState: MeshAnimationState = {
+        rootObject: loadedObject,
+        clips,
+        mixer: clips.length > 0 ? new THREE.AnimationMixer(loadedObject) : null,
+        action: null,
+        activeClipName: clips[0]?.name ?? null,
+        activeClipDurationSeconds: clips[0]?.duration ?? 0,
+        enabled: false,
+        clipTimeSeconds: 0,
+        poseRevision: 0,
+        skinnedMeshCount,
+        morphTargetMeshCount,
+        lastStatusSignature: ""
+      };
+      this.meshAnimationStateByActorId.set(actor.id, animationState);
+      this.syncMeshAnimation(
+        actor,
+        Number.isFinite(state.time.elapsedSimSeconds) ? state.time.elapsedSimSeconds : 0
+      );
+      const meshAnimationInfo = (this.actorObjects.get(actor.id)?.userData as Record<string, unknown> | undefined)?.meshAnimationInfo as
+        | Record<string, unknown>
+        | undefined;
       const slotNames = this.getMeshSlotNames(loadedObject);
       const env = this.resolveEnvironment(actor.id);
       // Defer Zustand status dispatches to a macrotask (setTimeout). Without this, Zustand's
@@ -2969,6 +3228,13 @@ export class SceneController {
             loadState: "loaded",
             meshCount,
             triangleCount,
+            animationState: meshAnimationInfo?.enabled ? "playing" : clips.length > 0 ? "disabled" : "no-clips",
+            animationClip: meshAnimationInfo?.activeClipName ?? clips[0]?.name ?? "n/a",
+            animationClipCount: clips.length,
+            animationDurationSeconds: Number((clips[0]?.duration ?? 0).toFixed(3)),
+            animationTimeSeconds: Number((Number(meshAnimationInfo?.clipTimeSeconds ?? 0)).toFixed(3)),
+            skinnedMeshCount,
+            morphTargetMeshCount,
             boundsMin,
             boundsMax,
             size: sizeArr,
@@ -3001,7 +3267,7 @@ export class SceneController {
         this.gltfLoader.load(
           url,
           (result: any) => {
-            attachLoaded(result.scene);
+            attachLoaded(result.scene, Array.isArray(result.animations) ? result.animations : []);
           },
           undefined,
           onError
@@ -3012,7 +3278,7 @@ export class SceneController {
         this.fbxLoader.load(
           url,
           (fbx: any) => {
-            attachLoaded(fbx);
+            attachLoaded(fbx, Array.isArray(fbx?.animations) ? fbx.animations : []);
           },
           undefined,
           onError

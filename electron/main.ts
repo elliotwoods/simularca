@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { normalizeRenderPipeFrameBytes } from "./renderPipeFrameBytes.js";
+import { RotoControlHost } from "./rotoControlHost.js";
 import type {
   DefaultProjectPointer,
   DaeImportResult,
@@ -15,9 +16,13 @@ import type {
   GitDirtyStatusResponse,
   HdriTranscodeOptions,
   ProjectAssetRef,
-  ProjectSnapshotListEntry
+  ProjectSnapshotListEntry,
+  RotoControlBank,
+  RotoControlDawEmulation,
+  RotoControlInputEvent,
+  RotoControlState
 } from "../src/types/ipc";
-import { startLiveDebugServer, type LiveDebugServerController } from "./liveDebugServer.js";
+import { isIgnorablePipeError, startLiveDebugServer, type LiveDebugServerController } from "./liveDebugServer.js";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"]);
 // 1×1 transparent PNG
@@ -143,18 +148,51 @@ function toErrorPayload(input: unknown): Record<string, unknown> {
   };
 }
 
+function safeWriteToStream(stream: NodeJS.WriteStream | undefined, line: string): void {
+  if (!stream || stream.destroyed || !stream.writable) {
+    return;
+  }
+  try {
+    stream.write(`${line}\n`);
+  } catch (error) {
+    if (!isIgnorablePipeError(error)) {
+      try {
+        process.stderr.write(`[logger] ${String(error)}\n`);
+      } catch {
+        // Ignore secondary logging failures.
+      }
+    }
+  }
+}
+
+function installBrokenPipeGuards(): void {
+  process.stdout.on("error", (error) => {
+    if (!isIgnorablePipeError(error)) {
+      throw error;
+    }
+  });
+  process.stderr.on("error", (error) => {
+    if (!isIgnorablePipeError(error)) {
+      throw error;
+    }
+  });
+}
+
 function writeRuntimeLog(scope: string, message: string, metadata?: unknown): void {
   const timestamp = new Date().toISOString();
   const serialized = metadata === undefined ? "" : ` ${JSON.stringify(toErrorPayload(metadata))}`;
   const line = `[${timestamp}] [${scope}] ${message}${serialized}`;
-  console.log(line);
+  safeWriteToStream(process.stdout, line);
   try {
     fsSync.mkdirSync(getLogsRoot(), { recursive: true });
     fsSync.appendFileSync(getRuntimeLogFilePath(), `${line}\n`, "utf8");
   } catch (error) {
-    console.error("Failed to write runtime log", error);
+    const fallback = `[logger] Failed to write runtime log ${JSON.stringify(toErrorPayload(error))}`;
+    safeWriteToStream(process.stderr, fallback);
   }
 }
+
+installBrokenPipeGuards();
 
 void writeRuntimeLog("boot", "electron main module loaded", {
   cwd: process.cwd(),
@@ -163,6 +201,7 @@ void writeRuntimeLog("boot", "electron main module loaded", {
 });
 
 let liveDebugServerController: LiveDebugServerController | null = null;
+let rotoControlHost: RotoControlHost | null = null;
 
 app.setName(APP_DISPLAY_NAME);
 
@@ -983,6 +1022,37 @@ function registerIpcHandlers(): void {
       x: Math.max(0, Math.floor(args.x)),
       y: Math.max(0, Math.floor(args.y))
     });
+  });
+
+  ipcMain.handle("roto-control:connect", async () => {
+    if (!rotoControlHost) {
+      throw new Error("Roto-Control host unavailable.");
+    }
+    return await rotoControlHost.connect();
+  });
+  ipcMain.handle("roto-control:refresh", async () => {
+    if (!rotoControlHost) {
+      throw new Error("Roto-Control host unavailable.");
+    }
+    return await rotoControlHost.refresh();
+  });
+  ipcMain.handle("roto-control:set-serial-override", async (_event, path: string | null) => {
+    if (!rotoControlHost) {
+      throw new Error("Roto-Control host unavailable.");
+    }
+    return await rotoControlHost.setSerialPortOverride(path);
+  });
+  ipcMain.handle("roto-control:set-daw-emulation", async (_event, mode: RotoControlDawEmulation) => {
+    if (!rotoControlHost) {
+      throw new Error("Roto-Control host unavailable.");
+    }
+    return await rotoControlHost.setDawEmulation(mode);
+  });
+  ipcMain.handle("roto-control:publish-bank", async (_event, bank: RotoControlBank) => {
+    if (!rotoControlHost) {
+      throw new Error("Roto-Control host unavailable.");
+    }
+    await rotoControlHost.publishBank(bank);
   });
 
   ipcMain.handle(
@@ -1903,6 +1973,10 @@ function registerIpcHandlers(): void {
 
 void app.whenReady().then(async () => {
   process.on("uncaughtException", (error) => {
+    if (isIgnorablePipeError(error)) {
+      void writeRuntimeLog("process", "ignored uncaught transport disconnect", error);
+      return;
+    }
     void writeRuntimeLog("process", "uncaughtException", error);
   });
   process.on("unhandledRejection", (reason) => {
@@ -1922,6 +1996,23 @@ void app.whenReady().then(async () => {
   void writeRuntimeLog("app", "App starting", {
     isDev: IS_DEV,
     devServerUrl: DEV_SERVER_URL ?? null
+  });
+  const pushRotoState = (state: RotoControlState) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("roto-control:state", state);
+    }
+  };
+  const pushRotoInput = (event: RotoControlInputEvent) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("roto-control:input", event);
+    }
+  };
+  rotoControlHost = new RotoControlHost({
+    emitState: pushRotoState,
+    emitInput: pushRotoInput,
+    log: (message, metadata) => {
+      void writeRuntimeLog("roto", message, metadata);
+    }
   });
   await ensureDefaultsFile();
   await registerAssetProtocol();
@@ -1957,4 +2048,6 @@ app.on("before-quit", () => {
   const activeController = liveDebugServerController;
   liveDebugServerController = null;
   void activeController?.dispose();
+  rotoControlHost?.dispose();
+  rotoControlHost = null;
 });

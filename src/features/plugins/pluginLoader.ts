@@ -1,4 +1,5 @@
 import { PLUGIN_HANDSHAKE_VERSION, isPluginHandshakeModule, type PluginLoaderResult } from "./contracts";
+import { augmentInternalPluginDefinition } from "./internalPluginAugmentations";
 import type { AppKernel } from "@/app/kernel";
 
 export interface PluginLoadSource {
@@ -119,7 +120,7 @@ export async function loadPluginFromModule(
   assertCompatibleEngine(candidate.manifest.engine, modulePath);
 
   const manifest = applyPluginVersionOverride(candidate.manifest, source?.version);
-  const plugin = candidate.createPlugin();
+  const plugin = augmentInternalPluginDefinition(manifest.id, candidate.createPlugin());
   const registration = kernel.pluginApi.registerPlugin(plugin, manifest, {
     modulePath,
     sourceGroup: source?.sourceGroup ?? "manual",

@@ -44,6 +44,9 @@ yarn-error.log*
 .cache/
 tmp/
 temp/
+*.venv/
+.venv/
+tools/roto_control_sanity/.venv/
 plugins-external/*
 !plugins-external/.gitkeep
 

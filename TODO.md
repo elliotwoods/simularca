@@ -29,6 +29,7 @@ Let's also look into ambient occlusion, shadows, global illumination, etc
     * Just faster
 * Anti-aliasing
 * Preview before render (just show in realtime)
+* There seems there might be a big that after rendering ends that we get stuck at the end of the camera path sometimes?
 
 # Deploying
 
@@ -121,3 +122,12 @@ Projects should live in their own folders. Also allow for filetype association
 * When quitting / exiting a file without saving, notify the user and suggest that they save
 * Check filesystem for changing the notion of projects to something else
 * Be able to type in the project dialogue and have it search through recent projects and/or snapshots
+
+# Refactoring
+
+* Try to identify any software patterns which are only used once and could be rolled into other existing patterns
+* Try to create (and keep up to date) a markdown file with a list of design patterns for teh software
+
+# Status
+
+* We recently implemented grouping in status panels. Review each actor's status system and apply grouping appropriately

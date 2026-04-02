@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_RENDER_ENGINE, DEFAULT_SCENE_HELPERS } from "@/core/defaults";
+import { DEFAULT_RENDER_ENGINE, DEFAULT_SCENE_COLOR_BUFFER_PRECISION, DEFAULT_SCENE_HELPERS } from "@/core/defaults";
 import { PROJECT_SCHEMA_VERSION } from "@/core/types";
 import type { ProjectSnapshotManifest } from "@/core/types";
 
@@ -273,6 +273,7 @@ const projectSnapshotSchema = z.object({
     backgroundColor: z.string().default("#070b12"),
     renderEngine: z.enum(["webgl2", "webgpu"]).default(DEFAULT_RENDER_ENGINE),
     antialiasing: z.boolean().default(true),
+    colorBufferPrecision: z.enum(["float32", "float16", "uint8"]).default(DEFAULT_SCENE_COLOR_BUFFER_PRECISION),
     framePacing: z
       .object({
         mode: z.enum(["vsync", "fixed"]).default("vsync"),

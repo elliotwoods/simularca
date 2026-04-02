@@ -27,6 +27,7 @@ import {
   formatPluginDiscoverySummary,
   startExternalPluginAutoReload
 } from "@/features/plugins/discovery";
+import { PluginRuntimeHost } from "@/features/plugins/PluginRuntimeHost";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
@@ -147,6 +148,7 @@ export function App() {
   const mode = useAppStore((store) => store.state.mode);
   const sceneRenderEngine = useAppStore((store) => store.state.scene.renderEngine);
   const sceneAntialiasing = useAppStore((store) => store.state.scene.antialiasing);
+  const sceneColorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
   const actors = useAppStore((store) => store.state.actors);
   const selection = useAppStore((store) => store.state.selection);
   const readOnly = mode === "web-ro";
@@ -647,6 +649,7 @@ export function App() {
           sceneRenderEngine === "webgl2"
             ? new WebGlViewport(kernel, hostEl, {
                 antialias: sceneAntialiasing,
+                colorBufferPrecision: sceneColorBufferPrecision,
                 qualityMode: "export",
                 manualFrameControl: true,
                 showDebugHelpers: settings.showDebugViews,
@@ -658,6 +661,7 @@ export function App() {
               })
             : new WebGpuViewport(kernel, hostEl, {
                 antialias: sceneAntialiasing,
+                colorBufferPrecision: sceneColorBufferPrecision,
                 qualityMode: "export",
                 manualFrameControl: true,
                 showDebugHelpers: settings.showDebugViews,
@@ -785,7 +789,15 @@ export function App() {
         setRenderProgress(null);
       }
     },
-    [activeProjectName, cameraPathActors, drawRenderPreview, kernel, sceneAntialiasing, sceneRenderEngine]
+    [
+      activeProjectName,
+      cameraPathActors,
+      drawRenderPreview,
+      kernel,
+      sceneAntialiasing,
+      sceneColorBufferPrecision,
+      sceneRenderEngine
+    ]
   );
 
   useEffect(() => {
@@ -1304,6 +1316,7 @@ export function App() {
           renderCancelRequestedRef.current = true;
         }}
       />
+      <PluginRuntimeHost />
     </div>
   );
 }

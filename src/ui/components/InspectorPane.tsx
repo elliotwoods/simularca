@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faArrowsLeftRight,
@@ -20,7 +20,12 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { resolveActorPlugin } from "@/features/plugins/pluginViews";
 import { usePluginRegistryRevision } from "@/features/plugins/usePluginRegistryRevision";
-import { DEFAULT_POST_PROCESSING, DEFAULT_RENDER_ENGINE, DEFAULT_SCENE_HELPERS } from "@/core/defaults";
+import {
+  DEFAULT_POST_PROCESSING,
+  DEFAULT_RENDER_ENGINE,
+  DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
+  DEFAULT_SCENE_HELPERS
+} from "@/core/defaults";
 import type {
   ActorNode,
   ActorRuntimeStatus,
@@ -34,6 +39,7 @@ import type {
   ParameterValue,
   ParameterValues,
   RenderEngine,
+  SceneColorBufferPrecision,
   SceneToneMappingMode
 } from "@/core/types";
 import type { ActorStatusEntry, ReloadableDescriptor } from "@/core/hotReload/types";
@@ -85,6 +91,21 @@ import {
   MaterialRefField
 } from "@/ui/widgets";
 import type { ReferencePickerOption } from "@/ui/widgets/ReferencePicker";
+import { inferDisplayPrecision, normalizeCommittedNumber } from "@/ui/widgets/numberEditing";
+import { useRotoControlBank } from "@/features/rotoControl/useRotoControlBank";
+import {
+  buildRotoBank,
+  createRotoActionBinding,
+  createRotoBooleanBinding,
+  createRotoEnumBinding,
+  createRotoNumberBinding,
+  type RotoBinding,
+  type RotoNumberControl
+} from "@/features/rotoControl/bankBindings";
+import {
+  SCENE_COLOR_BUFFER_PRECISION_OPTIONS,
+  sceneColorBufferPrecisionLabel
+} from "@/render/colorBufferPrecision";
 
 type BindingValue = ParameterValue;
 const RAD_TO_DEG = 180 / Math.PI;
@@ -101,6 +122,7 @@ const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
 const CURVE_VERTEX_SELECT_EVENT = "rehearse-engine:curve-vertex-select";
 const NAVIGATE_BACK_REQUEST_EVENT = "rehearse-engine:navigate-back-request";
 const NAVIGATE_FORWARD_REQUEST_EVENT = "rehearse-engine:navigate-forward-request";
+const ROTO_DECIMAL_REASSIGN_DELAY_MS = 500;
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
 const CURVE_HANDLE_MODE_OPTIONS = [
   {
@@ -312,19 +334,151 @@ function groupStatusLabel(label: string): string {
 
 function buildStatusGroups(rows: StatsRow[]): StatsGroup[] {
   const order = ["Core", "Motion", "Wheel", "Thread", "Pivot", "Pins", "Meta", "Other"];
-  const grouped = new Map<string, StatsRow[]>();
+  const fallbackOrder = new Map(order.map((label, index) => [label, index]));
+  const explicitGroups: Array<{ key: string; label: string; rows: StatsRow[] }> = [];
+  const explicitGroupByKey = new Map<string, { key: string; label: string; rows: StatsRow[] }>();
+  const fallbackGrouped = new Map<string, StatsRow[]>();
   for (const row of rows) {
-    const bucket = groupStatusLabel(row.label);
-    const existing = grouped.get(bucket);
-    if (existing) {
-      existing.push(row);
+    if (typeof row.groupKey === "string" && row.groupKey.length > 0) {
+      const groupKey = row.groupKey;
+      const groupLabel = typeof row.groupLabel === "string" && row.groupLabel.length > 0 ? row.groupLabel : groupKey;
+      const existing = explicitGroupByKey.get(groupKey);
+      if (existing) {
+        existing.rows.push(row);
+      } else {
+        const nextGroup = { key: groupKey, label: groupLabel, rows: [row] };
+        explicitGroupByKey.set(groupKey, nextGroup);
+        explicitGroups.push(nextGroup);
+      }
     } else {
-      grouped.set(bucket, [row]);
+      const bucket = groupStatusLabel(row.label);
+      const existing = fallbackGrouped.get(bucket);
+      if (existing) {
+        existing.push(row);
+      } else {
+        fallbackGrouped.set(bucket, [row]);
+      }
     }
   }
-  return order
-    .map((label) => ({ label, rows: grouped.get(label) ?? [] }))
-    .filter((group) => group.rows.length > 0);
+  const fallbackGroups = [...fallbackGrouped.entries()]
+    .sort((a, b) => (fallbackOrder.get(a[0]) ?? Number.MAX_SAFE_INTEGER) - (fallbackOrder.get(b[0]) ?? Number.MAX_SAFE_INTEGER))
+    .map(([label, groupedRows]) => ({ label, rows: groupedRows }));
+  return [...explicitGroups.map((group) => ({ label: group.label, rows: group.rows })), ...fallbackGroups].filter(
+    (group) => group.rows.length > 0
+  );
+}
+
+interface RotoZoomState {
+  control: RotoNumberControl;
+  decimalOffset: number;
+}
+
+function zoomDigitPlaces(decimalOffset: number): Array<number | null> {
+  return [2, 1, 0, null, -1, -2, -3, null].map((place, index) =>
+    place === null ? (index === 7 ? null : null) : place + decimalOffset
+  );
+}
+
+function zoomDigitAtPlace(value: number, place: number): string {
+  const absoluteValue = Math.abs(value);
+  const scale = 10 ** place;
+  const digit = Math.floor((absoluteValue / scale) + 1e-9) % 10;
+  return String(Math.max(0, Math.min(9, digit)));
+}
+
+function applyZoomDigitValue(control: RotoNumberControl, place: number, nextDigit: number): number {
+  const absoluteDigit = Math.max(0, Math.min(9, Math.round(nextDigit)));
+  const precision = Math.max(inferDisplayPrecision(control.precision, control.step) ?? 3, Math.max(0, -place) + 1);
+  const placeValue = 10 ** place;
+  const currentValue = control.value;
+  const sign = currentValue < 0 ? -1 : 1;
+  const absoluteValue = Math.abs(currentValue);
+  const currentDigit = Number.parseInt(zoomDigitAtPlace(currentValue, place), 10) || 0;
+  const nextAbsolute = Math.max(0, absoluteValue + (absoluteDigit - currentDigit) * placeValue);
+  return normalizeCommittedNumber(sign * nextAbsolute, {
+    min: control.min,
+    max: control.max,
+    step: control.step,
+    precision
+  });
+}
+
+function buildZoomBindings(
+  zoomState: RotoZoomState,
+  setZoomState: Dispatch<SetStateAction<RotoZoomState | null>>,
+  scheduleDecimalReassign: () => void
+): RotoBinding[] {
+  const places = zoomDigitPlaces(zoomState.decimalOffset);
+  return places.map((place, index) => {
+    if (index === places.length - 1) {
+      return {
+        slot: {
+          id: `${zoomState.control.id}:zoom:exit`,
+          label: "Exit",
+          kind: "action",
+          colorRole: "zoom",
+          valueText: "Close"
+        },
+        onPress: () => setZoomState(null)
+      } satisfies RotoBinding;
+    }
+    if (place === null) {
+      return {
+        slot: {
+          id: `${zoomState.control.id}:zoom:decimal`,
+          label: ".",
+          kind: "enum",
+          colorRole: "zoom",
+          valueText: "Shift",
+          quantizedStepCount: 10,
+          stepLabels: Array.from({ length: 10 }, (_, digitIndex) => String(digitIndex))
+        },
+        onTurn: (delta) => {
+          if (delta === 0) {
+            return;
+          }
+          setZoomState((current) =>
+            current
+              ? {
+                  ...current,
+                  decimalOffset: Math.max(-6, Math.min(6, current.decimalOffset + Math.trunc(delta)))
+                }
+              : current
+          );
+          scheduleDecimalReassign();
+        },
+        onPress: () => setZoomState(null)
+      } satisfies RotoBinding;
+    }
+    const digit = zoomDigitAtPlace(zoomState.control.value, place);
+    return createRotoEnumBinding(
+      `${zoomState.control.id}:zoom:${index}`,
+      digit,
+      ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      digit,
+      (next) => {
+        const nextValue = applyZoomDigitValue(zoomState.control, place, Number.parseInt(next, 10) || 0);
+        zoomState.control.onChange(nextValue);
+        setZoomState((current) =>
+          current
+            ? {
+                ...current,
+                control: {
+                  ...current.control,
+                  value: nextValue
+                }
+              }
+            : current
+        );
+      },
+      "zoom",
+      false,
+      {
+        valueText: () => digit,
+        stepLabels: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+      }
+    );
+  });
 }
 
 function defaultValueForDefinition(definition: ParameterDefinition): BindingValue {
@@ -685,6 +839,8 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
   const canResetBackground = props.appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND;
   const canResetEngine = props.appState.scene.renderEngine !== DEFAULT_RENDER_ENGINE;
   const canResetAntialiasing = props.appState.scene.antialiasing !== true;
+  const canResetColorBufferPrecision =
+    props.appState.scene.colorBufferPrecision !== DEFAULT_SCENE_COLOR_BUFFER_PRECISION;
   const canResetGridVisible = props.appState.scene.helpers.grid.visible !== DEFAULT_SCENE_HELPERS.grid.visible;
   const canResetGridSize = Math.abs(props.appState.scene.helpers.grid.size - DEFAULT_SCENE_HELPERS.grid.size) > 1e-9;
   const canResetGridDivisions =
@@ -754,6 +910,10 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
   const engineSummary = `${props.appState.scene.renderEngine === "webgl2" ? "WebGL2" : "WebGPU"} · ${
     props.appState.scene.tonemapping.mode === "aces" ? "ACES" : "Tone Off"
   }`;
+  const engineSummaryWithPrecision = `${props.appState.scene.renderEngine === "webgl2" ? "WebGL2" : "WebGPU"} · ${
+    sceneColorBufferPrecisionLabel(props.appState.scene.colorBufferPrecision)
+  } · ${props.appState.scene.tonemapping.mode === "aces" ? "ACES" : "Tone Off"}`;
+  void engineSummary;
   const cameraSummary =
     props.appState.camera.mode === "orthographic"
       ? `Zoom ${props.appState.camera.zoom.toFixed(2)}`
@@ -789,55 +949,177 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     setSceneInspectorView(nextRoute);
     return true;
   }, [sceneInspectorView]);
-  const sceneStatsRows = [
-    { label: "FPS", value: Number.isFinite(props.appState.stats.fps) ? props.appState.stats.fps.toFixed(1) : "0.0" },
+  const sceneStatsRows: StatsRow[] = [
+    {
+      label: "Requested Precision",
+      value: sceneColorBufferPrecisionLabel(props.appState.stats.requestedColorBufferPrecision),
+      groupKey: "rendering",
+      groupLabel: "Rendering"
+    },
+    {
+      label: "Active Precision",
+      value: sceneColorBufferPrecisionLabel(props.appState.stats.activeColorBufferPrecision),
+      groupKey: "rendering",
+      groupLabel: "Rendering"
+    },
+    {
+      label: "Active Format",
+      value: props.appState.stats.activeColorBufferFormat || "n/a",
+      groupKey: "rendering",
+      groupLabel: "Rendering"
+    },
+    {
+      label: "Requested Anti-Alias",
+      value: props.appState.stats.requestedAntialiasing ? "MSAA On" : "Off",
+      groupKey: "rendering",
+      groupLabel: "Rendering"
+    },
+    {
+      label: "Active Anti-Alias",
+      value: props.appState.stats.activeAntialiasing ? "MSAA On" : "Off",
+      tone:
+        props.appState.stats.requestedAntialiasing !== props.appState.stats.activeAntialiasing
+          ? ("warning" as const)
+          : undefined,
+      groupKey: "rendering",
+      groupLabel: "Rendering"
+    },
+    ...(props.appState.stats.colorBufferWarning
+      ? [
+          {
+            label: "Render Warning",
+            value: props.appState.stats.colorBufferWarning,
+            tone: "warning" as const,
+            groupKey: "rendering",
+            groupLabel: "Rendering"
+          }
+        ]
+      : []),
+    {
+      label: "FPS",
+      value: Number.isFinite(props.appState.stats.fps) ? props.appState.stats.fps.toFixed(1) : "0.0",
+      groupKey: "performance",
+      groupLabel: "Performance"
+    },
     {
       label: "Frame (ms)",
-      value: Number.isFinite(props.appState.stats.frameMs) ? props.appState.stats.frameMs.toFixed(2) : "0.00"
+      value: Number.isFinite(props.appState.stats.frameMs) ? props.appState.stats.frameMs.toFixed(2) : "0.00",
+      groupKey: "performance",
+      groupLabel: "Performance"
     },
     {
       label: "Camera Mode",
-      value: props.appState.camera.mode === "orthographic" ? "Orthographic" : "Perspective"
+      value: props.appState.camera.mode === "orthographic" ? "Orthographic" : "Perspective",
+      groupKey: "camera",
+      groupLabel: "Camera"
     },
     {
       label: "Camera Position (m)",
-      value: `${props.appState.camera.position[0].toFixed(3)}, ${props.appState.camera.position[1].toFixed(3)}, ${props.appState.camera.position[2].toFixed(3)}`
+      value: `${props.appState.camera.position[0].toFixed(3)}, ${props.appState.camera.position[1].toFixed(3)}, ${props.appState.camera.position[2].toFixed(3)}`,
+      groupKey: "camera",
+      groupLabel: "Camera"
     },
     {
       label: "Camera Target (m)",
-      value: `${props.appState.camera.target[0].toFixed(3)}, ${props.appState.camera.target[1].toFixed(3)}, ${props.appState.camera.target[2].toFixed(3)}`
+      value: `${props.appState.camera.target[0].toFixed(3)}, ${props.appState.camera.target[1].toFixed(3)}, ${props.appState.camera.target[2].toFixed(3)}`,
+      groupKey: "camera",
+      groupLabel: "Camera"
     },
     {
       label: props.appState.camera.mode === "orthographic" ? "Camera Zoom" : "Camera FOV",
       value:
         props.appState.camera.mode === "orthographic"
           ? props.appState.camera.zoom.toFixed(3)
-          : `${props.appState.camera.fov.toFixed(2)} deg`
+          : `${props.appState.camera.fov.toFixed(2)} deg`,
+      groupKey: "camera",
+      groupLabel: "Camera"
     },
     {
       label: "Camera Distance (m)",
-      value: Number.isFinite(props.appState.stats.cameraDistance) ? props.appState.stats.cameraDistance.toFixed(3) : "0.000"
+      value: Number.isFinite(props.appState.stats.cameraDistance) ? props.appState.stats.cameraDistance.toFixed(3) : "0.000",
+      groupKey: "camera",
+      groupLabel: "Camera"
     },
-    { label: "Controls Enabled", value: props.appState.stats.cameraControlsEnabled ? "Yes" : "No" },
-    { label: "Zoom Enabled", value: props.appState.stats.cameraZoomEnabled ? "Yes" : "No" },
-    { label: "Draw Calls", value: Math.max(0, Math.floor(props.appState.stats.drawCalls)).toLocaleString() },
-    { label: "Triangles", value: Math.max(0, Math.floor(props.appState.stats.triangles)).toLocaleString() },
-    { label: "Splat Draw Calls", value: Math.max(0, Math.floor(props.appState.stats.splatDrawCalls)).toLocaleString() },
-    { label: "Splat Triangles", value: Math.max(0, Math.floor(props.appState.stats.splatTriangles)).toLocaleString() },
-    { label: "Visible Splats", value: Math.max(0, Math.floor(props.appState.stats.splatVisibleCount)).toLocaleString() },
-    { label: "Resource (MB)", value: Number.isFinite(props.appState.stats.resourceMb) ? props.appState.stats.resourceMb.toFixed(1) : "0.0" },
-    { label: "Heap (MB)", value: Number.isFinite(props.appState.stats.heapMb) ? props.appState.stats.heapMb.toFixed(1) : "0.0" },
-    { label: "Actor Count", value: Math.max(0, Math.floor(props.appState.stats.actorCount)).toLocaleString() },
-    { label: "Enabled Actors", value: Math.max(0, Math.floor(props.appState.stats.actorCountEnabled)).toLocaleString() },
+    {
+      label: "Controls Enabled",
+      value: props.appState.stats.cameraControlsEnabled ? "Yes" : "No",
+      groupKey: "camera",
+      groupLabel: "Camera"
+    },
+    {
+      label: "Zoom Enabled",
+      value: props.appState.stats.cameraZoomEnabled ? "Yes" : "No",
+      groupKey: "camera",
+      groupLabel: "Camera"
+    },
+    {
+      label: "Draw Calls",
+      value: Math.max(0, Math.floor(props.appState.stats.drawCalls)).toLocaleString(),
+      groupKey: "performance",
+      groupLabel: "Performance"
+    },
+    {
+      label: "Triangles",
+      value: Math.max(0, Math.floor(props.appState.stats.triangles)).toLocaleString(),
+      groupKey: "performance",
+      groupLabel: "Performance"
+    },
+    {
+      label: "Splat Draw Calls",
+      value: Math.max(0, Math.floor(props.appState.stats.splatDrawCalls)).toLocaleString(),
+      groupKey: "performance",
+      groupLabel: "Performance"
+    },
+    {
+      label: "Splat Triangles",
+      value: Math.max(0, Math.floor(props.appState.stats.splatTriangles)).toLocaleString(),
+      groupKey: "performance",
+      groupLabel: "Performance"
+    },
+    {
+      label: "Visible Splats",
+      value: Math.max(0, Math.floor(props.appState.stats.splatVisibleCount)).toLocaleString(),
+      groupKey: "performance",
+      groupLabel: "Performance"
+    },
+    {
+      label: "Resource (MB)",
+      value: Number.isFinite(props.appState.stats.resourceMb) ? props.appState.stats.resourceMb.toFixed(1) : "0.0",
+      groupKey: "memory",
+      groupLabel: "Memory"
+    },
+    {
+      label: "Heap (MB)",
+      value: Number.isFinite(props.appState.stats.heapMb) ? props.appState.stats.heapMb.toFixed(1) : "0.0",
+      groupKey: "memory",
+      groupLabel: "Memory"
+    },
+    {
+      label: "Actor Count",
+      value: Math.max(0, Math.floor(props.appState.stats.actorCount)).toLocaleString(),
+      groupKey: "project",
+      groupLabel: "Project"
+    },
+    {
+      label: "Enabled Actors",
+      value: Math.max(0, Math.floor(props.appState.stats.actorCountEnabled)).toLocaleString(),
+      groupKey: "project",
+      groupLabel: "Project"
+    },
     {
       label: "Project Size",
-      value: `${Math.max(0, Math.floor(props.appState.stats.projectFileBytes)).toLocaleString()} B`
+      value: `${Math.max(0, Math.floor(props.appState.stats.projectFileBytes)).toLocaleString()} B`,
+      groupKey: "project",
+      groupLabel: "Project"
     },
     {
       label: "Saved Size",
-      value: `${Math.max(0, Math.floor(props.appState.stats.projectFileBytesSaved)).toLocaleString()} B`
+      value: `${Math.max(0, Math.floor(props.appState.stats.projectFileBytesSaved)).toLocaleString()} B`,
+      groupKey: "project",
+      groupLabel: "Project"
     }
   ];
+  const sceneStatusGroups = buildStatusGroups(sceneStatsRows);
 
   useEffect(() => {
     const previousRoute = previousSceneInspectorViewRef.current;
@@ -891,6 +1173,165 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
       window.removeEventListener(NAVIGATE_FORWARD_REQUEST_EVENT, onForwardRequest);
     };
   }, [handleSceneForward]);
+
+  const [rotoPageIndex, setRotoPageIndex] = useState(0);
+  const [rotoZoomState, setRotoZoomState] = useState<RotoZoomState | null>(null);
+  const rotoDecimalTimeoutRef = useRef<number | null>(null);
+  const scheduleRotoDecimalReassign = useCallback(() => {
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+    }
+    rotoDecimalTimeoutRef.current = window.setTimeout(() => {
+      rotoDecimalTimeoutRef.current = null;
+    }, ROTO_DECIMAL_REASSIGN_DELAY_MS);
+  }, []);
+  useEffect(() => {
+    setRotoPageIndex(0);
+    setRotoZoomState(null);
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+      rotoDecimalTimeoutRef.current = null;
+    }
+  }, [sceneInspectorView]);
+
+  const enterRotoZoom = useCallback((control: RotoNumberControl) => {
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+      rotoDecimalTimeoutRef.current = null;
+    }
+    setRotoZoomState({
+      control,
+      decimalOffset: 0
+    });
+    props.kernel.store.getState().actions.setStatus(`Roto zoom: ${control.label}`);
+  }, [props.kernel]);
+
+  const sceneRotoBindings = useMemo(() => {
+    if (rotoZoomState) {
+      return buildZoomBindings(rotoZoomState, setRotoZoomState, scheduleRotoDecimalReassign);
+    }
+    const actions = props.kernel.store.getState().actions;
+    const bindings: RotoBinding[] = [];
+    if (sceneInspectorView === "root") {
+      bindings.push(createRotoActionBinding("scene-engine", "Engine", "drill", () => setSceneInspectorView("engine"), engineSummaryWithPrecision));
+      bindings.push(createRotoActionBinding("scene-helpers", "Helpers", "drill", () => setSceneInspectorView("helpers"), helpersSummary));
+      bindings.push(createRotoActionBinding("scene-camera", "Camera", "drill", () => setSceneInspectorView("camera"), cameraSummary));
+      bindings.push(createRotoActionBinding("scene-post", "Post Processing", "drill", () => setSceneInspectorView("post-processing"), postProcessingSummary));
+      bindings.push(createRotoActionBinding("scene-diagnostics", "Diagnostics", "drill", () => setSceneInspectorView("diagnostics"), diagnosticsSummary));
+      return bindings;
+    }
+    if (sceneInspectorView === "engine") {
+      bindings.push(createRotoEnumBinding("render-engine", "Engine", SCENE_ENGINE_OPTIONS.map((option) => option.value), props.appState.scene.renderEngine, (next) => actions.setSceneRenderSettings({ renderEngine: next as RenderEngine }), "enum", props.readOnly));
+      bindings.push(createRotoEnumBinding("color-buffer-precision", "Color Buffer", SCENE_COLOR_BUFFER_PRECISION_OPTIONS.map((option) => option.value), props.appState.scene.colorBufferPrecision, (next) => actions.setSceneRenderSettings({ colorBufferPrecision: next as SceneColorBufferPrecision }), "enum", props.readOnly));
+      bindings.push(createRotoBooleanBinding("antialiasing", "Anti-Alias", props.appState.scene.antialiasing, (next) => actions.setSceneRenderSettings({ antialiasing: next }), "toggle", props.readOnly));
+      bindings.push(createRotoEnumBinding("tonemapping", "Tonemapping", SCENE_TONEMAPPING_OPTIONS.map((option) => option.value), props.appState.scene.tonemapping.mode, (next) => actions.setSceneRenderSettings({ tonemapping: { mode: next as SceneToneMappingMode } }), "enum", props.readOnly));
+      bindings.push(createRotoBooleanBinding("tonemap-dither", "Dither", props.appState.scene.tonemapping.dither, (next) => actions.setSceneRenderSettings({ tonemapping: { dither: next } }), "toggle", props.readOnly));
+      return bindings;
+    }
+    if (sceneInspectorView === "helpers") {
+      bindings.push(createRotoBooleanBinding("grid-visible", "Grid Visible", props.appState.scene.helpers.grid.visible, (next) => actions.setSceneRenderSettings({ helpers: { grid: { visible: next } } }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "grid-size", label: "Grid Size", colorRole: "default", value: props.appState.scene.helpers.grid.size, min: 0.001, step: 0.1, precision: 2, unit: "m", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { size: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "grid-divisions", label: "Grid Divs", colorRole: "default", value: props.appState.scene.helpers.grid.divisions, min: 1, step: 1, precision: 0, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { divisions: Math.max(1, Math.round(next)) } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "grid-opacity", label: "Grid Opacity", colorRole: "default", value: props.appState.scene.helpers.grid.opacity, min: 0, max: 1, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { opacity: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoBooleanBinding("axes-visible", "Axes Visible", props.appState.scene.helpers.axes.visible, (next) => actions.setSceneRenderSettings({ helpers: { axes: { visible: next } } }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "axes-size", label: "Axes Size", colorRole: "default", value: props.appState.scene.helpers.axes.size, min: 0.001, step: 0.1, precision: 2, unit: "m", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { axes: { size: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "axes-opacity", label: "Axes Opacity", colorRole: "default", value: props.appState.scene.helpers.axes.opacity, min: 0, max: 1, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { axes: { opacity: next } } }) }, enterRotoZoom));
+      return bindings;
+    }
+    if (sceneInspectorView === "camera") {
+      bindings.push(createRotoBooleanBinding("camera-keyboard-nav", "Keyboard Nav", props.appState.scene.cameraKeyboardNavigation, (next) => actions.setSceneRenderSettings({ cameraKeyboardNavigation: next }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "camera-nav-speed", label: "Nav Speed", colorRole: "default", value: props.appState.scene.cameraNavigationSpeed, min: 0, step: 0.1, precision: 2, unit: "m/s", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ cameraNavigationSpeed: next }) }, enterRotoZoom));
+      bindings.push(createRotoBooleanBinding("camera-invert-yaw", "Invert Yaw", props.appState.scene.cameraFlyLookInvertYaw, (next) => actions.setSceneRenderSettings({ cameraFlyLookInvertYaw: next }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "camera-fly-speed", label: "Fly Speed", colorRole: "default", value: props.appState.scene.cameraFlyLookSpeed, min: 0, step: 0.05, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ cameraFlyLookSpeed: next }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "camera-fov", label: "Camera FOV", colorRole: "default", value: props.appState.camera.fov, min: 5, max: 170, step: 0.1, precision: 1, unit: "deg", disabled: props.readOnly, onChange: (next) => actions.setCameraState({ fov: next }) }, enterRotoZoom));
+      return bindings;
+    }
+    if (sceneInspectorView === "post-processing") {
+      bindings.push(createRotoBooleanBinding("bloom-enabled", "Bloom", props.appState.scene.postProcessing.bloom.enabled, (next) => actions.setSceneRenderSettings({ postProcessing: { bloom: { enabled: next } } }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "bloom-strength", label: "Bloom Str", colorRole: "default", value: props.appState.scene.postProcessing.bloom.strength, min: 0, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { bloom: { strength: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "bloom-radius", label: "Bloom Rad", colorRole: "default", value: props.appState.scene.postProcessing.bloom.radius, min: 0, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { bloom: { radius: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "bloom-threshold", label: "Bloom Thr", colorRole: "default", value: props.appState.scene.postProcessing.bloom.threshold, min: 0, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { bloom: { threshold: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoBooleanBinding("vignette-enabled", "Vignette", props.appState.scene.postProcessing.vignette.enabled, (next) => actions.setSceneRenderSettings({ postProcessing: { vignette: { enabled: next } } }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "vignette-offset", label: "Vign Offset", colorRole: "default", value: props.appState.scene.postProcessing.vignette.offset, min: 0, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { vignette: { offset: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "vignette-dark", label: "Vign Dark", colorRole: "default", value: props.appState.scene.postProcessing.vignette.darkness, min: 0, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { vignette: { darkness: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoBooleanBinding("ca-enabled", "Chromatic", props.appState.scene.postProcessing.chromaticAberration.enabled, (next) => actions.setSceneRenderSettings({ postProcessing: { chromaticAberration: { enabled: next } } }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "ca-offset", label: "Chrom Offset", colorRole: "default", value: props.appState.scene.postProcessing.chromaticAberration.offset, min: 0, step: 0.001, precision: 3, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { chromaticAberration: { offset: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoBooleanBinding("grain-enabled", "Grain", props.appState.scene.postProcessing.grain.enabled, (next) => actions.setSceneRenderSettings({ postProcessing: { grain: { enabled: next } } }), "toggle", props.readOnly));
+      bindings.push(createRotoNumberBinding({ id: "grain-intensity", label: "Grain Int", colorRole: "default", value: props.appState.scene.postProcessing.grain.intensity, min: 0, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ postProcessing: { grain: { intensity: next } } }) }, enterRotoZoom));
+      return bindings;
+    }
+    bindings.push(createRotoBooleanBinding("slow-frames-enabled", "Slow Frames", props.appState.runtimeDebug.slowFrameDiagnosticsEnabled, (next) => actions.setRuntimeDebugSettings({ slowFrameDiagnosticsEnabled: next }), "toggle", props.readOnly));
+    bindings.push(createRotoNumberBinding({ id: "slow-frame-threshold", label: "Threshold", colorRole: "default", value: props.appState.runtimeDebug.slowFrameDiagnosticsThresholdMs, min: 1, step: 1, precision: 0, unit: "ms", disabled: props.readOnly, onChange: (next) => actions.setRuntimeDebugSettings({ slowFrameDiagnosticsThresholdMs: next }) }, enterRotoZoom));
+    return bindings;
+  }, [
+    cameraSummary,
+    diagnosticsSummary,
+    engineSummaryWithPrecision,
+    enterRotoZoom,
+    handleSceneForward,
+    helpersSummary,
+    postProcessingSummary,
+    props.appState,
+    props.kernel,
+    props.readOnly,
+    rotoZoomState,
+    sceneInspectorView,
+    scheduleRotoDecimalReassign
+  ]);
+
+  const sceneRotoComputed = useMemo(
+    () => buildRotoBank(`Scene ${sceneInspectorView === "root" ? "Root" : sceneInspectorView}`, `scene:${sceneInspectorView}`, rotoPageIndex, sceneRotoBindings, rotoZoomState?.control.id ?? null),
+    [rotoPageIndex, rotoZoomState, sceneInspectorView, sceneRotoBindings]
+  );
+
+  useEffect(() => {
+    setRotoPageIndex((current) => Math.max(0, Math.min(current, sceneRotoComputed.pageCount - 1)));
+  }, [sceneRotoComputed.pageCount]);
+
+  useRotoControlBank({
+    active: true,
+    bank: sceneRotoComputed.bank,
+    onInput: (event) => {
+      if (event.type === "page-select") {
+        setRotoPageIndex(Math.max(0, Math.min(sceneRotoComputed.pageCount - 1, event.pageIndex)));
+        return;
+      }
+      if (event.type === "page-next") {
+        setRotoPageIndex((current) => Math.min(sceneRotoComputed.pageCount - 1, current + 1));
+        return;
+      }
+      if (event.type === "page-prev") {
+        setRotoPageIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+      if (event.type === "navigate-back") {
+        void handleSceneBack();
+        return;
+      }
+      if (event.type === "navigate-forward") {
+        void handleSceneForward();
+        return;
+      }
+      if (event.type === "encoder-turn") {
+        sceneRotoComputed.pageBindings[event.slotIndex]?.onTurn?.(event.delta);
+        return;
+      }
+      if (event.type === "encoder-set") {
+        const binding = sceneRotoComputed.pageBindings[event.slotIndex];
+        if (binding?.onSetNormalized) {
+          binding.onSetNormalized(event.normalizedValue);
+          return;
+        }
+        if (typeof event.delta === "number" && event.delta !== 0) {
+          binding?.onTurn?.(event.delta);
+        }
+        return;
+      }
+      if (event.type === "button-press") {
+        sceneRotoComputed.pageBindings[event.slotIndex]?.onPress?.();
+      }
+    }
+  });
 
   return (
     <div className="inspector-pane-root custom-inspector">
@@ -980,7 +1421,7 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
           <header>
             <h4>Settings</h4>
           </header>
-          <DrillInRow label="Engine" summary={engineSummary} onClick={() => setSceneInspectorView("engine")} />
+          <DrillInRow label="Engine" summary={engineSummaryWithPrecision} onClick={() => setSceneInspectorView("engine")} />
           <DrillInRow label="Helpers" summary={helpersSummary} onClick={() => setSceneInspectorView("helpers")} />
           <DrillInRow label="Camera" summary={cameraSummary} onClick={() => setSceneInspectorView("camera")} />
           <DrillInRow
@@ -1054,6 +1495,41 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
                 onClick={() => {
                   props.kernel.store.getState().actions.setSceneRenderSettings({
                     antialiasing: true
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Color Buffer</span>
+            <div className="inspector-common-control-wrap">
+              <select
+                className="widget-select"
+                value={props.appState.scene.colorBufferPrecision}
+                disabled={props.readOnly}
+                onChange={(event) => {
+                  const value = SCENE_COLOR_BUFFER_PRECISION_OPTIONS.some((option) => option.value === event.target.value)
+                    ? (event.target.value as SceneColorBufferPrecision)
+                    : DEFAULT_SCENE_COLOR_BUFFER_PRECISION;
+                  props.kernel.store.getState().actions.setSceneRenderSettings({ colorBufferPrecision: value });
+                }}
+              >
+                {SCENE_COLOR_BUFFER_PRECISION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={`widget-reset-button${canResetColorBufferPrecision ? "" : " is-hidden"}`}
+                title="Reset Color Buffer Precision"
+                disabled={props.readOnly || !canResetColorBufferPrecision}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    colorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION
                   });
                 }}
               >
@@ -2130,6 +2606,7 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
         titleLevel="h4"
         emptyText="No status available."
         rows={sceneStatsRows}
+        groups={sceneStatusGroups}
         onCopySuccess={(label) => {
           props.kernel.store.getState().actions.setStatus(`${label} copied to clipboard.`);
         }}
@@ -2150,6 +2627,99 @@ interface ComponentSelectionInspectorViewProps {
 }
 
 function ComponentSelectionInspectorView(props: ComponentSelectionInspectorViewProps) {
+  const [rotoPageIndex, setRotoPageIndex] = useState(0);
+  const [rotoZoomState, setRotoZoomState] = useState<RotoZoomState | null>(null);
+  const rotoDecimalTimeoutRef = useRef<number | null>(null);
+  const scheduleRotoDecimalReassign = useCallback(() => {
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+    }
+    rotoDecimalTimeoutRef.current = window.setTimeout(() => {
+      rotoDecimalTimeoutRef.current = null;
+    }, ROTO_DECIMAL_REASSIGN_DELAY_MS);
+  }, []);
+  const enterRotoZoom = useCallback((control: RotoNumberControl) => {
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+      rotoDecimalTimeoutRef.current = null;
+    }
+    setRotoZoomState({
+      control,
+      decimalOffset: 0
+    });
+  }, []);
+  const componentRotoBindings = useMemo(() => {
+    if (rotoZoomState) {
+      return buildZoomBindings(rotoZoomState, setRotoZoomState, scheduleRotoDecimalReassign);
+    }
+    const bindings: RotoBinding[] = [];
+    props.componentDefinitions.forEach((definition) => {
+      const values = props.componentSelection.map((component) => {
+        const value = component.params[definition.key];
+        return value !== undefined ? value : defaultValueForDefinition(definition);
+      });
+      const current = values[0] ?? defaultValueForDefinition(definition);
+      if (definition.type === "number") {
+        bindings.push(createRotoNumberBinding({ id: definition.key, label: definition.label, colorRole: "default", value: typeof current === "number" ? current : 0, min: definition.min, max: definition.max, step: definition.step, precision: definition.precision, unit: definition.unit, disabled: props.readOnly, onChange: (next) => props.updateSelectedComponentParams(definition.key, next) }, enterRotoZoom));
+        return;
+      }
+      if (definition.type === "boolean") {
+        bindings.push(createRotoBooleanBinding(definition.key, definition.label, Boolean(current), (next) => props.updateSelectedComponentParams(definition.key, next), "toggle", props.readOnly));
+        return;
+      }
+      if (definition.type === "select") {
+        bindings.push(createRotoEnumBinding(definition.key, definition.label, definition.options, typeof current === "string" ? current : definition.options[0] ?? "", (next) => props.updateSelectedComponentParams(definition.key, next), "enum", props.readOnly));
+      }
+    });
+    return bindings;
+  }, [enterRotoZoom, props.componentDefinitions, props.componentSelection, props.readOnly, props.updateSelectedComponentParams, rotoZoomState, scheduleRotoDecimalReassign]);
+
+  const componentRotoComputed = useMemo(
+    () => buildRotoBank("Components", `components:${props.componentSelection.map((entry) => entry.id).join(",")}`, rotoPageIndex, componentRotoBindings, rotoZoomState?.control.id ?? null),
+    [componentRotoBindings, props.componentSelection, rotoPageIndex, rotoZoomState]
+  );
+
+  useEffect(() => {
+    setRotoPageIndex((current) => Math.max(0, Math.min(current, componentRotoComputed.pageCount - 1)));
+  }, [componentRotoComputed.pageCount]);
+
+  useRotoControlBank({
+    active: true,
+    bank: componentRotoComputed.bank,
+    onInput: (event) => {
+      if (event.type === "page-select") {
+        setRotoPageIndex(Math.max(0, Math.min(componentRotoComputed.pageCount - 1, event.pageIndex)));
+        return;
+      }
+      if (event.type === "page-next") {
+        setRotoPageIndex((current) => Math.min(componentRotoComputed.pageCount - 1, current + 1));
+        return;
+      }
+      if (event.type === "page-prev") {
+        setRotoPageIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+      if (event.type === "encoder-turn") {
+        componentRotoComputed.pageBindings[event.slotIndex]?.onTurn?.(event.delta);
+        return;
+      }
+      if (event.type === "encoder-set") {
+        const binding = componentRotoComputed.pageBindings[event.slotIndex];
+        if (binding?.onSetNormalized) {
+          binding.onSetNormalized(event.normalizedValue);
+          return;
+        }
+        if (typeof event.delta === "number" && event.delta !== 0) {
+          binding?.onTurn?.(event.delta);
+        }
+        return;
+      }
+      if (event.type === "button-press") {
+        componentRotoComputed.pageBindings[event.slotIndex]?.onPress?.();
+      }
+    }
+  });
+
   return (
     <div className="inspector-pane-root custom-inspector">
       <section className="inspector-common-card">
@@ -2398,6 +2968,9 @@ export function InspectorPane() {
   const inspectorForwardHistoryRef = useRef<InspectorView[]>([]);
   const inspectorHistorySuppressRef = useRef(false);
   const previousInspectorViewRef = useRef<InspectorView>({ kind: "actor-root" });
+  const [rotoPageIndex, setRotoPageIndex] = useState(0);
+  const [rotoZoomState, setRotoZoomState] = useState<RotoZoomState | null>(null);
+  const rotoDecimalTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     setSceneBackgroundInput(appState.scene.backgroundColor);
@@ -2410,6 +2983,9 @@ export function InspectorPane() {
       }
       if (cameraPathPlayRafRef.current !== null) {
         window.cancelAnimationFrame(cameraPathPlayRafRef.current);
+      }
+      if (rotoDecimalTimeoutRef.current !== null) {
+        window.clearTimeout(rotoDecimalTimeoutRef.current);
       }
     },
     []
@@ -2558,6 +3134,24 @@ export function InspectorPane() {
     previousInspectorViewRef.current = cloneInspectorView(inspectorView);
   }, [inspectorView]);
 
+  const scheduleRotoDecimalReassign = useCallback(() => {
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+    }
+    rotoDecimalTimeoutRef.current = window.setTimeout(() => {
+      rotoDecimalTimeoutRef.current = null;
+    }, ROTO_DECIMAL_REASSIGN_DELAY_MS);
+  }, []);
+
+  useEffect(() => {
+    setRotoPageIndex(0);
+    setRotoZoomState(null);
+    if (rotoDecimalTimeoutRef.current !== null) {
+      window.clearTimeout(rotoDecimalTimeoutRef.current);
+      rotoDecimalTimeoutRef.current = null;
+    }
+  }, [inspectorView.kind, inspectorView.kind === "component" ? inspectorView.componentId : "", inspectorView.kind === "param-group" ? inspectorView.paramKey : "", selection.map((entry) => `${entry.kind}:${entry.id}`).join(",")]);
+
   const updateSelectedActorParams = (key: string, nextValue: BindingValue): void => {
     for (const actor of actorSelection) {
       kernel.store.getState().actions.updateActorParams(actor.id, {
@@ -2679,6 +3273,11 @@ export function InspectorPane() {
 
   const showSceneInspector = actorSelection.length === 0 && componentSelection.length === 0;
   const showComponentSelectionInspector = actorSelection.length === 0 && componentSelection.length > 0;
+  const selectedPlugin =
+    selection.length === 1 && selection[0]?.kind === "plugin"
+      ? kernel.pluginApi.getPluginById(selection[0].id)
+      : null;
+  const showPluginInspector = Boolean(selectedPlugin);
 
   const descriptorForSingleSelection = singleSelection ? resolveActorDescriptor(singleSelection, actorDescriptors) : undefined;
   const runtimeStatus = singleSelection ? actorStatusByActorId[singleSelection.id] : undefined;
@@ -2699,7 +3298,9 @@ export function InspectorPane() {
   const statusRows: StatsRow[] = visibleStatusEntries.map((entry) => ({
     label: entry.label,
     value: formatStatusValue(entry.value),
-    tone: entry.tone === "error" ? "error" : entry.tone === "warning" ? "warning" : "default"
+    tone: entry.tone === "error" ? "error" : entry.tone === "warning" ? "warning" : "default",
+    groupKey: entry.groupKey,
+    groupLabel: entry.groupLabel
   }));
   const statusGroups = singleSelection ? buildStatusGroups(statusRows) : [];
   const pluginViewDescriptors = useMemo(() => {
@@ -3181,6 +3782,427 @@ export function InspectorPane() {
       window.removeEventListener(NAVIGATE_FORWARD_REQUEST_EVENT, onForwardRequest);
     };
   }, [handleForward, selection.length]);
+
+  const enterRotoZoom = useCallback(
+    (control: RotoNumberControl) => {
+      if (rotoDecimalTimeoutRef.current !== null) {
+        window.clearTimeout(rotoDecimalTimeoutRef.current);
+        rotoDecimalTimeoutRef.current = null;
+      }
+      setRotoPageIndex(0);
+      setRotoZoomState({
+        control,
+        decimalOffset: 0
+      });
+      kernel.store.getState().actions.setStatus(`Roto zoom: ${control.label}`);
+    },
+    [kernel]
+  );
+
+  const actorRotoContextPath = useMemo(() => {
+    if (inspectorView.kind === "actor-root") {
+      return actorSelection.length === 1 ? `actor:${actorSelection[0]?.id ?? "multi"}:root` : "actor:multi:root";
+    }
+    if (inspectorView.kind === "component") {
+      return `actor-component:${inspectorView.componentId}`;
+    }
+    return `actor-group:${inspectorView.fromComponentId ?? "actor"}:${inspectorView.paramKey}`;
+  }, [actorSelection, inspectorView]);
+
+  const actorRotoBindings = useMemo(() => {
+    if (rotoZoomState) {
+      return buildZoomBindings(rotoZoomState, setRotoZoomState, scheduleRotoDecimalReassign);
+    }
+    const bindings: RotoBinding[] = [];
+    if (inspectorView.kind === "actor-root") {
+      bindings.push(
+        createRotoBooleanBinding("actor-enabled", "Enabled", enabledValue, updateSelectedActorEnabled, "toggle", readOnly, {
+          trueText: "Enabled",
+          falseText: "Disabled"
+        })
+      );
+      bindings.push(
+        createRotoEnumBinding(
+          "actor-visibility",
+          "Visibility",
+          VISIBILITY_OPTIONS,
+          visibilityValue,
+          (next) => updateSelectedActorVisibility(next as ActorVisibilityMode),
+          "enum",
+          readOnly,
+          {
+            stepLabels: ["Visible", "Hidden", "Selected"],
+            valueText: (value) => {
+              if (value === "selected") {
+                return "Selected";
+              }
+              return value === "hidden" ? "Hidden" : "Visible";
+            }
+          }
+        )
+      );
+      ([0, 1, 2] as const).forEach((axisIndex) => {
+        bindings.push(
+          createRotoNumberBinding(
+            {
+              id: `transform-position-${axisIndex}`,
+              label: `Translate ${axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}`,
+              colorRole: "translate",
+              value: positionValuesByAxis[axisIndex]?.[0] ?? 0,
+              precision: 3,
+              unit: "m",
+              disabled: readOnly,
+              onChange: (next) => updateSelectedActorTransformAxis("position", axisIndex, next)
+            },
+            enterRotoZoom
+          )
+        );
+      });
+      ([0, 1, 2] as const).forEach((axisIndex) => {
+        bindings.push(
+          createRotoNumberBinding(
+            {
+              id: `transform-rotation-${axisIndex}`,
+              label: `Rotate ${axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}`,
+              colorRole: "rotate",
+              value: rotationValuesByAxis[axisIndex]?.[0] ?? 0,
+              precision: 2,
+              unit: "deg",
+              centered: true,
+              disabled: readOnly,
+              onChange: (next) => updateSelectedActorTransformAxis("rotation", axisIndex, next * DEG_TO_RAD)
+            },
+            enterRotoZoom
+          )
+        );
+      });
+      ([0, 1, 2] as const).forEach((axisIndex) => {
+        bindings.push(
+          createRotoNumberBinding(
+            {
+              id: `transform-scale-${axisIndex}`,
+              label: `Scale ${axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}`,
+              colorRole: "scale",
+              value: scaleValuesByAxis[axisIndex]?.[0] ?? 1,
+              min: 0,
+              precision: 3,
+              disabled: readOnly,
+              onChange: (next) => updateSelectedActorTransformAxis("scale", axisIndex, Math.max(0, next))
+            },
+            enterRotoZoom
+          )
+        );
+      });
+      pluginViewDescriptors.forEach((descriptor) => {
+        bindings.push(
+          createRotoActionBinding(
+            `plugin-view:${descriptor.viewType}`,
+            `Open ${descriptor.title}`,
+            "action",
+            () => {
+              if (!singleSelection) {
+                return;
+              }
+              const view = kernel.store.getState().actions.openPluginView({
+                pluginId: descriptor.pluginId,
+                actorId: singleSelection.id,
+                viewType: descriptor.viewType,
+                title: descriptor.title
+              });
+              kernel.store.getState().actions.focusPluginView(view.id);
+            },
+            "Open"
+          )
+        );
+      });
+      if (actorSelection.length > 0 && actorSelection.every((actor) => actor.actorType === "mist-volume")) {
+        bindings.push(createRotoActionBinding("mist-reset", "Reset Simulation", "action", resetSelectedMistSimulations, "Run"));
+      }
+      if (singleSelection?.actorType === "environment-probe") {
+        bindings.push(createRotoActionBinding("environment-probe-render", "Render Probe", "action", renderSelectedEnvironmentProbe, "Run"));
+      }
+      if (hasBeamShaderGroup) {
+        bindings.push(
+          createRotoActionBinding("beam-group", BEAM_SHADER_GROUP_LABEL, "drill", () =>
+            setInspectorView({ kind: "param-group", paramKey: BEAM_SHADER_GROUP_KEY, paramLabel: BEAM_SHADER_GROUP_LABEL, fromComponentId: null })
+          )
+        );
+      }
+      schemaDefinitionGroups.forEach((group) => {
+        bindings.push(
+          createRotoActionBinding(`group:${group.key}`, group.label, "drill", () =>
+            setInspectorView({
+              kind: "param-group",
+              paramKey: schemaParamGroupViewKey(group.key),
+              paramLabel: group.label,
+              fromComponentId: null
+            })
+          )
+        );
+      });
+    }
+
+    const pushDefinitionBindings = (definition: ParameterDefinition, current: BindingValue, defaultValue: BindingValue, onChange: (next: BindingValue) => void) => {
+      if (definition.type === "number") {
+        bindings.push(
+          createRotoNumberBinding(
+            {
+              id: definition.key,
+              label: definition.label,
+              colorRole: "default",
+              value: coerceFiniteNumber(current, 0),
+              min: definition.min,
+              max: definition.max,
+              step: definition.step,
+              precision: definition.precision,
+              unit: definition.unit,
+              disabled: readOnly,
+              onChange: (next) => onChange(next)
+            },
+            enterRotoZoom
+          )
+        );
+        return;
+      }
+      if (definition.type === "boolean") {
+        bindings.push(
+          createRotoBooleanBinding(definition.key, definition.label, Boolean(current), (next) => onChange(next), "toggle", readOnly)
+        );
+        return;
+      }
+      if (definition.type === "select") {
+        bindings.push(
+          createRotoEnumBinding(
+            definition.key,
+            definition.label,
+            definition.options,
+            typeof current === "string" ? current : String(defaultValue ?? definition.options[0] ?? ""),
+            (next) => onChange(next),
+            "enum",
+            readOnly
+          )
+        );
+        return;
+      }
+      if (definition.type === "vector3") {
+        const vectorValue = getVector3Value(current, [0, 0, 0]);
+        ([0, 1, 2] as const).forEach((axisIndex) => {
+          bindings.push(
+            createRotoNumberBinding(
+              {
+                id: `${definition.key}:${axisIndex}`,
+                label: `${definition.label} ${axisIndex === 0 ? "X" : axisIndex === 1 ? "Y" : "Z"}`,
+                colorRole: "default",
+                value: vectorValue[axisIndex],
+                min: definition.min,
+                max: definition.max,
+                step: definition.step,
+                precision: definition.precision,
+                unit: definition.unit,
+                disabled: readOnly,
+                onChange: (next) => {
+                  const nextVector: [number, number, number] = [...vectorValue];
+                  nextVector[axisIndex] = next;
+                  onChange(nextVector);
+                }
+              },
+              enterRotoZoom
+            )
+          );
+        });
+        return;
+      }
+      if (definition.type === "material-slots" || definition.type === "dxf-layer-states") {
+        bindings.push(
+          createRotoActionBinding(
+            `${definition.key}:drill`,
+            definition.label,
+            "drill",
+            () => {
+              if (inspectorView.kind === "component") {
+                setInspectorView({
+                  kind: "param-group",
+                  paramKey: definition.key,
+                  paramLabel: definition.label,
+                  fromComponentId: inspectorView.componentId
+                });
+                return;
+              }
+              setInspectorView({ kind: "param-group", paramKey: definition.key, paramLabel: definition.label, fromComponentId: null });
+            },
+            "Edit"
+          )
+        );
+      }
+    };
+
+    if (inspectorView.kind === "component") {
+      const component = components[inspectorView.componentId];
+      if (component) {
+        const componentDefs = getFallbackDefinitionsFromParams(component.params);
+        componentDefs.forEach((definition) => {
+          const current = component.params[definition.key] ?? defaultValueForDefinition(definition);
+          pushDefinitionBindings(definition, current, defaultValueForDefinition(definition), (next) => {
+            kernel.store.getState().actions.updateComponentParams(component.id, { [definition.key]: next });
+            scheduleAutosave();
+          });
+        });
+      }
+      return bindings;
+    }
+
+    definitions.forEach((definition) => {
+      if (inspectorView.kind === "param-group") {
+        if (inspectorView.paramKey === BEAM_SHADER_GROUP_KEY) {
+          if (!isBeamShaderDefinition(definition)) {
+            return;
+          }
+        } else {
+          const schemaGroupKey = parseSchemaParamGroupViewKey(inspectorView.paramKey);
+          if (schemaGroupKey) {
+            if (definition.groupKey !== schemaGroupKey) {
+              return;
+            }
+          } else if (definition.key !== inspectorView.paramKey) {
+            return;
+          }
+        }
+      } else if (inspectorView.kind === "actor-root") {
+        if (schemaDefinitionGroups.length > 0 && isSchemaGroupedDefinition(definition)) {
+          return;
+        }
+        if (hasBeamShaderGroup && isBeamShaderDefinition(definition)) {
+          return;
+        }
+      }
+      const current = actorSelection.map((actor) => bindingValueFor(definition, actor))[0] ?? defaultValueForDefinition(definition);
+      const defaultValue = defaultValueForDefinition(definition);
+      pushDefinitionBindings(definition, current, defaultValue, (next) => {
+        updateSelectedActorParams(definition.key, next);
+      });
+    });
+
+    if (inspectorView.kind === "actor-root" && singleSelection) {
+      singleSelection.componentIds.forEach((componentId) => {
+        const component = components[componentId];
+        if (!component) {
+          return;
+        }
+        bindings.push(
+          createRotoActionBinding(`component:${componentId}`, component.name, "drill", () =>
+            setInspectorView({ kind: "component", componentId, componentLabel: component.name })
+          )
+        );
+      });
+    }
+
+    return bindings;
+  }, [
+    actorSelection,
+    components,
+    definitions,
+    enabledValue,
+    enterRotoZoom,
+    handleForward,
+    hasBeamShaderGroup,
+    inspectorView,
+    kernel,
+    pluginViewDescriptors,
+    positionValuesByAxis,
+    readOnly,
+    renderSelectedEnvironmentProbe,
+    resetSelectedMistSimulations,
+    rotationValuesByAxis,
+    rotoZoomState,
+    scaleValuesByAxis,
+    scheduleAutosave,
+    scheduleRotoDecimalReassign,
+    schemaDefinitionGroups,
+    singleSelection,
+    updateSelectedActorEnabled,
+    updateSelectedActorParams,
+    updateSelectedActorTransformAxis,
+    updateSelectedActorVisibility,
+    visibilityValue
+  ]);
+
+  const actorRotoComputed = useMemo(
+    () =>
+      buildRotoBank(
+        rotoZoomState ? `${singleSelection?.name ?? "Actor"} Zoom` : singleSelection?.name ?? "Actors",
+        actorRotoContextPath,
+        rotoPageIndex,
+        actorRotoBindings,
+        rotoZoomState?.control.id ?? null
+      ),
+    [actorRotoBindings, actorRotoContextPath, rotoPageIndex, rotoZoomState, singleSelection]
+  );
+
+  useEffect(() => {
+    setRotoPageIndex((current) => Math.max(0, Math.min(current, actorRotoComputed.pageCount - 1)));
+  }, [actorRotoComputed.pageCount]);
+
+  useRotoControlBank({
+    active: !showSceneInspector && !showComponentSelectionInspector,
+    bank: actorRotoComputed.bank,
+    onInput: (event) => {
+      if (event.type === "page-select") {
+        setRotoPageIndex(Math.max(0, Math.min(actorRotoComputed.pageCount - 1, event.pageIndex)));
+        return;
+      }
+      if (event.type === "page-next") {
+        setRotoPageIndex((current) => Math.min(actorRotoComputed.pageCount - 1, current + 1));
+        return;
+      }
+      if (event.type === "page-prev") {
+        setRotoPageIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+      if (event.type === "navigate-back") {
+        void handleBack();
+        return;
+      }
+      if (event.type === "navigate-forward") {
+        void handleForward();
+        return;
+      }
+      if (event.type === "encoder-turn") {
+        actorRotoComputed.pageBindings[event.slotIndex]?.onTurn?.(event.delta);
+        return;
+      }
+      if (event.type === "encoder-set") {
+        const binding = actorRotoComputed.pageBindings[event.slotIndex];
+        if (binding?.onSetNormalized) {
+          binding.onSetNormalized(event.normalizedValue);
+          return;
+        }
+        if (typeof event.delta === "number" && event.delta !== 0) {
+          binding?.onTurn?.(event.delta);
+        }
+        return;
+      }
+      if (event.type === "button-press") {
+        actorRotoComputed.pageBindings[event.slotIndex]?.onPress?.();
+      }
+    }
+  });
+
+  if (showPluginInspector) {
+    const PluginInspector = selectedPlugin?.definition.inspectorComponent;
+    const PluginRotoControl = selectedPlugin?.definition.rotoControlComponent;
+    return (
+      <>
+        {PluginRotoControl ? <PluginRotoControl plugin={selectedPlugin} /> : null}
+        {PluginInspector ? (
+          <PluginInspector plugin={selectedPlugin} />
+        ) : (
+          <div className="inspector-pane-root custom-inspector">
+            <div className="inspector-empty">This plugin does not expose inspector properties.</div>
+          </div>
+        )}
+      </>
+    );
+  }
 
   if (showSceneInspector) {
     return (

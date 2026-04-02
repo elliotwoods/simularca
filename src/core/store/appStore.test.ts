@@ -163,6 +163,21 @@ describe("appStore undo/redo", () => {
     });
   });
 
+  it("updates scene color buffer precision independently", () => {
+    const store = createAppStore("electron-rw");
+
+    store.getState().actions.setSceneRenderSettings({
+      colorBufferPrecision: "float16"
+    });
+
+    expect(store.getState().state.scene.colorBufferPrecision).toBe("float16");
+    expect(store.getState().state.scene.renderEngine).toBe("webgpu");
+    expect(store.getState().state.scene.tonemapping).toEqual({
+      mode: "aces",
+      dither: true
+    });
+  });
+
   it("updates scene fly-look settings independently", () => {
     const store = createAppStore("electron-rw");
 

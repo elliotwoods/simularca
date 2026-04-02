@@ -1,5 +1,5 @@
 {
-  "name": "@rehearse-engine/beam-crossover-plugin",
+  "name": "@rehearse-engine/roto-control-plugin",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,8 +7,5 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "node ../../scripts/plugin-build.mjs"
-  },
-  "peerDependencies": {
-    "three": "^0.173.0"
   }
 }

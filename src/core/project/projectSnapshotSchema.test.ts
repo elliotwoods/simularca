@@ -74,6 +74,7 @@ describe("project snapshot schema", () => {
       dither: true
     });
     expect(parsed.scene.renderEngine).toBe("webgpu");
+    expect(parsed.scene.colorBufferPrecision).toBe("float32");
     expect(parsed.scene.framePacing).toEqual({
       mode: "vsync",
       targetFps: 60
@@ -234,6 +235,7 @@ describe("project snapshot schema", () => {
       mode: "vsync",
       targetFps: 60
     });
+    expect(parsed.scene.colorBufferPrecision).toBe("float32");
     expect(parsed.scene.helpers).toEqual(DEFAULT_SCENE_HELPERS);
     expect(parsed.scene.cameraFlyLookInvertYaw).toBe(true);
     expect(parsed.scene.cameraFlyLookSpeed).toBe(1);

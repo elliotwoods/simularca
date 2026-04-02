@@ -192,6 +192,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
   const kernel = useKernel();
   const backend = useAppStore((store) => store.state.scene.renderEngine);
   const antialiasing = useAppStore((store) => store.state.scene.antialiasing);
+  const colorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
   const framePacing = useAppStore((store) => store.state.scene.framePacing);
   const camera = useAppStore((store) => store.state.camera);
   const rememberedPerspectiveCamera = useAppStore((store) => store.state.lastPerspectiveCamera);
@@ -364,8 +365,16 @@ export function ViewportPanel(props: ViewportPanelProps) {
     }
     const viewport: ViewportRuntime =
       backend === "webgl2"
-        ? new WebGlViewport(kernel, hostRef.current, { antialias: antialiasing, qualityMode: "interactive" })
-        : new WebGpuViewport(kernel, hostRef.current, { antialias: antialiasing, qualityMode: "interactive" });
+        ? new WebGlViewport(kernel, hostRef.current, {
+            antialias: antialiasing,
+            qualityMode: "interactive",
+            colorBufferPrecision
+          })
+        : new WebGpuViewport(kernel, hostRef.current, {
+            antialias: antialiasing,
+            qualityMode: "interactive",
+            colorBufferPrecision
+          });
     viewport.setActorTransformMode(actorTransformMode);
     viewport.setActorTransformSnappingEnabled(actorTransformSnappingEnabled);
     viewport.setFramePacing(framePacing);
@@ -386,7 +395,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
       void viewport.stop();
       viewportRef.current = null;
     };
-  }, [antialiasing, backend, kernel, props.suspended]);
+  }, [antialiasing, backend, colorBufferPrecision, kernel, props.suspended]);
 
   useEffect(() => {
     viewportRef.current?.setActorTransformMode(actorTransformMode);
@@ -457,6 +466,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
   }, [
     antialiasing,
     backend,
+    colorBufferPrecision,
     kernel,
     props.onScreenshotBusyChange,
     props.screenshotRequestId,

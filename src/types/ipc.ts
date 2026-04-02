@@ -153,6 +153,106 @@ export interface RenderPipeState {
   closed?: boolean;
 }
 
+export type RotoControlColorRole =
+  | "default"
+  | "translate"
+  | "rotate"
+  | "scale"
+  | "enum"
+  | "toggle"
+  | "drill"
+  | "action"
+  | "zoom";
+
+export type RotoControlSlotKind = "number" | "enum" | "bool" | "action";
+
+export interface RotoControlSlot {
+  id: string;
+  label: string;
+  kind: RotoControlSlotKind;
+  colorRole: RotoControlColorRole;
+  valueText?: string;
+  stepLabels?: string[];
+  normalizedValue?: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  precision?: number;
+  unit?: string;
+  enumLabels?: string[];
+  centered?: boolean;
+  disabled?: boolean;
+  quantizedStepCount?: number;
+}
+
+export interface RotoControlBank {
+  title: string;
+  contextPath: string;
+  pageIndex: number;
+  pageCount: number;
+  slots: RotoControlSlot[];
+  allSlots?: RotoControlSlot[];
+  zoomTargetSlotId?: string | null;
+}
+
+export interface RotoControlSerialCandidate {
+  path: string;
+  friendlyName?: string | null;
+  vendorId?: string | null;
+  productId?: string | null;
+  selected: boolean;
+}
+
+export type RotoControlDawEmulation = "ableton" | "bitwig";
+
+export interface RotoControlState {
+  available: boolean;
+  midiConnected: boolean;
+  serialConnected: boolean;
+  sysexConnected: boolean;
+  lastError?: string | null;
+  inputMode: "plugin" | "midi";
+  connectionPhase: "disconnected" | "probing" | "waiting-for-ping" | "connected";
+  requiredDeviceMode: "plugin";
+  statusSummary: string;
+  setupInstructions: string[];
+  midiInputPortName?: string | null;
+  midiOutputPortName?: string | null;
+  serialPortPath?: string | null;
+  serialDiscoveryMode: "auto" | "manual";
+  serialPortOverridePath?: string | null;
+  serialSelectionReason: string;
+  serialCandidates: RotoControlSerialCandidate[];
+  dawEmulation: RotoControlDawEmulation;
+  serialAdminState: "idle" | "opening" | "ready" | "provisioning" | "cooldown" | "error";
+  lastProvisionedSignature?: string | null;
+  lastProvisionAttemptAtIso?: string | null;
+  lastSerialResponseCode?: string | null;
+  lastSerialRequestType?: string | null;
+  usingCachedProvisionedDefinition: boolean;
+  lastPublishedBankTitle?: string | null;
+  lastPublishedBankContextPath?: string | null;
+  lastPublishedBankPageIndex?: number | null;
+  lastPublishedSlotLabels?: string[];
+  lastPublishedAtIso?: string | null;
+}
+
+interface RotoControlInputEventBase {
+  contextPath?: string;
+  bankRevision?: number;
+}
+
+export type RotoControlInputEvent =
+  | (RotoControlInputEventBase & { type: "encoder-turn"; slotIndex: number; delta: number })
+  | (RotoControlInputEventBase & { type: "encoder-set"; slotIndex: number; normalizedValue: number; delta?: number })
+  | (RotoControlInputEventBase & { type: "button-press"; slotIndex: number })
+  | (RotoControlInputEventBase & { type: "page-select"; pageIndex: number })
+  | (RotoControlInputEventBase & { type: "page-next" })
+  | (RotoControlInputEventBase & { type: "page-prev" })
+  | (RotoControlInputEventBase & { type: "navigate-back" })
+  | (RotoControlInputEventBase & { type: "navigate-forward" })
+  | (RotoControlInputEventBase & { type: "raw-midi"; data: number[] });
+
 export interface ElectronApi {
   mode: AppMode;
   getPathForFile(file: File): string | null;
@@ -215,4 +315,11 @@ export interface ElectronApi {
   windowClose(): Promise<void>;
   showAppMenu(args: { x: number; y: number }): Promise<void>;
   onWindowStateChange(listener: (state: { isMaximized: boolean; isFullscreen: boolean }) => void): () => void;
+  rotoControlConnect(): Promise<RotoControlState>;
+  rotoControlRefresh(): Promise<RotoControlState>;
+  rotoControlSetSerialOverride(path: string | null): Promise<RotoControlState>;
+  rotoControlSetDawEmulation(mode: RotoControlDawEmulation): Promise<RotoControlState>;
+  rotoControlPublishBank(bank: RotoControlBank): Promise<void>;
+  onRotoControlState(listener: (state: RotoControlState) => void): () => void;
+  onRotoControlInput(listener: (event: RotoControlInputEvent) => void): () => void;
 }

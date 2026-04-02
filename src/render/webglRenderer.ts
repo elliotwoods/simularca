@@ -5,13 +5,18 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
-import type { CameraState, SceneFramePacingSettings } from "@/core/types";
+import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "@/render/actorTransformController";
 import { CurveEditController } from "@/render/curveEditController";
 import { CameraInteractionController } from "@/render/cameraInteractionController";
 import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "@/render/cameraSync";
 import { incompatibilityReason } from "@/render/engineCompatibility";
 import { FramePacer } from "@/render/framePacing";
+import {
+  getWebGlColorBufferSupport,
+  resolveSceneColorBufferPrecision,
+  type ResolvedSceneColorBufferPrecision
+} from "@/render/colorBufferPrecision";
 import { SceneController } from "@/render/sceneController";
 import { reportSlowFrame } from "@/render/slowFrameDiagnostics";
 import type { MistVolumeQualityMode } from "@/render/mistVolumeController";
@@ -58,6 +63,8 @@ export class WebGlViewport {
   private readonly fixedViewportSize: { width: number; height: number } | null;
   private previousMainRenderSample: RenderStatsSample | null = null;
   private readonly framePacer: FramePacer;
+  private readonly colorBufferPrecision: ResolvedSceneColorBufferPrecision;
+  private lastLoggedColorBufferWarning: string | null = null;
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -69,6 +76,7 @@ export class WebGlViewport {
       editorOverlays?: boolean;
       viewportSize?: { width: number; height: number };
       manualFrameControl?: boolean;
+      colorBufferPrecision?: SceneColorBufferPrecision;
     }
   ) {
     this.isExportViewport = options.qualityMode === "export";
@@ -85,6 +93,14 @@ export class WebGlViewport {
     });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
     this.renderer = new THREE.WebGLRenderer({ antialias: options.antialias, alpha: false });
+    this.colorBufferPrecision = resolveSceneColorBufferPrecision(
+      options.colorBufferPrecision ?? kernel.store.getState().state.scene.colorBufferPrecision,
+      getWebGlColorBufferSupport(this.renderer),
+      "webgl2",
+      {
+        requestedAntialiasing: options.antialias
+      }
+    );
     this.sceneController.setWebGlRenderer(this.renderer);
     const initialWidth = this.fixedViewportSize?.width ?? Math.max(1, this.mountEl.clientWidth);
     const initialHeight = this.fixedViewportSize?.height ?? Math.max(1, this.mountEl.clientHeight);
@@ -113,7 +129,15 @@ export class WebGlViewport {
     this.orthographicCamera.position.set(8, 8, 8);
 
     this.activeCamera = this.perspectiveCamera;
-    this.composer = new EffectComposer(this.renderer);
+    this.composer = new EffectComposer(
+      this.renderer,
+      new THREE.WebGLRenderTarget(initialWidth, initialHeight, {
+        type: this.colorBufferPrecision.bufferType,
+        colorSpace: THREE.NoColorSpace,
+        depthBuffer: true,
+        stencilBuffer: false
+      })
+    );
     this.renderPass = new RenderPass(this.sceneController.scene, this.activeCamera);
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(initialWidth, initialHeight),
@@ -511,6 +535,7 @@ export class WebGlViewport {
   }
 
   private updateStats(): void {
+    this.reportColorBufferWarning();
     const now = performance.now();
     const frameDelta = Math.max(0, now - this.frameLastAt);
     this.frameLastAt = now;
@@ -550,6 +575,12 @@ export class WebGlViewport {
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
         cameraZoomEnabled: this.isWheelZoomEnabled(),
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? "",
         projectFileBytes:
           currentStats.projectFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
             ? currentStats.projectFileBytesSaved
@@ -570,9 +601,30 @@ export class WebGlViewport {
         memoryMb: memory.memoryMb,
         heapMb: memory.heapMb,
         resourceMb: memory.resourceMb,
-        projectFileBytes: estimatedProjectBytes
+        projectFileBytes: estimatedProjectBytes,
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? ""
       });
     }
+  }
+
+  private reportColorBufferWarning(): void {
+    if (this.colorBufferPrecision.warningMessage === this.lastLoggedColorBufferWarning) {
+      return;
+    }
+    this.lastLoggedColorBufferWarning = this.colorBufferPrecision.warningMessage;
+    if (!this.colorBufferPrecision.warningMessage) {
+      return;
+    }
+    this.kernel.store.getState().actions.addLog({
+      level: "warn",
+      message: `WebGL2 render target policy adjusted: ${this.colorBufferPrecision.warningMessage}`,
+      details: `Active intermediate format: ${this.colorBufferPrecision.statusFormatLabel}; MSAA ${this.colorBufferPrecision.activeAntialiasing ? "enabled" : "disabled"}`
+    });
   }
 
   private isWheelZoomEnabled(): boolean {

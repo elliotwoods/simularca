@@ -6,6 +6,7 @@ export type SceneNodeKind = "scene" | "actor" | "component";
 export type RenderEngine = "webgl2" | "webgpu";
 export type SceneToneMappingMode = "off" | "aces";
 export type SceneFramePacingMode = "vsync" | "fixed";
+export type SceneColorBufferPrecision = "float32" | "float16" | "uint8";
 export type SplatColorInputSpace = "linear" | "srgb" | "iphone-sdr" | "apple-log";
 export type ActorType =
   | "empty"
@@ -59,7 +60,7 @@ export interface Material {
 export type ActorVisibilityMode = "visible" | "hidden" | "selected";
 export type CameraPreset = "perspective" | "top" | "left" | "front" | "back" | "isometric";
 export type TimeSpeedPreset = 0.125 | 0.25 | 0.5 | 1 | 2 | 4;
-export type SelectionKind = "actor" | "component";
+export type SelectionKind = "actor" | "component" | "plugin";
 export type LogLevel = "info" | "warn" | "error";
 
 export interface TransformTRS {
@@ -284,6 +285,7 @@ export interface SceneState extends SceneNodeBase {
   backgroundColor: string;
   renderEngine: RenderEngine;
   antialiasing: boolean;
+  colorBufferPrecision: SceneColorBufferPrecision;
   framePacing: SceneFramePacingSettings;
   tonemapping: SceneTonemappingSettings;
   postProcessing: ScenePostProcessingSettings;
@@ -364,6 +366,12 @@ export interface SceneStats {
   cameraDistance: number;
   cameraControlsEnabled: boolean;
   cameraZoomEnabled: boolean;
+  requestedColorBufferPrecision: SceneColorBufferPrecision;
+  activeColorBufferPrecision: SceneColorBufferPrecision;
+  activeColorBufferFormat: string;
+  requestedAntialiasing: boolean;
+  activeAntialiasing: boolean;
+  colorBufferWarning: string;
 }
 
 export interface RuntimeDebugState {

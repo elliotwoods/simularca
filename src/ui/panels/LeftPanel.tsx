@@ -14,6 +14,7 @@ export function LeftPanel(props: LeftPanelProps) {
   const kernel = useKernel();
   usePluginRegistryRevision();
   const mode = useAppStore((store) => store.state.mode);
+  const selection = useAppStore((store) => store.state.selection);
   const readOnly = mode === "web-ro";
   const plugins = kernel.pluginApi.listPlugins();
   const gitDirtyStatus = useGitDirtyStatus(plugins.map((entry) => entry.source?.modulePath));
@@ -40,13 +41,23 @@ export function LeftPanel(props: LeftPanelProps) {
           <ul className="plugin-list">
             {plugins.map((entry) => (
               <li key={entry.definition.id}>
-                <span className="plugin-list-title">
-                  <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
-                  <GitDirtyBadge count={getPluginGitDirtyBadge(gitDirtyStatus, entry.source?.modulePath)?.changedFileCount ?? 0} />
-                </span>
-                <span className="plugin-list-meta">
-                  {entry.manifest?.version ?? "unknown version"}
-                </span>
+                <button
+                  type="button"
+                  className={`plugin-list-button${
+                    selection.length === 1 && selection[0]?.kind === "plugin" && selection[0].id === entry.definition.id
+                      ? " is-selected"
+                      : ""
+                  }`}
+                  onClick={() => kernel.store.getState().actions.select([{ kind: "plugin", id: entry.definition.id }], false)}
+                >
+                  <span className="plugin-list-title">
+                    <strong>{entry.manifest?.name ?? entry.definition.name}</strong>
+                    <GitDirtyBadge count={getPluginGitDirtyBadge(gitDirtyStatus, entry.source?.modulePath)?.changedFileCount ?? 0} />
+                  </span>
+                  <span className="plugin-list-meta">
+                    {entry.manifest?.version ?? "unknown version"}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>

@@ -4,13 +4,18 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { pass } from "three/tsl";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
-import type { CameraState, SceneFramePacingSettings } from "@/core/types";
+import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "./actorTransformController";
 import { CameraInteractionController } from "./cameraInteractionController";
 import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "./cameraSync";
 import { SceneController } from "./sceneController";
 import { incompatibilityReason } from "./engineCompatibility";
 import { FramePacer } from "./framePacing";
+import {
+  getWebGpuColorBufferSupport,
+  resolveSceneColorBufferPrecision,
+  type ResolvedSceneColorBufferPrecision
+} from "./colorBufferPrecision";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 import { CurveEditController } from "./curveEditController";
 import { reportSlowFrame } from "./slowFrameDiagnostics";
@@ -57,6 +62,8 @@ export class WebGpuViewport {
   private previousMainRenderSample: RenderStatsSample | null = null;
   private lastOutputSignature = "";
   private readonly framePacer: FramePacer;
+  private readonly colorBufferPrecision: ResolvedSceneColorBufferPrecision;
+  private lastLoggedColorBufferWarning: string | null = null;
   public constructor(
     private readonly kernel: AppKernel,
     private readonly mountEl: HTMLElement,
@@ -67,6 +74,7 @@ export class WebGpuViewport {
       editorOverlays?: boolean;
       viewportSize?: { width: number; height: number };
       manualFrameControl?: boolean;
+      colorBufferPrecision?: SceneColorBufferPrecision;
     }
   ) {
     if (!("gpu" in navigator)) {
@@ -86,7 +94,19 @@ export class WebGpuViewport {
       showDebugHelpers: options.showDebugHelpers ?? true
     });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
-    this.renderer = new WebGPURenderer({ antialias: options.antialias, alpha: false });
+    this.colorBufferPrecision = resolveSceneColorBufferPrecision(
+      options.colorBufferPrecision ?? kernel.store.getState().state.scene.colorBufferPrecision,
+      getWebGpuColorBufferSupport(),
+      "webgpu",
+      {
+        requestedAntialiasing: options.antialias
+      }
+    );
+    this.renderer = new WebGPURenderer({
+      antialias: this.colorBufferPrecision.activeAntialiasing,
+      alpha: false,
+      colorBufferType: this.colorBufferPrecision.bufferType
+    });
     this.sceneController.setRenderer(this.renderer as unknown as any);
     const initialWidth = this.fixedViewportSize?.width ?? Math.max(1, this.mountEl.clientWidth);
     const initialHeight = this.fixedViewportSize?.height ?? Math.max(1, this.mountEl.clientHeight);
@@ -521,6 +541,7 @@ export class WebGpuViewport {
   }
 
   private updateStats(): void {
+    this.reportColorBufferWarning();
     const now = performance.now();
     const frameDelta = Math.max(0, now - this.frameLastAt);
     this.frameLastAt = now;
@@ -560,6 +581,12 @@ export class WebGpuViewport {
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
         cameraZoomEnabled: this.isWheelZoomEnabled(),
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? "",
         projectFileBytes: currentStats.projectFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
           ? currentStats.projectFileBytesSaved
           : currentStats.projectFileBytes
@@ -579,9 +606,30 @@ export class WebGpuViewport {
         memoryMb: memory.memoryMb,
         heapMb: memory.heapMb,
         resourceMb: memory.resourceMb,
-        projectFileBytes: estimatedProjectBytes
+        projectFileBytes: estimatedProjectBytes,
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? ""
       });
     }
+  }
+
+  private reportColorBufferWarning(): void {
+    if (this.colorBufferPrecision.warningMessage === this.lastLoggedColorBufferWarning) {
+      return;
+    }
+    this.lastLoggedColorBufferWarning = this.colorBufferPrecision.warningMessage;
+    if (!this.colorBufferPrecision.warningMessage) {
+      return;
+    }
+    this.kernel.store.getState().actions.addLog({
+      level: "warn",
+      message: `WebGPU render target policy adjusted: ${this.colorBufferPrecision.warningMessage}`,
+      details: `Active intermediate format: ${this.colorBufferPrecision.statusFormatLabel}; MSAA ${this.colorBufferPrecision.activeAntialiasing ? "enabled" : "disabled"}`
+    });
   }
 
   private readMainRenderStats(): RenderStatsSample {

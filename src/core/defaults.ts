@@ -4,6 +4,7 @@ import type {
   AppState,
   CameraState,
   Material,
+  SceneColorBufferPrecision,
   SceneFramePacingSettings,
   SceneHelpersSettings,
   ScenePostProcessingSettings,
@@ -172,6 +173,7 @@ export const DEFAULT_FRAME_PACING: SceneFramePacingSettings = {
   targetFps: 60
 };
 export const DEFAULT_RENDER_ENGINE: RenderEngine = "webgpu";
+export const DEFAULT_SCENE_COLOR_BUFFER_PRECISION: SceneColorBufferPrecision = "float32";
 export const DEFAULT_POST_PROCESSING: ScenePostProcessingSettings = {
   bloom: {
     enabled: false,
@@ -227,6 +229,7 @@ export function createDefaultScene(): {
     backgroundColor: "#070b12",
     renderEngine: DEFAULT_RENDER_ENGINE,
     antialiasing: true,
+    colorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
     framePacing: structuredClone(DEFAULT_FRAME_PACING),
     tonemapping: {
       mode: "aces",
@@ -279,7 +282,13 @@ export function createInitialState(mode: AppState["mode"], projectName = "demo",
       projectFileBytesSaved: 0,
       cameraDistance: 0,
       cameraControlsEnabled: true,
-      cameraZoomEnabled: true
+      cameraZoomEnabled: true,
+      requestedColorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
+      activeColorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
+      activeColorBufferFormat: "",
+      requestedAntialiasing: true,
+      activeAntialiasing: true,
+      colorBufferWarning: ""
     },
     runtimeDebug: {
       slowFrameDiagnosticsEnabled: DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED,

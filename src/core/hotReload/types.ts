@@ -21,6 +21,8 @@ export interface ActorStatusEntry {
   label: string;
   value: ActorStatusValue | null | undefined;
   tone?: "default" | "warning" | "error";
+  groupKey?: string;
+  groupLabel?: string;
 }
 
 export interface ActorStatusContext {

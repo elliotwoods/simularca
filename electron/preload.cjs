@@ -112,6 +112,25 @@ const api = {
     return () => {
       ipcRenderer.removeListener("window:state", handler);
     };
+  },
+  rotoControlConnect: () => ipcRenderer.invoke("roto-control:connect"),
+  rotoControlRefresh: () => ipcRenderer.invoke("roto-control:refresh"),
+  rotoControlSetSerialOverride: (path) => ipcRenderer.invoke("roto-control:set-serial-override", path),
+  rotoControlSetDawEmulation: (mode) => ipcRenderer.invoke("roto-control:set-daw-emulation", mode),
+  rotoControlPublishBank: (bank) => ipcRenderer.invoke("roto-control:publish-bank", bank),
+  onRotoControlState: (listener) => {
+    const handler = (_event, state) => listener(state);
+    ipcRenderer.on("roto-control:state", handler);
+    return () => {
+      ipcRenderer.removeListener("roto-control:state", handler);
+    };
+  },
+  onRotoControlInput: (listener) => {
+    const handler = (_event, event) => listener(event);
+    ipcRenderer.on("roto-control:input", handler);
+    return () => {
+      ipcRenderer.removeListener("roto-control:input", handler);
+    };
   }
 };
 

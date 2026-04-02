@@ -151,8 +151,10 @@ npm run lint
 Example packages in this repository:
 - `plugins/example-wave-plugin`
 - `plugins/template-artwork-actor-plugin`
-- `plugins/beam-crossover-plugin`
 - `plugins/gaussian-splat-webgpu-plugin`
+
+External plugin repos developed alongside the app can live under `plugins-external/`, for example:
+- `plugins-external/rehearse-beam-crossover-plugin`
 
 ## Asset And Rendering Notes
 - HDRI import depends on `toktx`

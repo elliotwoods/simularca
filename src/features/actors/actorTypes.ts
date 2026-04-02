@@ -811,6 +811,52 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
       defaultValue: 1
     },
     {
+      key: "animationEnabled",
+      label: "Animation Enabled",
+      type: "boolean",
+      groupKey: "animation",
+      groupLabel: "Animation",
+      defaultValue: false
+    },
+    {
+      key: "animationClipName",
+      label: "Clip",
+      type: "string",
+      groupKey: "animation",
+      groupLabel: "Animation",
+      visibleWhen: [{ key: "animationEnabled", equals: true }]
+    },
+    {
+      key: "animationSpeed",
+      label: "Speed",
+      type: "number",
+      groupKey: "animation",
+      groupLabel: "Animation",
+      step: 0.01,
+      defaultValue: 1,
+      visibleWhen: [{ key: "animationEnabled", equals: true }]
+    },
+    {
+      key: "animationLoop",
+      label: "Loop",
+      type: "boolean",
+      groupKey: "animation",
+      groupLabel: "Animation",
+      defaultValue: true,
+      visibleWhen: [{ key: "animationEnabled", equals: true }]
+    },
+    {
+      key: "animationStartOffsetSeconds",
+      label: "Start Offset",
+      type: "number",
+      groupKey: "animation",
+      groupLabel: "Animation",
+      unit: "s",
+      step: 0.01,
+      defaultValue: 0,
+      visibleWhen: [{ key: "animationEnabled", equals: true }]
+    },
+    {
       key: "materialId",
       label: "Material Override",
       type: "material-ref"

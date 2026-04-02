@@ -2002,6 +2002,28 @@ select {
   justify-content: space-between;
 }
 
+.plugin-list li:has(.plugin-list-button.is-selected) {
+  border-color: var(--accent);
+  background: #15283f;
+}
+
+.plugin-list-button {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+
+.plugin-list-button:hover {
+  border-color: transparent;
+}
+
 .plugin-list strong {
   font-weight: 600;
   color: var(--text);
@@ -3126,6 +3148,18 @@ body.is-dragging-viewport-axes * {
 
 .inspector-debug-warning {
   color: var(--warning);
+}
+
+.roto-plugin-setup {
+  display: grid;
+  gap: 6px;
+}
+
+.roto-plugin-setup p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .keyboard-map-backdrop {
