@@ -1,163 +1,92 @@
 # Simularca
 
-Desktop-first simulation environment for kinetic art pre-visualization.
+**A desktop simulation environment for pre-visualizing kinetic art.**
+
+Build, light, and animate a virtual version of an installation before any motors turn — then drive the same scene from the same hardware controllers you'll use on site.
 
 ![Simularca screenshot](./screenshot.png)
 
-## Stack
-- Electron main process + Vite/React renderer + TypeScript
-- `flexlayout-react` multi-panel workspace
-- Three.js viewport with WebGPU and WebGL render paths
-- Spark/WebGL Gaussian splat rendering path
-- Zustand + Immer app state
-- Local plugin discovery for built plugin packages
+## Why Simularca
 
-## What Exists Today
-- Desktop mode is the primary mode. It runs through Electron and reads/writes project data in `savedata/`.
-- Browser mode exists for read-only sessions served from `public/sessions/`.
-- There is no packaged installer workflow in this repository yet. No `electron-builder`, DMG, EXE, or app bundle pipeline is configured.
+- **Real-time 3D viewport** with both WebGPU and WebGL render paths, PBR materials, environment probes, ACES tone mapping, and post-processing (bloom, vignette, grain, chromatic aberration).
+- **Gaussian splat rendering** — drop a captured splat of the real venue into your scene and animate against it. Native Spark WebGL path plus a custom WebGPU path with GPU sorting for high splat counts.
+- **Hardware in the loop** — MIDI input/output and serial device support, including built-in integration for the Melbourne Instruments **Roto Control** surface. Map controllers directly to actor parameters.
+- **Plugin-based actors** — every artwork is a plugin. Ship a custom actor type with its own runtime, shaders, parameters, and inspector UI without forking the host. A reference plugin and template are included.
+- **Project + snapshot workflow** — projects are folders on disk; snapshots are named variants inside a project, so you can branch a lighting test or a choreography pass without losing the last good state.
+- **Camera paths and curves** — spline-based camera animation with keyframes and curve/actor targeting, plus a curve editor for path-driven motion.
+- **Multi-panel workspace** — drag-and-dock layout (viewport, scene tree, inspector, console, profiler, plugin views) you can rearrange per project.
+- **Imports** — DXF (CAD layers, plane and unit selection), Collada `.dae` meshes, PLY and `.splatbin` Gaussian splats, HDRI environments transcoded to KTX2.
+- **Video export** via `ffmpeg`, with a frame-pacing option for deterministic captures.
+- **Color and precision** — pick your working color space (linear, sRGB, iPhone SDR, Apple Log) and float32 / float16 / uint8 render-target precision.
+- **Profiling** — per-actor CPU/GPU timing including WebGPU timestamp queries, surfaced live in a profiler panel.
 
-## Requirements
-- Node.js and npm
-- Electron dependencies installed through `npm install`
-- `toktx` on `PATH` for HDRI to KTX2 transcoding
-- `ffmpeg` on `PATH` for video export workflows
-- basis transcoder runtime files in `public/basis/` for KTX2 decode, for example `basis_transcoder.js` and `basis_transcoder.wasm`
+## Status
 
-## Install
+Simularca is desktop-first and runs through Electron. The repository builds and runs from source — there is no packaged installer (no `.exe` / `.dmg`) yet. Browser mode exists but is read-only and intended for sharing sessions.
+
+## Quick start
+
+### Prerequisites
+
+- **Node.js** (LTS) and **npm**
+- **`toktx`** on `PATH` — for HDRI → KTX2 transcoding ([KTX-Software releases](https://github.com/KhronosGroup/KTX-Software/releases))
+- **`ffmpeg`** on `PATH` — for video export
+- **basis transcoder** runtime files in `public/basis/` (`basis_transcoder.js` and `basis_transcoder.wasm`) for KTX2 decode at runtime
+
+### Get it running
+
 ```bash
+git clone https://github.com/<owner>/simularca.git
+cd simularca
 npm install
-```
-
-## Run
-
-### Full desktop dev workflow
-```bash
 npm run dev
 ```
 
-This starts three processes in parallel:
-- plugin watchers via `scripts/plugins.mjs watch`
-- the Vite dev server at `http://localhost:5180`
-- Electron after the Vite server is reachable
+`npm run dev` starts the plugin watcher, the Vite dev server on `http://localhost:5180`, and Electron together. The app window opens once the dev server is up.
 
-### Web-only dev
+Projects are written to `savedata/<projectName>/` next to the repository. Open or create a project from the app's title bar.
+
+### Other run modes
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Full desktop dev: plugin watcher + Vite + Electron |
+| `npm run dev:web` | Renderer only, in the browser at `http://localhost:5180` (read-only) |
+| `npm run dev:electron` | Electron against an already-running Vite server |
+| `npm run dev:plugins` | Watch and rebuild plugin packages only |
+| `npm run dev:reset` | Clear Vite cache, then `dev` |
+
+### Build
+
 ```bash
-npm run dev:web
+npm run build       # plugins + TS + Vite renderer + Electron entrypoints
 ```
 
-This runs the renderer in the browser at `http://localhost:5180`. This mode is useful for renderer/UI work, but it is read-only compared with Electron desktop mode.
-
-### Electron-only dev
-```bash
-npm run dev:electron
-```
-
-Use this when the Vite dev server is already running. The script waits for `http://localhost:5180`, compiles the Electron TypeScript entrypoints, then launches Electron against the dev server.
-
-### Plugin watch only
-```bash
-npm run dev:plugins
-```
-
-This watches plugin packages under `plugins/` and `plugins-external/` when they expose `dev`, `watch`, or `build` scripts.
-
-### Reset dev cache
-```bash
-npm run dev:reset
-```
-
-This clears the Vite cache through the existing PowerShell-based helper script, then starts the normal desktop dev flow.
-
-## Debugging And Diagnostics
-
-### Electron devtools
-In desktop dev mode, Electron opens detached DevTools automatically.
-
-### Runtime logs
-- Runtime log file: `logs/electron-runtime.log`
-- Includes Electron startup/load failures, preload errors, renderer crashes, forwarded `window.error` / `unhandledrejection`, and higher-severity renderer console messages
-
-### Helper commands
-```bash
-npm run dev:diag
-npm run logs:show
-npm run logs:tail
-```
-
-Notes:
-- `dev:diag` runs the normal dev flow and tails the runtime log in parallel.
-- `logs:show` and `logs:tail` are implemented with `powershell`, so they depend on PowerShell being available in your shell environment.
-- If those helpers are unavailable on your machine, inspect `logs/electron-runtime.log` directly.
-
-## Build
-
-### Web build
-```bash
-npm run build
-```
-
-This:
-- writes build metadata
-- builds plugin packages
-- runs the composite TypeScript project build
-- emits the Vite production renderer into `dist/`
-- refreshes the Electron compile output in `dist-electron/`
-
-### Electron TypeScript build
-```bash
-npm run build:electron
-```
-
-Use this when you only want to recompile the Electron entrypoints into `dist-electron/` without rebuilding the renderer. It does not package or install the app.
-
-### Local production-style Electron run
-If you want to launch the built app locally from the repository checkout:
+To launch the built app locally from the checkout:
 
 ```bash
-npm run build
 npx electron ./dist-electron/electron/main.js
 ```
 
-This is a local launch path only. The repository does not currently produce an installable desktop application artifact.
-
-## Test And Quality Checks
-```bash
-npm run test
-npm run test:watch
-npm run test:plugins
-npm run typecheck
-npm run lint
-```
-
-## Project Data
-- Desktop defaults: `savedata/defaults.json`
-- Desktop projects: `savedata/<projectName>/`
-- Snapshots: `savedata/<projectName>/snapshots/<snapshotName>.json`
-- Imported assets: `savedata/<projectName>/assets/...`
-- Window state: `savedata/window-state.json`
-- Legacy compatibility: `savedata/<projectName>/session.json` is still read as the `main` snapshot
-
 ## Plugins
-- Built local plugins are auto-discovered from:
-  - `plugins/*/dist/index.js`
-  - `plugins-external/*/dist/index.js`
-- Reference plugin packages live in `plugins/`
-- Recommended local external plugin workspace: `plugins-external/` (gitignored)
-- Plugin-specific regression harnesses should live with their standalone plugin repos under `plugins-external/`
-- Host/plugin contract notes: `docs/plugin-handshake.md`
-- See `plugins/README.md` for the reference package layout
 
-Example packages in this repository:
-- `plugins/example-wave-plugin`
-- `plugins/template-artwork-actor-plugin`
-- `plugins/gaussian-splat-webgpu-plugin`
+Built-in reference plugins live under `plugins/`:
 
-External plugin repos developed alongside the app can live under `plugins-external/`, for example:
-- `plugins-external/simularca-beam-crossover-plugin`
+- `gaussian-splat-webgpu-plugin` — WebGPU Gaussian splat actor with GPU sorting
+- `dxf-drawing-plugin` — DXF-driven scene drawing
+- `roto-control-plugin` — Melbourne Instruments Roto Control hardware bridge
+- `example-wave-plugin`, `template-artwork-actor-plugin` — starting points for your own artwork actors
 
-## Asset And Rendering Notes
-- HDRI import depends on `toktx`
-- Video export depends on `ffmpeg`
-- Browser mode serves read-only session data from `public/sessions/`
-- Legacy projects that still reference removed native `gaussian-splat` actors or `splatbin-v1` assets fail with an explicit compatibility error
+Build outputs are auto-discovered from `plugins/*/dist/index.js` and `plugins-external/*/dist/index.js`. See `plugins/README.md` for the package layout and `docs/plugin-handshake.md` for the host/plugin contract.
+
+## For developers
+
+- Tests: `npm run test` — plugin subset: `npm run test:plugins`
+- Type-check: `npm run typecheck` — Lint: `npm run lint`
+- Runtime log: `logs/electron-runtime.log` (`npm run logs:tail` to follow)
+- Live debug bridge: `docs/live-debug-bridge.md`
+- Project data layout, snapshots, and asset paths: see `CLAUDE.md` and `docs/`
+
+## License
+
+MIT
