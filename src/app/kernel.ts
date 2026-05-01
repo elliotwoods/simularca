@@ -18,7 +18,30 @@ export interface AppKernel {
   profiler: ActorProfilingService;
 }
 
+function migrateLegacyStorageKeys(): void {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+  const renames: ReadonlyArray<readonly [string, string]> = [
+    ["rehearse-engine:flex-layout:v1", "simularca:flex-layout:v1"],
+    ["rehearse-engine:roto-control:serial-port-override", "simularca:roto-control:serial-port-override"],
+    ["rehearse-engine:roto-control:daw-emulation", "simularca:roto-control:daw-emulation"]
+  ];
+  for (const [oldKey, newKey] of renames) {
+    if (localStorage.getItem(newKey) !== null) {
+      continue;
+    }
+    const value = localStorage.getItem(oldKey);
+    if (value === null) {
+      continue;
+    }
+    localStorage.setItem(newKey, value);
+    localStorage.removeItem(oldKey);
+  }
+}
+
 function createKernelInternal(): AppKernel {
+  migrateLegacyStorageKeys();
   const storage = createStorageAdapter();
   const store = createAppStore(storage.mode);
   const descriptorRegistry = new DescriptorRegistry();
@@ -40,7 +63,7 @@ function createKernelInternal(): AppKernel {
   };
 }
 
-const HMR_KEY = "rehearse-engine-kernel";
+const HMR_KEY = "simularca-kernel";
 
 export function getKernel(): AppKernel {
   const hot = import.meta.hot;

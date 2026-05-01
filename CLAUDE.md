@@ -1,7 +1,7 @@
-# Claude Code - Rehearse Engine Development Guidelines
+# Claude Code - Simularca Development Guidelines
 
 ## Live Session Debugging
-- When Rehearse Engine is running in local Electron dev mode, prefer the live debug bridge over asking the user for manual DevTools snippets.
+- When Simularca is running in local Electron dev mode, prefer the live debug bridge over asking the user for manual DevTools snippets.
 - Start with `logs/codex-debug-session.json`, then use `node scripts/debug-session.mjs ...`.
 - Agent-facing instructions live in `AGENTS.md`.
 - Full bridge details and examples live in `docs/live-debug-bridge.md`.

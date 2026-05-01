@@ -11,8 +11,8 @@ import type { CurvePoint } from "@/features/curves/types";
 import type { SceneController } from "@/render/sceneController";
 
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
-export const CURVE_VERTEX_HOVER_EVENT = "rehearse-engine:curve-vertex-hover";
-export const CURVE_VERTEX_SELECT_EVENT = "rehearse-engine:curve-vertex-select";
+export const CURVE_VERTEX_HOVER_EVENT = "simularca:curve-vertex-hover";
+export const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
 
 interface CurveControlMeta {
   actorId: string;

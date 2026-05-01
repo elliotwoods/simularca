@@ -1,6 +1,6 @@
 {
-  "name": "rehearse-engine",
-  "productName": "Rehearse Engine",
+  "name": "simularca",
+  "productName": "Simularca",
   "version": "0.1.0",
   "private": true,
   "type": "module",

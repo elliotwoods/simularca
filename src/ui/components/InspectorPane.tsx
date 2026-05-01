@@ -20,6 +20,7 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { resolveActorPlugin } from "@/features/plugins/pluginViews";
 import { usePluginRegistryRevision } from "@/features/plugins/usePluginRegistryRevision";
+import { isPluginEnabled } from "@/features/plugins/pluginEnabled";
 import {
   DEFAULT_POST_PROCESSING,
   DEFAULT_RENDER_ENGINE,
@@ -119,9 +120,9 @@ const DEFAULT_CAMERA_FLY_LOOK_SPEED = 1;
 const DEFAULT_CAMERA_FOV_DEGREES = 50;
 const DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED = false;
 const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
-const CURVE_VERTEX_SELECT_EVENT = "rehearse-engine:curve-vertex-select";
-const NAVIGATE_BACK_REQUEST_EVENT = "rehearse-engine:navigate-back-request";
-const NAVIGATE_FORWARD_REQUEST_EVENT = "rehearse-engine:navigate-forward-request";
+const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
+const NAVIGATE_BACK_REQUEST_EVENT = "simularca:navigate-back-request";
+const NAVIGATE_FORWARD_REQUEST_EVENT = "simularca:navigate-forward-request";
 const ROTO_DECIMAL_REASSIGN_DELAY_MS = 500;
 type CurveControlType = "anchor" | "handleIn" | "handleOut";
 const CURVE_HANDLE_MODE_OPTIONS = [
@@ -3003,7 +3004,7 @@ export function InspectorPane() {
 
   const publishCurveVertexHover = useCallback((actorId: string | null, pointIndex: number | null): void => {
     window.dispatchEvent(
-      new CustomEvent("rehearse-engine:curve-vertex-hover", {
+      new CustomEvent("simularca:curve-vertex-hover", {
         detail: {
           actorId,
           pointIndex
@@ -4187,11 +4188,37 @@ export function InspectorPane() {
     }
   });
 
-  if (showPluginInspector) {
-    const PluginInspector = selectedPlugin?.definition.inspectorComponent;
-    const PluginRotoControl = selectedPlugin?.definition.rotoControlComponent;
+  if (showPluginInspector && selectedPlugin) {
+    const PluginInspector = selectedPlugin.definition.inspectorComponent;
+    const PluginRotoControl = selectedPlugin.definition.rotoControlComponent;
+    const pluginId = selectedPlugin.definition.id;
+    const pluginEnabledValue = isPluginEnabled(appState.pluginsEnabled, pluginId);
     return (
       <>
+        <div className="inspector-pane-root">
+          <section className="inspector-common-card">
+            <header>
+              <h4>{selectedPlugin.manifest?.name ?? selectedPlugin.definition.name}</h4>
+            </header>
+            <div className="inspector-common-grid">
+              <div className="inspector-common-row">
+                <span className="inspector-common-label">Enabled</span>
+                <div className="inspector-common-control-wrap">
+                  <ToggleField
+                    label=""
+                    checked={pluginEnabledValue}
+                    disabled={readOnly}
+                    embedded
+                    onChange={(next) => {
+                      kernel.store.getState().actions.setPluginEnabled(pluginId, next);
+                      scheduleAutosave();
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
         {PluginRotoControl ? <PluginRotoControl plugin={selectedPlugin} /> : null}
         {PluginInspector ? (
           <PluginInspector plugin={selectedPlugin} />

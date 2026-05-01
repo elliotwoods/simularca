@@ -12,7 +12,7 @@ import { ProfilingResultsPanel } from "@/ui/panels/ProfilingResultsPanel";
 import { focusPluginViewTab, listPluginViewTabs, syncPluginViewTabs } from "@/ui/pluginViewLayout";
 import type { ProfileSessionResult } from "@/render/profiling";
 
-const LAYOUT_STORAGE_KEY = "rehearse-engine:flex-layout:v1";
+const LAYOUT_STORAGE_KEY = "simularca:flex-layout:v1";
 const PROFILE_RESULTS_TAB_ID = "tab.profiling-results";
 
 type JsonLike = Record<string, unknown>;

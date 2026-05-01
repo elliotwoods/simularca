@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 const baselinePath = path.join(repoRoot, "version-baseline.json");
-const outputPath = path.join(repoRoot, ".rehearse-engine-build-info.json");
+const outputPath = path.join(repoRoot, ".simularca-build-info.json");
 
 function resolveBuildKind() {
   const input = process.argv[2];

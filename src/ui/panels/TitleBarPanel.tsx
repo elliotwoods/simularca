@@ -20,7 +20,7 @@ import { useGitDirtyStatus } from "@/ui/useGitDirtyStatus";
 import type { DefaultProjectPointer, ProjectSnapshotListEntry } from "@/types/ipc";
 import appIconUrl from "../../../icon.png";
 
-const APP_NAME = "Rehearse Engine";
+const APP_NAME = "Simularca";
 
 interface TitleBarPanelProps {
   requestTextInput(args: {

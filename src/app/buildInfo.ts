@@ -12,16 +12,16 @@ export const FALLBACK_BUILD_INFO: BuildInfo = {
 };
 
 export const BUILD_INFO: BuildInfo =
-  typeof __REHEARSE_ENGINE_BUILD_INFO__ === "object" && __REHEARSE_ENGINE_BUILD_INFO__ !== null
-    ? __REHEARSE_ENGINE_BUILD_INFO__
+  typeof __SIMULARCA_BUILD_INFO__ === "object" && __SIMULARCA_BUILD_INFO__ !== null
+    ? __SIMULARCA_BUILD_INFO__
     : FALLBACK_BUILD_INFO;
 
 export function buildInfoSummary(buildInfo: BuildInfo): string {
   const subject = buildInfo.commitSubject?.trim() || "No commit subject";
   const shortSha = buildInfo.commitShortSha?.trim();
   return shortSha
-    ? `Rehearse Engine v${buildInfo.version} (${shortSha}) - ${subject}`
-    : `Rehearse Engine v${buildInfo.version} - ${subject}`;
+    ? `Simularca v${buildInfo.version} (${shortSha}) - ${subject}`
+    : `Simularca v${buildInfo.version} - ${subject}`;
 }
 
 export function formatBuildTimestamp(iso: string): string {

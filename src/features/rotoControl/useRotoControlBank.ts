@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { RotoControlBank, RotoControlDawEmulation, RotoControlInputEvent, RotoControlState } from "@/types/ipc";
 import { equalRotoBanks } from "@/features/rotoControl/utils";
 
-export const ROTO_CONTROL_SERIAL_OVERRIDE_STORAGE_KEY = "rehearse-engine:roto-control:serial-port-override";
-export const ROTO_CONTROL_DAW_EMULATION_STORAGE_KEY = "rehearse-engine:roto-control:daw-emulation";
+export const ROTO_CONTROL_SERIAL_OVERRIDE_STORAGE_KEY = "simularca:roto-control:serial-port-override";
+export const ROTO_CONTROL_DAW_EMULATION_STORAGE_KEY = "simularca:roto-control:daw-emulation";
 
 interface UseRotoControlBankOptions {
   active: boolean;

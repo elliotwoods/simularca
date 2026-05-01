@@ -318,7 +318,7 @@ export class WebGpuViewport {
     const renderPromise = this.renderFrame()
       .catch((error) => {
         if (!this.disposed) {
-          console.warn("[rehearse-engine] WebGPU render frame failed:", error);
+          console.warn("[simularca] WebGPU render frame failed:", error);
         }
       })
       .finally(() => {

@@ -8,9 +8,9 @@ This is a development-only feature. It does not run in packaged builds.
 ## How It Works
 - Electron main starts a localhost HTTP server on `127.0.0.1` during dev sessions.
 - A per-launch bearer token is generated and written to `logs/codex-debug-session.json`.
-- The renderer installs `window.__REHEARSE_ENGINE_DEBUG__` during app startup in dev Electron mode.
+- The renderer installs `window.__SIMULARCA_DEBUG__` during app startup in dev Electron mode.
 - The bridge exposes both renderer and main-process execution paths:
-  - renderer console mode reuses the existing Rehearse Engine console runtime
+  - renderer console mode reuses the existing Simularca console runtime
   - renderer eval mode exposes richer live state
   - main eval mode exposes Electron objects such as `BrowserWindow` and `webContents`
 

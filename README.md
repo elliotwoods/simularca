@@ -1,8 +1,8 @@
-# Rehearse Engine
+# Simularca
 
 Desktop-first simulation environment for kinetic art pre-visualization.
 
-![Rehearse Engine screenshot](./screenshot.png)
+![Simularca screenshot](./screenshot.png)
 
 ## Stack
 - Electron main process + Vite/React renderer + TypeScript
@@ -154,7 +154,7 @@ Example packages in this repository:
 - `plugins/gaussian-splat-webgpu-plugin`
 
 External plugin repos developed alongside the app can live under `plugins-external/`, for example:
-- `plugins-external/rehearse-beam-crossover-plugin`
+- `plugins-external/simularca-beam-crossover-plugin`
 
 ## Asset And Rendering Notes
 - HDRI import depends on `toktx`

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { BuildInfo } from "./src/app/buildVersion";
 
-const GENERATED_BUILD_INFO_PATH = path.resolve(__dirname, ".rehearse-engine-build-info.json");
+const GENERATED_BUILD_INFO_PATH = path.resolve(__dirname, ".simularca-build-info.json");
 
 function loadBuildInfo(): BuildInfo {
   try {
@@ -27,7 +27,7 @@ function loadBuildInfo(): BuildInfo {
 export default defineConfig({
   plugins: [react()],
   define: {
-    __REHEARSE_ENGINE_BUILD_INFO__: JSON.stringify(loadBuildInfo())
+    __SIMULARCA_BUILD_INFO__: JSON.stringify(loadBuildInfo())
   },
   resolve: {
     alias: {

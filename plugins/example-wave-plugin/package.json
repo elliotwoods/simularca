@@ -1,5 +1,5 @@
 {
-  "name": "@rehearse-engine/example-wave-plugin",
+  "name": "@simularca/example-wave-plugin",
   "version": "0.1.0",
   "private": true,
   "type": "module",

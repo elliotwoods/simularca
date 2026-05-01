@@ -47,10 +47,10 @@ export function createRendererDebugBridge(kernel: AppKernel): RendererDebugBridg
 
 export function installRendererDebugBridge(kernel: AppKernel): () => void {
   const bridge = createRendererDebugBridge(kernel);
-  window.__REHEARSE_ENGINE_DEBUG__ = bridge;
+  window.__SIMULARCA_DEBUG__ = bridge;
   return () => {
-    if (window.__REHEARSE_ENGINE_DEBUG__ === bridge) {
-      delete window.__REHEARSE_ENGINE_DEBUG__;
+    if (window.__SIMULARCA_DEBUG__ === bridge) {
+      delete window.__SIMULARCA_DEBUG__;
     }
   };
 }

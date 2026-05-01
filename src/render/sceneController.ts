@@ -27,6 +27,8 @@ import { parseDxf } from "@/features/dxf/parseDxf";
 import { buildDxfScene, createDxfObject, disposeDxfObject, syncDxfAppearance } from "@/features/dxf/dxfToScene";
 import type { BuiltDxfScene, ParsedDxfDocument } from "@/features/dxf/dxfTypes";
 import { PluginActorRuntimeController } from "@/features/plugins/pluginActorRuntimeController";
+import { resolveActorPlugin } from "@/features/plugins/pluginViews";
+import { isPluginEnabled } from "@/features/plugins/pluginEnabled";
 import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
 import {
@@ -635,6 +637,7 @@ export class SceneController {
     }, options.qualityMode ?? "interactive");
     this.pluginActorRuntimeController = new PluginActorRuntimeController({
       resolveDescriptor: (actor) => this.resolveActorDescriptor(actor),
+      isActorPluginEnabled: (actor) => this.isActorPluginEnabled(actor),
       setActorStatus: (actorId, status) => {
         this.kernel.store.getState().actions.setActorStatus(actorId, status);
       },
@@ -2130,7 +2133,7 @@ export class SceneController {
   }
 
   private buildAssetUrl(projectName: string, relativePath: string): string {
-    return `rehearse-engine-asset://${encodeURIComponent(projectName)}/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
+    return `simularca-asset://${encodeURIComponent(projectName)}/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
   }
 
   private loadCachedTexture(url: string, colorSpace: THREE.ColorSpace = THREE.LinearSRGBColorSpace): THREE.Texture {
@@ -2865,7 +2868,9 @@ export class SceneController {
     }
     const selection = this.kernel.store.getState().state.selection;
     const isSelected = selection.some((entry) => entry.kind === "actor" && entry.id === actor.id);
-    object.visible = computeActorObjectVisibility(actor, isSelected, this.debugHelpersVisible);
+    object.visible =
+      computeActorObjectVisibility(actor, isSelected, this.debugHelpersVisible) &&
+      this.isActorPluginEnabled(actor);
     object.position.set(...actor.transform.position);
     object.rotation.set(...actor.transform.rotation);
     object.scale.set(...actor.transform.scale);
@@ -3155,7 +3160,7 @@ export class SceneController {
       .filter((part) => part.length > 0)
       .map((part) => encodeURIComponent(part))
       .join("/");
-    const url = `rehearse-engine-asset://${encodedProject}/${encodedPath}`;
+    const url = `simularca-asset://${encodedProject}/${encodedPath}`;
     // Defer "loading" status to a macrotask so the React re-render (useSyncExternalStore) does
     // not queue a microtask that runs before syncFromState's continuation microtask.
     const actorIdForLoading = actor.id;
@@ -3268,7 +3273,7 @@ export class SceneController {
     };
 
     const onError = (error: unknown) => {
-      console.error("[rehearse-engine] ColladaLoader error for", url, error);
+      console.error("[simularca] ColladaLoader error for", url, error);
       const message = formatLoadError(error);
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
@@ -3504,6 +3509,18 @@ export class SceneController {
       worldMatrix.multiply(this.actorLocalMatrix(actor.transform));
     }
     return worldMatrix;
+  }
+
+  private isActorPluginEnabled(actor: ActorNode): boolean {
+    if (actor.actorType !== "plugin") {
+      return true;
+    }
+    const plugin = resolveActorPlugin(actor, this.kernel.pluginApi.listPlugins());
+    if (!plugin) {
+      return true;
+    }
+    const state = this.kernel.store.getState().state;
+    return isPluginEnabled(state.pluginsEnabled, plugin.definition.id);
   }
 
   private resolveActorDescriptor(actor: ActorNode): ReloadableDescriptor | null {

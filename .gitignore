@@ -11,8 +11,8 @@ test-results/
 src/**/*.js
 src/**/*.js.map
 logs/
-.rehearse-engine-build-info.json
-plugins/*/.rehearse-engine-plugin-build-info.json
+.simularca-build-info.json
+plugins/*/.simularca-plugin-build-info.json
 plugins/*/src/pluginBuildInfo.generated.ts
 
 # Local environment and OS files

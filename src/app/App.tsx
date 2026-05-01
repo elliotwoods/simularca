@@ -91,8 +91,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
 
-const NAVIGATE_BACK_REQUEST_EVENT = "rehearse-engine:navigate-back-request";
-const NAVIGATE_FORWARD_REQUEST_EVENT = "rehearse-engine:navigate-forward-request";
+const NAVIGATE_BACK_REQUEST_EVENT = "simularca:navigate-back-request";
+const NAVIGATE_FORWARD_REQUEST_EVENT = "simularca:navigate-forward-request";
 
 function cloneSelection(selection: SelectionEntry[]): SelectionEntry[] {
   return selection.map((entry) => ({ ...entry }));

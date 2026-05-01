@@ -7,7 +7,7 @@ This folder contains reference plugin package layouts that can be moved into ind
 - `template-artwork-actor-plugin`
 
 ## Moved Out
-- `rehearse-beam-crossover-plugin` now lives as its own private repo and should be checked out under `plugins-external/` for local development.
+- `simularca-beam-crossover-plugin` now lives as its own private repo and should be checked out under `plugins-external/` for local development.
 
 ## External Plugin Workspace (Gitignored)
 - Use `plugins-external/` for plugin repos developed alongside the app but not tracked in this repository.
