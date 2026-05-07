@@ -169,6 +169,68 @@ async function flushAsyncWork(turns = 250): Promise<void> {
 }
 
 describe("rotoControlHost", () => {
+  it("constructs MIDI bindings at most once across repeated reconnect attempts when no devices are present", async () => {
+    let inputConstructions = 0;
+    let outputConstructions = 0;
+    class NoDeviceMidiInput {
+      public constructor() {
+        inputConstructions += 1;
+      }
+      public getPortCount(): number {
+        return 0;
+      }
+      public getPortName(): string {
+        return "";
+      }
+      public openPort(): void {}
+      public closePort(): void {}
+      public ignoreTypes(): void {}
+      public on(): void {}
+      public removeAllListeners(): void {}
+    }
+    class NoDeviceMidiOutput {
+      public constructor() {
+        outputConstructions += 1;
+      }
+      public getPortCount(): number {
+        return 0;
+      }
+      public getPortName(): string {
+        return "";
+      }
+      public openPort(): void {}
+      public closePort(): void {}
+      public sendMessage(): void {}
+    }
+
+    const host = new RotoControlHost(
+      {
+        emitState: () => {},
+        emitInput: () => {},
+        log: () => {}
+      },
+      {
+        loadMidiBindings: async () => ({
+          input: NoDeviceMidiInput,
+          output: NoDeviceMidiOutput
+        }),
+        loadSerialBindings: async () => null,
+        setInterval: (() => 0) as unknown as typeof globalThis.setInterval,
+        clearInterval: (() => {}) as typeof globalThis.clearInterval
+      }
+    );
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      await host.connect();
+    }
+
+    expect(inputConstructions).toBe(1);
+    expect(outputConstructions).toBe(1);
+    expect(host.getState().lastError).toBe("Roto-Control MIDI ports not found.");
+
+    host.dispose();
+  });
+
   it("prefers DAW-labelled MIDI ports during discovery", () => {
     expect(scoreMatchingPortName("ROTO CONTROL DAW")).toBeGreaterThan(scoreMatchingPortName("ROTO CONTROL"));
     expect(scoreMatchingPortName("Some Other Device")).toBeLessThan(0);

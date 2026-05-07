@@ -765,6 +765,8 @@ export class RotoControlHost {
   private state: RotoControlState;
   private midiInput: MidiInputHandle | null = null;
   private midiOutput: MidiOutputHandle | null = null;
+  private midiPortsOpen = false;
+  private midiMessageHandler: ((deltaTime: number, message: number[]) => void) | null = null;
   private serialPort: SerialPortHandle | null = null;
   private currentBank: RotoControlBank | null = null;
   private currentBankRevision = 0;
@@ -874,6 +876,7 @@ export class RotoControlHost {
     this.connectRequested = false;
     this.stopReconnectLoop();
     this.disposeConnections();
+    this.destroyMidiHandles();
   }
 
   public async publishBank(bank: RotoControlBank): Promise<void> {
@@ -919,7 +922,7 @@ export class RotoControlHost {
   }
 
   private async ensureMidiConnection(): Promise<void> {
-    if (this.midiInput && this.midiOutput) {
+    if (this.midiPortsOpen && this.midiInput && this.midiOutput) {
       this.updateState({
         midiConnected: true,
         connectionPhase: this.state.sysexConnected ? "connected" : "waiting-for-ping",
@@ -931,28 +934,54 @@ export class RotoControlHost {
       return;
     }
 
-    const midiBindings = await this.deps.loadMidiBindings();
-    if (!midiBindings) {
-      this.updateState({
-        midiConnected: false,
-        sysexConnected: false,
-        connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
-        midiInputPortName: null,
-        midiOutputPortName: null,
-        lastError: MIDI_BINDINGS_UNAVAILABLE_MESSAGE
-      });
+    if (!this.midiInput || !this.midiOutput) {
+      const midiBindings = await this.deps.loadMidiBindings();
+      if (!midiBindings) {
+        this.updateState({
+          midiConnected: false,
+          sysexConnected: false,
+          connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
+          midiInputPortName: null,
+          midiOutputPortName: null,
+          lastError: MIDI_BINDINGS_UNAVAILABLE_MESSAGE
+        });
+        return;
+      }
+
+      try {
+        const midiInput = new midiBindings.input();
+        const midiOutput = new midiBindings.output();
+        midiInput.ignoreTypes(false, false, false);
+        this.midiMessageHandler = (_delta, message) => {
+          this.handleMidiMessage(message);
+        };
+        midiInput.on("message", this.midiMessageHandler);
+        this.midiInput = midiInput;
+        this.midiOutput = midiOutput;
+      } catch (error) {
+        this.options.log("Failed to initialize MIDI bindings", error);
+        this.updateState({
+          midiConnected: false,
+          sysexConnected: false,
+          connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
+          midiInputPortName: null,
+          midiOutputPortName: null,
+          lastError: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+    }
+
+    const midiInput = this.midiInput;
+    const midiOutput = this.midiOutput;
+    if (!midiInput || !midiOutput) {
       return;
     }
 
     try {
-      const midiInput = new midiBindings.input();
-      const midiOutput = new midiBindings.output();
-      midiInput.ignoreTypes(false, false, false);
       const inputIndex = findMatchingPort(midiInput);
       const outputIndex = findMatchingPort(midiOutput);
       if (inputIndex < 0 || outputIndex < 0) {
-        midiInput.closePort();
-        midiOutput.closePort();
         this.updateState({
           midiConnected: false,
           sysexConnected: false,
@@ -966,11 +995,7 @@ export class RotoControlHost {
 
       midiInput.openPort(inputIndex);
       midiOutput.openPort(outputIndex);
-      midiInput.on("message", (_delta, message) => {
-        this.handleMidiMessage(message);
-      });
-      this.midiInput = midiInput;
-      this.midiOutput = midiOutput;
+      this.midiPortsOpen = true;
       this.updateState({
         midiConnected: true,
         connectionPhase: this.state.sysexConnected ? "connected" : "waiting-for-ping",
@@ -980,8 +1005,8 @@ export class RotoControlHost {
       });
       this.sendSysex([GENERAL_TYPE, GENERAL_DAW_STARTED]);
     } catch (error) {
-      this.disposeMidiConnections();
-      this.options.log("Failed to initialize MIDI bindings", error);
+      this.closeMidiPorts();
+      this.options.log("Failed to open MIDI ports", error);
       this.updateState({
         midiConnected: false,
         sysexConnected: false,
@@ -1148,10 +1173,20 @@ export class RotoControlHost {
     });
   }
 
-  private disposeMidiConnections(): void {
-    this.midiInput?.removeAllListeners?.("message");
+  private closeMidiPorts(): void {
     this.midiInput?.closePort();
     this.midiOutput?.closePort();
+    this.midiPortsOpen = false;
+  }
+
+  private disposeMidiConnections(): void {
+    this.closeMidiPorts();
+  }
+
+  private destroyMidiHandles(): void {
+    this.closeMidiPorts();
+    this.midiInput?.removeAllListeners?.("message");
+    this.midiMessageHandler = null;
     this.midiInput = null;
     this.midiOutput = null;
   }
