@@ -150,6 +150,8 @@ function ActorItem(props: ActorItemProps) {
   const actors = useAppStore((store) => store.state.actors);
   const rootActorIds = useAppStore((store) => store.state.scene.actorIds);
   const actorStatusByActorId = useAppStore((store) => store.state.actorStatusByActorId);
+  const actorFrameTimingsMs = useAppStore((store) => store.state.actorFrameTimingsMs);
+  const statsFrameMs = useAppStore((store) => store.state.stats.frameMs);
   const mode = useAppStore((store) => store.state.mode);
   const [expanded, setExpanded] = useState(true);
   const [isRenaming, setRenaming] = useState(false);
@@ -170,6 +172,9 @@ function ActorItem(props: ActorItemProps) {
       ? runtimeStatus.values.pluginMissingReason
       : "Plugin actor type is unavailable.";
   const readOnly = mode === "web-ro";
+  const frameTimingMs = actorFrameTimingsMs[props.actor.id];
+  const frameMs = statsFrameMs > 0 ? statsFrameMs : 1000 / 60;
+  const timingWarning = frameTimingMs != null && frameTimingMs > frameMs ? frameTimingMs : null;
   const visibilityMode = props.actor.visibilityMode ?? "visible";
   const siblingIds = props.actor.parentActorId ? (actors[props.actor.parentActorId]?.childActorIds ?? []) : rootActorIds;
   const siblingIndex = siblingIds.indexOf(props.actor.id);
@@ -336,6 +341,14 @@ function ActorItem(props: ActorItemProps) {
             {props.actor.name}
           </button>
         )}
+        {timingWarning != null ? (
+          <span
+            className="scene-tree-timing-warning"
+            title={`CPU time: ${timingWarning.toFixed(1)}ms — frame budget: ${frameMs.toFixed(1)}ms`}
+          >
+            {timingWarning.toFixed(1)}ms
+          </span>
+        ) : null}
         {isLoading ? <span className="scene-tree-load-state loading" title="Loading asset..." /> : null}
         {hasConflict ? (
           <span className="scene-tree-load-state conflict" title={incompatibilityReason}>

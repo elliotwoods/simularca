@@ -9,7 +9,7 @@ interface ProfileCaptureModalProps {
 }
 
 const DEFAULT_OPTIONS: ProfileCaptureOptions = {
-  frameCount: 120,
+  frameCount: 10,
   includeUpdateTimings: true,
   includeDrawTimings: true,
   includeGpuTimings: true,
@@ -51,7 +51,9 @@ export function ProfileCaptureModal(props: ProfileCaptureModalProps) {
               min={1}
               max={2000}
               step={1}
+              autoFocus
               value={draft.frameCount}
+              onFocus={(e) => e.target.select()}
               onChange={(event) =>
                 setDraft((prev) => ({
                   ...prev,

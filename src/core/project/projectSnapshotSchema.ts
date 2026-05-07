@@ -191,6 +191,7 @@ const actorSchema = z.object({
     "primitive",
     "curve",
     "camera-path",
+    "cross-section",
     "plugin"
   ]),
   visibilityMode: z.enum(["visible", "hidden", "selected"]).default("visible"),
@@ -335,6 +336,25 @@ const projectSnapshotSchema = z.object({
           .default({
             enabled: false,
             intensity: 0.02
+          }),
+        ambientOcclusion: z
+          .object({
+            enabled: z.boolean().default(false),
+            radius: z.number().default(0.25),
+            thickness: z.number().default(1),
+            distanceExponent: z.number().default(1),
+            scale: z.number().default(1),
+            samples: z.number().default(16),
+            resolutionScale: z.number().default(1)
+          })
+          .default({
+            enabled: false,
+            radius: 0.25,
+            thickness: 1,
+            distanceExponent: 1,
+            scale: 1,
+            samples: 16,
+            resolutionScale: 1
           })
       })
       .default({
@@ -356,6 +376,15 @@ const projectSnapshotSchema = z.object({
         grain: {
           enabled: false,
           intensity: 0.02
+        },
+        ambientOcclusion: {
+          enabled: false,
+          radius: 0.25,
+          thickness: 1,
+          distanceExponent: 1,
+          scale: 1,
+          samples: 16,
+          resolutionScale: 1
         }
       }),
     helpers: z
@@ -385,7 +414,10 @@ const projectSnapshotSchema = z.object({
     cameraKeyboardNavigation: z.boolean().default(true),
     cameraNavigationSpeed: z.number().default(6),
     cameraFlyLookInvertYaw: z.boolean().default(true),
-    cameraFlyLookSpeed: z.number().default(1)
+    cameraFlyLookSpeed: z.number().default(1),
+    useEnvironmentBackground: z.boolean().default(true),
+    environmentOverrideActorId: z.string().nullable().default(null),
+    defaultIblEnabled: z.boolean().default(true)
   }),
   actors: z.record(actorSchema),
   components: z.record(componentSchema),
@@ -438,7 +470,11 @@ const projectSnapshotSchema = z.object({
       encoding: z.enum(["raw", "ktx2"]).optional(),
       relativePath: z.string(),
       sourceFileName: z.string(),
-      byteSize: z.number()
+      byteSize: z.number(),
+      lodOf: z.string().optional(),
+      lodRatio: z.number().optional(),
+      lodTriangleCount: z.number().optional(),
+      lodOriginalTriangleCount: z.number().optional()
     })
   )
 });

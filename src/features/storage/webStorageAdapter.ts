@@ -91,6 +91,9 @@ export function createWebStorageAdapter(): StorageAdapter {
     async importAsset() {
       readOnly();
     },
+    async writeGeneratedAsset() {
+      readOnly();
+    },
     async importDae() {
       readOnly();
     },
@@ -105,6 +108,12 @@ export function createWebStorageAdapter(): StorageAdapter {
     },
     async readAssetBytes() {
       readOnly();
+    },
+    async readProjectionCache() {
+      return null;
+    },
+    async writeProjectionCache() {
+      // Web mode has no filesystem; silently no-op so the renderer code path stays uniform.
     }
   };
 }

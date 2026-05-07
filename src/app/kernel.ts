@@ -1,5 +1,6 @@
 import { createAppStore } from "@/core/store/appStore";
 import { ProjectService } from "@/core/project/projectService";
+import { attachProjectionCacheStorage } from "@/features/curves/projectionCache";
 import { createStorageAdapter } from "@/features/storage";
 import { DescriptorRegistry } from "@/core/hotReload/descriptorRegistry";
 import { HotReloadManager } from "@/core/hotReload/hotReloadManager";
@@ -48,6 +49,7 @@ function createKernelInternal(): AppKernel {
   const hotReloadManager = new HotReloadManager(descriptorRegistry, store);
   const pluginApi = createPluginApi(descriptorRegistry, hotReloadManager);
   const projectService = new ProjectService(storage, store);
+  attachProjectionCacheStorage(storage, () => store.getState().state.activeProject?.path ?? null);
   const clock = new SimulationClock(1 / 60);
   const profiler = new ActorProfilingService();
 

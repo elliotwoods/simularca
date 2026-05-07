@@ -20,6 +20,7 @@ import {
   type OpenProjectResult,
   type ProjectAssetRef,
   type ProjectIdentity,
+  type ProjectionCacheFileV1,
   type ProjectSnapshotListEntry,
   type RecentsEntry,
   type RotoControlBank,
@@ -433,6 +434,7 @@ void writeRuntimeLog("boot", "electron main module loaded", {
 
 let liveDebugServerController: LiveDebugServerController | null = null;
 let rotoControlHost: RotoControlHost | null = null;
+const closingConfirmedWindows = new WeakSet<BrowserWindow>();
 
 app.setName(APP_DISPLAY_NAME);
 
@@ -1260,7 +1262,15 @@ function createWindow(): BrowserWindow {
   mainWindow.on("unmaximize", queuePersistWindowState);
   mainWindow.on("moved", queuePersistWindowState);
   mainWindow.on("resized", queuePersistWindowState);
-  mainWindow.on("close", persistCurrentWindowState);
+  mainWindow.on("close", (event) => {
+    persistCurrentWindowState();
+    if (closingConfirmedWindows.has(mainWindow)) {
+      closingConfirmedWindows.delete(mainWindow);
+      return;
+    }
+    event.preventDefault();
+    mainWindow.webContents.send("window:before-close");
+  });
   mainWindow.webContents.once("did-finish-load", () => {
     pushWindowState();
   });
@@ -1321,6 +1331,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle("window:close", (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     win?.close();
+  });
+  ipcMain.handle("window:confirm-close", (event, action: "save-and-quit" | "quit" | "cancel") => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || action === "cancel") return;
+    closingConfirmedWindows.add(win);
+    win.close();
   });
   ipcMain.handle("menu:show-app", (event, args: { x: number; y: number }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -2256,6 +2272,40 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(
+    "asset:write-generated",
+    async (
+      _event,
+      args: {
+        projectPath: string;
+        bytes: Uint8Array;
+        fileName: string;
+        kind: ProjectAssetRef["kind"];
+      }
+    ) => {
+      await ensureProjectFolderStructure(args.projectPath);
+      const sourceFileName = args.fileName;
+      const extension = path.extname(sourceFileName) || ".bin";
+      const targetName = `${Date.now()}-${randomUUID()}${extension}`;
+      const assetDirectory = assetsDirForPath(args.projectPath, args.kind);
+      await fs.mkdir(assetDirectory, { recursive: true });
+      const targetPath = path.join(assetDirectory, targetName);
+      await fs.writeFile(targetPath, Buffer.from(args.bytes));
+      const stat = await fs.stat(targetPath);
+      const relativePath = path.relative(projectFolderForPath(args.projectPath), targetPath).replaceAll("\\", "/");
+
+      const assetRef: ProjectAssetRef = {
+        id: randomUUID(),
+        kind: args.kind,
+        encoding: "raw",
+        relativePath,
+        sourceFileName,
+        byteSize: stat.size
+      };
+      return assetRef;
+    }
+  );
+
+  ipcMain.handle(
     "asset:import-dae",
     async (
       _event,
@@ -2542,6 +2592,44 @@ function registerIpcHandlers(): void {
       }
       const bytes = await fs.readFile(absolutePath);
       return Uint8Array.from(bytes);
+    }
+  );
+
+  ipcMain.handle(
+    "projection-cache:read",
+    async (_event, args: { projectPath: string }): Promise<ProjectionCacheFileV1 | null> => {
+      const file = path.join(projectFolderForPath(args.projectPath), "cache", "projection-cache.json");
+      try {
+        const text = await fs.readFile(file, "utf8");
+        const parsed = JSON.parse(text) as unknown;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          (parsed as { version?: unknown }).version === 1 &&
+          (parsed as { entries?: unknown }).entries &&
+          typeof (parsed as { entries?: unknown }).entries === "object"
+        ) {
+          return parsed as ProjectionCacheFileV1;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+  );
+
+  ipcMain.handle(
+    "projection-cache:write",
+    async (
+      _event,
+      args: { projectPath: string; payload: ProjectionCacheFileV1 }
+    ): Promise<void> => {
+      const cacheDir = path.join(projectFolderForPath(args.projectPath), "cache");
+      await fs.mkdir(cacheDir, { recursive: true });
+      const target = path.join(cacheDir, "projection-cache.json");
+      const tmp = `${target}.tmp`;
+      await fs.writeFile(tmp, JSON.stringify(args.payload), "utf8");
+      await fs.rename(tmp, target);
     }
   );
 

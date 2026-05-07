@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { AppKernel } from "@/app/kernel";
 import type { ActorNode, AppState, MistVolumeResource, VolumetricRayFieldResource } from "@/core/types";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
+import { getProjectedPolyline } from "@/features/curves/projectionCache";
 
 export type MistVolumeQualityMode = "interactive" | "export";
 type MistPreviewMode = "volume" | "bounds" | "slice-x" | "slice-y" | "slice-z" | "off";
@@ -2441,9 +2442,15 @@ export class MistVolumeController {
         continue;
       }
       const curveData = curveDataWithOverrides(sourceActor);
-      const pointCount = curveData.kind === "circle" ? 1 : curveData.points.filter((point) => point.enabled !== false).length;
-      const segmentCount = curveData.kind === "circle" ? 1 : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
-      const sampleCount = Math.max(2, getCurveSamplesPerSegmentFromActor(sourceActor) * Math.max(1, segmentCount));
+      const pointCount = curveData.kind === "circle" ? 1
+        : curveData.kind === "mesh-projection" ? (getProjectedPolyline(sourceActor.id)?.hitCount ?? 0)
+        : curveData.points.filter((point) => point.enabled !== false).length;
+      const segmentCount = curveData.kind === "circle" ? 1
+        : curveData.kind === "mesh-projection" ? 1
+        : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
+      const sampleCount = curveData.kind === "mesh-projection"
+        ? Math.max(2, getProjectedPolyline(sourceActor.id)?.resolution ?? 0)
+        : Math.max(2, getCurveSamplesPerSegmentFromActor(sourceActor) * Math.max(1, segmentCount));
       for (let index = 0; index < sampleCount; index += 1) {
         const t = sampleCount <= 1 ? 0 : index / Math.max(1, sampleCount - 1);
         const sampled = this.helpers.sampleCurveWorldPoint(sourceActor.id, curveData.closed ? t : Math.min(t, 0.999999));

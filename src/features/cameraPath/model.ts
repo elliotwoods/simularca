@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { createId } from "@/core/ids";
 import type { ActorNode } from "@/core/types";
-import { curveDataWithOverrides, getCurveTypeFromActor } from "@/features/curves/model";
+import { buildSampleableCurveData, curveDataWithOverrides, getCurveTypeFromActor } from "@/features/curves/model";
 import { sampleCurvePositionAndTangent } from "@/features/curves/sampler";
 
 export interface CameraPathKeyframe {
@@ -285,7 +285,7 @@ export function sampleCurveWorldPoint(
   actors: Record<string, ActorNode>,
   t: number
 ): { position: [number, number, number]; tangent: [number, number, number] } {
-  const sampled = sampleCurvePositionAndTangent(curveDataWithOverrides(actor), t);
+  const sampled = sampleCurvePositionAndTangent(buildSampleableCurveData(actor), t);
   const worldMatrix = resolveActorWorldMatrix(actor.id, actors);
   const worldPosition = new THREE.Vector3(...sampled.position).applyMatrix4(worldMatrix);
   const normalMatrix = new THREE.Matrix3().setFromMatrix4(worldMatrix);

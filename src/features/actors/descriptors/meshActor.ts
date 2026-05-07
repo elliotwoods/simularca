@@ -3,6 +3,8 @@ import { MESH_ACTOR_SCHEMA } from "@/features/actors/actorTypes";
 
 interface MeshRuntime {
   assetId?: string;
+  viewportLodAssetId?: string;
+  renderLodAssetId?: string;
   scaleFactor: number;
   animationEnabled: boolean;
   animationClipName?: string;
@@ -25,6 +27,8 @@ export const meshActorDescriptor: ReloadableDescriptor<MeshRuntime> = {
   },
   createRuntime: ({ params }) => ({
     assetId: typeof params.assetId === "string" ? params.assetId : undefined,
+    viewportLodAssetId: typeof params.viewportLodAssetId === "string" && params.viewportLodAssetId ? params.viewportLodAssetId : undefined,
+    renderLodAssetId: typeof params.renderLodAssetId === "string" && params.renderLodAssetId ? params.renderLodAssetId : undefined,
     scaleFactor: typeof params.scaleFactor === "number" ? params.scaleFactor : 1,
     animationEnabled: Boolean(params.animationEnabled),
     animationClipName: typeof params.animationClipName === "string" ? params.animationClipName : undefined,
@@ -34,6 +38,8 @@ export const meshActorDescriptor: ReloadableDescriptor<MeshRuntime> = {
   }),
   updateRuntime(runtime, { params }) {
     runtime.assetId = typeof params.assetId === "string" ? params.assetId : runtime.assetId;
+    runtime.viewportLodAssetId = typeof params.viewportLodAssetId === "string" && params.viewportLodAssetId ? params.viewportLodAssetId : undefined;
+    runtime.renderLodAssetId = typeof params.renderLodAssetId === "string" && params.renderLodAssetId ? params.renderLodAssetId : undefined;
     runtime.scaleFactor = typeof params.scaleFactor === "number" ? params.scaleFactor : runtime.scaleFactor;
     runtime.animationEnabled = Boolean(params.animationEnabled);
     runtime.animationClipName = typeof params.animationClipName === "string" ? params.animationClipName : runtime.animationClipName;
@@ -48,9 +54,23 @@ export const meshActorDescriptor: ReloadableDescriptor<MeshRuntime> = {
     build({ actor, state, runtimeStatus }) {
       const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
       const asset = state.assets.find((entry) => entry.id === assetId);
+      const viewportLodId = typeof actor.params.viewportLodAssetId === "string" ? actor.params.viewportLodAssetId : "";
+      const renderLodId = typeof actor.params.renderLodAssetId === "string" ? actor.params.renderLodAssetId : "";
+      const lodAssets = state.assets.filter((entry) => entry.lodOf === assetId);
+      const formatLod = (id: string) => {
+        if (!id) return "Original";
+        const lod = state.assets.find((entry) => entry.id === id);
+        if (!lod) return "Missing";
+        const ratioPct = typeof lod.lodRatio === "number" ? `${Math.round(lod.lodRatio * 100)}%` : "?%";
+        const tris = typeof lod.lodTriangleCount === "number" ? `${lod.lodTriangleCount.toLocaleString()} tris` : "";
+        return tris ? `${ratioPct} (${tris})` : ratioPct;
+      };
       return [
         { label: "Type", value: "Mesh" },
         { label: "Asset", value: asset?.sourceFileName ?? (assetId ? "Missing asset reference" : "Not set") },
+        { label: "Viewport LOD", value: formatLod(viewportLodId) },
+        { label: "Render LOD", value: formatLod(renderLodId) },
+        { label: "Available LODs", value: lodAssets.length },
         {
           label: "Import Scale (src->m)",
           value: typeof actor.params.scaleFactor === "number" ? actor.params.scaleFactor : 1

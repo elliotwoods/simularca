@@ -3,6 +3,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
+import { AO_MESH_LAYER } from "@/render/aoLayer";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
 import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
@@ -92,6 +94,9 @@ export class WebGlViewport {
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
   private readonly bloomPass: UnrealBloomPass;
+  private readonly gtaoPass: GTAOPass;
+  private readonly aoPerspectiveCamera: THREE.PerspectiveCamera;
+  private readonly aoOrthographicCamera: THREE.OrthographicCamera;
   private readonly sceneOutputPass: SceneOutputPass;
   private readonly perspectiveCamera: any;
   private readonly orthographicCamera: any;
@@ -125,6 +130,8 @@ export class WebGlViewport {
   private readonly colorBufferPrecision: ResolvedSceneColorBufferPrecision;
   private lastLoggedColorBufferWarning: string | null = null;
   private gpuTimer: WebGlGpuTimer | null = null;
+  private slowFrameStreak = 0;
+  private fastFrameStreak = 0;
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -153,6 +160,7 @@ export class WebGlViewport {
     });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
     this.renderer = new THREE.WebGLRenderer({ antialias: options.antialias, alpha: false });
+    this.renderer.localClippingEnabled = true;
     this.colorBufferPrecision = resolveSceneColorBufferPrecision(
       options.colorBufferPrecision ?? kernel.store.getState().state.scene.colorBufferPrecision,
       getWebGlColorBufferSupport(this.renderer),
@@ -199,6 +207,18 @@ export class WebGlViewport {
       })
     );
     this.renderPass = new RenderPass(this.sceneController.scene, this.activeCamera);
+    this.aoPerspectiveCamera = this.perspectiveCamera.clone();
+    this.aoPerspectiveCamera.layers.set(AO_MESH_LAYER);
+    this.aoOrthographicCamera = this.orthographicCamera.clone();
+    this.aoOrthographicCamera.layers.set(AO_MESH_LAYER);
+    this.gtaoPass = new GTAOPass(
+      this.sceneController.scene,
+      this.aoPerspectiveCamera,
+      initialWidth,
+      initialHeight
+    );
+    this.gtaoPass.output = (GTAOPass as any).OUTPUT.Default;
+    this.gtaoPass.enabled = false;
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(initialWidth, initialHeight),
       0.6,
@@ -208,6 +228,7 @@ export class WebGlViewport {
     this.sceneOutputPass = new SceneOutputPass();
     this.sceneOutputPass.renderToScreen = true;
     this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.gtaoPass);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(this.sceneOutputPass);
     this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
@@ -295,6 +316,7 @@ export class WebGlViewport {
     this.sceneController.setWebGlRenderer(null);
     this.sceneController.dispose();
     this.bloomPass.dispose();
+    this.gtaoPass.dispose();
     this.sceneOutputPass.dispose();
     this.clearNativeGaussianConflictStatus();
     this.renderer.dispose();
@@ -411,6 +433,7 @@ export class WebGlViewport {
     this.bloomPass.strength = postProcessing.bloom.strength;
     this.bloomPass.radius = postProcessing.bloom.radius;
     this.bloomPass.threshold = postProcessing.bloom.threshold;
+    this.syncGtaoPass(postProcessing);
     this.sceneOutputPass.setDitherEnabled(tonemapping.dither);
     this.sceneOutputPass.setPostProcessingSettings(postProcessing);
     const gpuQuery = this.kernel.profiler.shouldProfileGpuTimings() ? this.getOrCreateGpuTimer().begin() : null;
@@ -455,6 +478,28 @@ export class WebGlViewport {
         renderMs: _rf4 - _rf3
       });
       this.updateStats();
+    }
+    this.updateMonitoringHysteresis(_rf4 - _rf0);
+  }
+
+  private updateMonitoringHysteresis(frameDurationMs: number): void {
+    if (this.kernel.profiler.isCaptureActive()) {
+      return;
+    }
+    const targetFps = this.kernel.store.getState().state.scene.framePacing.targetFps;
+    const targetFrameMs = 1000 / Math.max(1, targetFps);
+    if (frameDurationMs > targetFrameMs) {
+      this.slowFrameStreak++;
+      this.fastFrameStreak = 0;
+    } else {
+      this.fastFrameStreak++;
+      this.slowFrameStreak = 0;
+    }
+    if (this.slowFrameStreak >= 10 && !this.kernel.profiler.isMonitoringActive()) {
+      this.kernel.profiler.setMonitoringMode(true);
+    } else if (this.fastFrameStreak >= 10 && this.kernel.profiler.isMonitoringActive()) {
+      this.kernel.profiler.setMonitoringMode(false);
+      this.kernel.store.getState().actions.setActorFrameTimings({});
     }
   }
 
@@ -553,6 +598,29 @@ export class WebGlViewport {
     this.lastAppliedCameraState = cloneCameraState(nextCameraState);
   }
 
+  private syncGtaoPass(postProcessing: import("@/core/types").ScenePostProcessingSettings): void {
+    const ao = postProcessing.ambientOcclusion;
+    this.gtaoPass.enabled = ao.enabled;
+    if (!ao.enabled) {
+      return;
+    }
+    const target =
+      this.activeCamera instanceof THREE.OrthographicCamera
+        ? this.aoOrthographicCamera
+        : this.aoPerspectiveCamera;
+    target.copy(this.activeCamera, false);
+    target.layers.set(AO_MESH_LAYER);
+    target.updateMatrixWorld(true);
+    this.gtaoPass.camera = target;
+    this.gtaoPass.updateGtaoMaterial({
+      radius: ao.radius,
+      thickness: ao.thickness,
+      distanceExponent: ao.distanceExponent,
+      scale: ao.scale,
+      samples: ao.samples
+    });
+  }
+
   private onResize = (): void => {
     const { width, height } = this.getEffectiveViewportSize();
     this.mountEl.style.width = `${width}px`;
@@ -561,6 +629,7 @@ export class WebGlViewport {
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     this.bloomPass.setSize(width, height);
+    this.gtaoPass.setSize(width, height);
     this.perspectiveCamera.aspect = width / height;
     this.perspectiveCamera.updateProjectionMatrix();
 

@@ -1,6 +1,11 @@
 import { createInitialState } from "@/core/defaults";
 import { buildProjectSnapshotManifest } from "@/core/project/projectSnapshotManifest";
 import { parseProjectSnapshot, serializeProjectSnapshot } from "@/core/project/projectSnapshotSchema";
+import {
+  clearAllProjectedPolylines,
+  flushProjectionCacheNow,
+  hydrateProjectionCacheFromFile
+} from "@/features/curves/projectionCache";
 import type { StorageAdapter } from "@/features/storage/storageAdapter";
 import type { AppStoreApi } from "@/core/store/appStore";
 import type {
@@ -86,6 +91,7 @@ export class ProjectService {
       buildProjectSnapshotManifest(state, this.storage.mode, { projectName: state.activeProject.name })
     );
     await this.storage.saveSnapshot(state.activeProject.path, state.activeSnapshotName, payload);
+    await flushProjectionCacheNow();
     this.store.getState().actions.setDirty(false);
     const savedBytes = new Blob([payload]).size;
     this.store.getState().actions.setStats({
@@ -292,6 +298,11 @@ export class ProjectService {
   }
 
   private async hydrateFromStorage(identity: ProjectIdentity, snapshotName: string): Promise<void> {
+    // Reset the projection cache before swapping projects so one project's polylines
+    // never bleed into another.
+    clearAllProjectedPolylines();
+    const cacheFile = await this.storage.readProjectionCache(identity.path).catch(() => null);
+    hydrateProjectionCacheFromFile(cacheFile);
     const raw = await this.storage.loadSnapshot(identity.path, snapshotName);
     if (raw.trim() === "{}") {
       const fresh = createInitialState(this.storage.mode, identity, snapshotName);

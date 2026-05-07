@@ -534,6 +534,9 @@ export class ActorProfilingService {
   private readonly completedFrames: ProfileFrameSnapshot[] = [];
   private readonly activeDrawSamples = new Map<string, ActiveDrawSample>();
   private readonly wrappedDrawHooks = new Map<string, WrappedDrawHook>();
+  private monitoringMode = false;
+  private readonly monitoringDrawTimingsMs = new Map<string, number>();
+  private readonly monitoringActiveSamples = new Map<string, { startedAtMs: number; actorId: string }>();
 
   public subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -630,7 +633,7 @@ export class ActorProfilingService {
   }
 
   public shouldProfileDraws(): boolean {
-    return this.state.phase === "capturing" && Boolean(this.state.options?.includeDrawTimings);
+    return this.monitoringMode || (this.state.phase === "capturing" && Boolean(this.state.options?.includeDrawTimings));
   }
 
   public shouldProfileGpuTimings(): boolean {
@@ -639,6 +642,26 @@ export class ActorProfilingService {
 
   public getDetailPreset(): ProfileCaptureDetailPreset {
     return this.state.options?.detailPreset ?? "minimal";
+  }
+
+  public setMonitoringMode(active: boolean): void {
+    this.monitoringMode = active;
+    if (!active) {
+      this.monitoringDrawTimingsMs.clear();
+      this.monitoringActiveSamples.clear();
+    }
+  }
+
+  public isMonitoringActive(): boolean {
+    return this.monitoringMode;
+  }
+
+  public getMonitoringDrawTimings(): ReadonlyMap<string, number> {
+    return this.monitoringDrawTimingsMs;
+  }
+
+  public clearMonitoringDrawTimings(): void {
+    this.monitoringDrawTimingsMs.clear();
   }
 
   public beginFrame(): void {
@@ -789,6 +812,10 @@ export class ActorProfilingService {
     if (!this.shouldProfileDraws()) {
       return;
     }
+    if (this.monitoringMode && this.state.phase !== "capturing") {
+      this.monitoringActiveSamples.set(sampleKey, { startedAtMs: performance.now(), actorId: actor.actorId });
+      return;
+    }
     const frame = this.currentFrame;
     if (!frame) {
       return;
@@ -809,8 +836,18 @@ export class ActorProfilingService {
     this.currentMirrorChunkStack = mirrorChunk ? [...this.currentMirrorChunkStack, mirrorChunk] : this.currentMirrorChunkStack;
   }
 
-  public endDrawSample(_actor: ActorProfileMeta, sampleKey: string): void {
+  public endDrawSample(actor: ActorProfileMeta, sampleKey: string): void {
     if (!this.shouldProfileDraws()) {
+      return;
+    }
+    if (this.monitoringMode && this.state.phase !== "capturing") {
+      const monSample = this.monitoringActiveSamples.get(sampleKey);
+      if (monSample) {
+        this.monitoringActiveSamples.delete(sampleKey);
+        const durationMs = performance.now() - monSample.startedAtMs;
+        const prev = this.monitoringDrawTimingsMs.get(monSample.actorId) ?? durationMs;
+        this.monitoringDrawTimingsMs.set(monSample.actorId, prev * 0.8 + durationMs * 0.2);
+      }
       return;
     }
     const sample = this.activeDrawSamples.get(sampleKey);

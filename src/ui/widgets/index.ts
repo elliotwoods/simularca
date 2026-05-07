@@ -14,3 +14,6 @@ export { TextField } from "@/ui/widgets/TextField";
 export { ToggleField } from "@/ui/widgets/ToggleField";
 export { ImageRefField } from "@/ui/widgets/ImageRefField";
 export { MaterialRefField } from "@/ui/widgets/MaterialRefField";
+export { LocationField } from "@/ui/widgets/LocationField";
+export { DateTimeField } from "@/ui/widgets/DateTimeField";
+export { TimezoneField } from "@/ui/widgets/TimezoneField";

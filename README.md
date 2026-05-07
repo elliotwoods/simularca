@@ -2,7 +2,7 @@
 
 **A desktop simulation environment for pre-visualizing kinetic art.**
 
-Build, light, and animate a virtual version of an installation before any motors turn — then drive the same scene from the same hardware controllers you'll use on site.
+Build a virtual version of an art installation, test parameters, create renders, ideate and communicate with others.
 
 ![Simularca screenshot](./screenshot.png)
 

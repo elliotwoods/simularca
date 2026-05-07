@@ -800,7 +800,7 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
         mode: "import-asset",
         kind: "generic"
       },
-      clearsParams: ["materialSlots", "localMaterials"]
+      clearsParams: ["materialSlots", "localMaterials", "viewportLodAssetId", "renderLodAssetId"]
     },
     {
       key: "scaleFactor",
@@ -872,6 +872,20 @@ export const MESH_ACTOR_SCHEMA: ParameterSchema = {
       key: "materialSlots",
       label: "Material Slots",
       type: "material-slots"
+    },
+    {
+      key: "viewportLodAssetId",
+      label: "Viewport LOD",
+      type: "mesh-lod-ref",
+      mode: "viewport",
+      parentAssetIdParam: "assetId"
+    },
+    {
+      key: "renderLodAssetId",
+      label: "Render LOD",
+      type: "mesh-lod-ref",
+      mode: "render",
+      parentAssetIdParam: "assetId"
     }
   ]
 };
@@ -1044,7 +1058,7 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "curveType",
       label: "Curve Type",
       type: "select",
-      options: ["spline", "circle"],
+      options: ["spline", "circle", "mesh-projection"],
       defaultValue: "spline"
     },
     {
@@ -1061,7 +1075,8 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       min: 2,
       max: 256,
       step: 1,
-      defaultValue: 24
+      defaultValue: 24,
+      visibleWhen: [{ key: "curveType", equals: "spline" }]
     },
     {
       key: "radius",
@@ -1083,6 +1098,46 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       step: 0.05,
       defaultValue: 0.5,
       visibleWhen: [{ key: "curveType", equals: "spline" }]
+    },
+    {
+      key: "targetActorIds",
+      label: "Target Meshes",
+      type: "actor-ref-list",
+      allowedActorTypes: ["mesh", "primitive"],
+      allowSelf: false,
+      description: "Mesh actors to project rays onto. Closest hit per ray wins across all targets. Raycasting uses whatever LOD each mesh actor is currently rendering — lower the mesh actor's Viewport LOD to speed up projection.",
+      visibleWhen: [{ key: "curveType", equals: "mesh-projection" }]
+    },
+    {
+      key: "projectionPlane",
+      label: "Projection Plane",
+      type: "select",
+      options: ["XY", "XZ", "YZ"],
+      defaultValue: "XZ",
+      description: "Plane (in the curve actor's local space) the rays sweep around.",
+      visibleWhen: [{ key: "curveType", equals: "mesh-projection" }]
+    },
+    {
+      key: "resolution",
+      label: "Resolution",
+      type: "number",
+      min: 3,
+      max: 4096,
+      step: 1,
+      defaultValue: 64,
+      description: "Number of rays cast around the full circle.",
+      visibleWhen: [{ key: "curveType", equals: "mesh-projection" }]
+    },
+    {
+      key: "maxDistance",
+      label: "Max Distance",
+      type: "number",
+      unit: "m",
+      min: 0,
+      step: 0.1,
+      defaultValue: 100,
+      description: "Maximum ray length. 0 means unlimited.",
+      visibleWhen: [{ key: "curveType", equals: "mesh-projection" }]
     }
   ]
 };
@@ -1104,6 +1159,71 @@ export const CAMERA_PATH_ACTOR_SCHEMA: ParameterSchema = {
       type: "actor-ref",
       allowSelf: false,
       visibleWhen: [{ key: "targetMode", equals: "actor" }]
+    }
+  ]
+};
+
+export const CROSS_SECTION_ACTOR_SCHEMA: ParameterSchema = {
+  id: "actor.crossSection",
+  title: "Cross-Section",
+  params: [
+    {
+      key: "flipNormal",
+      label: "Flip Normal",
+      description: "Flip which side of the plane is clipped away.",
+      type: "boolean",
+      groupKey: "plane",
+      groupLabel: "Plane",
+      defaultValue: false
+    },
+    {
+      key: "showPlaneGizmo",
+      label: "Show Plane Gizmo",
+      description: "Display a translucent quad in the viewport at the plane location.",
+      type: "boolean",
+      groupKey: "plane",
+      groupLabel: "Plane",
+      defaultValue: true
+    },
+    {
+      key: "affectedActorIds",
+      label: "Affected Actors",
+      description: "Restrict the cut to specific mesh or primitive actors. Leave empty to apply to every supported actor in the scene.",
+      type: "actor-ref-list",
+      groupKey: "scope",
+      groupLabel: "Affected Actors",
+      allowedActorTypes: ["mesh", "primitive"],
+      allowSelf: false
+    },
+    {
+      key: "edgeHighlightEnabled",
+      label: "Highlight Edge",
+      description: "Paint a colored band on visible mesh surfaces near the cut.",
+      type: "boolean",
+      groupKey: "edge",
+      groupLabel: "Edge Highlight",
+      defaultValue: true
+    },
+    {
+      key: "edgeHighlightColor",
+      label: "Edge Color",
+      type: "color",
+      groupKey: "edge",
+      groupLabel: "Edge Highlight",
+      defaultValue: "#ff8800"
+    },
+    {
+      key: "edgeWidthPx",
+      label: "Edge Width",
+      type: "number",
+      min: 0.5,
+      max: 10,
+      step: 0.1,
+      precision: 1,
+      unit: "px",
+      groupKey: "edge",
+      groupLabel: "Edge Highlight",
+      defaultValue: 2
     }
   ]
 };

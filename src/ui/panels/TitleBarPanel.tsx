@@ -5,6 +5,7 @@ import {
   faClone,
   faFloppyDisk,
   faFolderOpen,
+  faMagnifyingGlass,
   faPenToSquare,
   faPlus,
   faRotateRight,
@@ -53,8 +54,15 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   const [editingSnapshotKey, setEditingSnapshotKey] = useState(0);
   const [isMenuOpen, setMenuOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [projectQuery, setProjectQuery] = useState("");
+  const [snapshotQuery, setSnapshotQuery] = useState("");
+  const [focusedProjectIndex, setFocusedProjectIndex] = useState<number | null>(null);
+  const [focusedSnapshotIndex, setFocusedSnapshotIndex] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const snapshotInputRef = useRef<HTMLInputElement | null>(null);
+  const projectSearchRef = useRef<HTMLInputElement | null>(null);
+  const projectListRef = useRef<HTMLDivElement | null>(null);
+  const snapshotListRef = useRef<HTMLDivElement | null>(null);
   const isReadOnly = state.mode === "web-ro";
   const buildMeta = `${BUILD_INFO.commitShortSha || "unknown"} | ${formatBuildTimestamp(BUILD_INFO.buildTimestampIso)}`;
   const gitDirtyStatus = useGitDirtyStatus([]);
@@ -66,6 +74,18 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
     }
     return [{ name: state.activeSnapshotName, updatedAtIso: null }, ...availableSnapshots];
   }, [availableSnapshots, state.activeSnapshotName]);
+
+  const filteredRecents = useMemo(() => {
+    const q = projectQuery.trim().toLowerCase();
+    if (!q) return recents;
+    return recents.filter((e) => e.cachedName.toLowerCase().includes(q));
+  }, [recents, projectQuery]);
+
+  const filteredSnapshotOptions = useMemo(() => {
+    const q = snapshotQuery.trim().toLowerCase();
+    if (!q) return snapshotOptions;
+    return snapshotOptions.filter((e) => e.name.toLowerCase().includes(q));
+  }, [snapshotOptions, snapshotQuery]);
 
   const isDefaultProject = (uuid: string): boolean => defaults?.uuid === uuid;
 
@@ -98,10 +118,37 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   }, [kernel, activeProject?.path, state.activeSnapshotName]);
 
   useEffect(() => {
-    if (!isMenuOpen) return;
+    if (!isMenuOpen) {
+      setProjectQuery("");
+      setSnapshotQuery("");
+      setFocusedProjectIndex(null);
+      setFocusedSnapshotIndex(null);
+      return;
+    }
     void kernel.projectService.loadDefaults().then(setDefaults);
     void kernel.projectService.loadRecents().then(setRecents);
   }, [isMenuOpen, kernel]);
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const id = window.setTimeout(() => { projectSearchRef.current?.focus(); }, 0);
+    return () => { window.clearTimeout(id); };
+  }, [isMenuOpen]);
+
+  useEffect(() => { setFocusedProjectIndex(null); }, [recents, projectQuery]);
+  useEffect(() => { setFocusedSnapshotIndex(null); }, [snapshotOptions, snapshotQuery]);
+
+  useEffect(() => {
+    if (focusedProjectIndex === null || !projectListRef.current) return;
+    const items = projectListRef.current.querySelectorAll<HTMLElement>("[data-project-item]");
+    items[focusedProjectIndex]?.scrollIntoView({ block: "nearest" });
+  }, [focusedProjectIndex]);
+
+  useEffect(() => {
+    if (focusedSnapshotIndex === null || !snapshotListRef.current) return;
+    const items = snapshotListRef.current.querySelectorAll<HTMLElement>("[data-snapshot-item]");
+    items[focusedSnapshotIndex]?.scrollIntoView({ block: "nearest" });
+  }, [focusedSnapshotIndex]);
 
   useEffect(() => {
     if (!editingSnapshot) {
@@ -109,7 +156,8 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
     }
     snapshotInputRef.current?.focus();
     snapshotInputRef.current?.select();
-  }, [editingSnapshotKey, editingSnapshot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingSnapshotKey]);
 
   useEffect(() => {
     if (isMenuOpen) {
@@ -152,6 +200,44 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   const reportActionError = (context: string, error: unknown): void => {
     const message = error instanceof Error ? error.message : String(error);
     kernel.store.getState().actions.setStatus(`${context}: ${message}`);
+  };
+
+  const handleProjectSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setFocusedProjectIndex((i) => (i === null ? 0 : Math.min(i + 1, filteredRecents.length - 1)));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setFocusedProjectIndex((i) => (i === null ? null : Math.max(i - 1, 0)));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (focusedProjectIndex !== null && filteredRecents[focusedProjectIndex]) {
+        void handleOpenRecent(filteredRecents[focusedProjectIndex]);
+      }
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setMenuOpen(false);
+    }
+  };
+
+  const handleSnapshotSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (editingSnapshot) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setFocusedSnapshotIndex((i) => (i === null ? 0 : Math.min(i + 1, filteredSnapshotOptions.length - 1)));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setFocusedSnapshotIndex((i) => (i === null ? null : Math.max(i - 1, 0)));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (focusedSnapshotIndex !== null && filteredSnapshotOptions[focusedSnapshotIndex]) {
+        setMenuOpen(false);
+        void kernel.projectService.loadSnapshot(filteredSnapshotOptions[focusedSnapshotIndex].name);
+      }
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setMenuOpen(false);
+    }
   };
 
   const handleOpenProject = async (): Promise<void> => {
@@ -461,16 +547,31 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
             <div className="titlebar-project-popover">
               <div className="titlebar-project-section">
                 <label>Recent Projects</label>
-                <div className="titlebar-project-list" role="listbox" aria-label="Recent projects">
-                  {recents.length === 0 ? (
-                    <div className="titlebar-project-list-empty">No recent projects.</div>
+                <div className="titlebar-popover-search">
+                  <FontAwesomeIcon icon={faMagnifyingGlass} />
+                  <input
+                    ref={projectSearchRef}
+                    type="text"
+                    value={projectQuery}
+                    placeholder="Filter projects..."
+                    onChange={(event) => { setProjectQuery(event.target.value); }}
+                    onKeyDown={handleProjectSearchKeyDown}
+                  />
+                </div>
+                <div ref={projectListRef} className="titlebar-project-list" role="listbox" aria-label="Recent projects">
+                  {filteredRecents.length === 0 ? (
+                    <div className="titlebar-project-list-empty">
+                      {projectQuery ? "No matching projects." : "No recent projects."}
+                    </div>
                   ) : null}
-                  {recents.map((entry) => {
+                  {filteredRecents.map((entry, index) => {
                     const isActive = activeProject?.uuid === entry.uuid;
+                    const isFocused = focusedProjectIndex === index;
                     return (
                       <div
                         key={entry.uuid}
-                        className={`titlebar-project-list-item${isActive ? " is-active" : ""}`}
+                        data-project-item=""
+                        className={`titlebar-project-list-item${isActive ? " is-active" : ""}${isFocused ? " is-focused" : ""}`}
                       >
                         <button
                           type="button"
@@ -603,9 +704,20 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                   <div className="titlebar-project-divider" />
                   <div className="titlebar-project-section">
                     <label>Active Snapshot</label>
-                    <div className="titlebar-project-snapshot-list" role="listbox" aria-label="Project snapshots">
-                      {snapshotOptions.map((snapshot) => {
+                    <div className="titlebar-popover-search">
+                      <FontAwesomeIcon icon={faMagnifyingGlass} />
+                      <input
+                        type="text"
+                        value={snapshotQuery}
+                        placeholder="Filter snapshots..."
+                        onChange={(event) => { setSnapshotQuery(event.target.value); }}
+                        onKeyDown={handleSnapshotSearchKeyDown}
+                      />
+                    </div>
+                    <div ref={snapshotListRef} className="titlebar-project-snapshot-list" role="listbox" aria-label="Project snapshots">
+                      {filteredSnapshotOptions.map((snapshot, index) => {
                         const isActive = snapshot.name === state.activeSnapshotName;
+                        const isFocused = focusedSnapshotIndex === index;
                         const isEditing =
                           editingSnapshot?.mode === "rename" && editingSnapshot.originalName === snapshot.name;
                         if (isEditing && editingSnapshot) {
@@ -647,7 +759,8 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                         return (
                           <div
                             key={snapshot.name}
-                            className={`titlebar-project-snapshot-item${isActive ? " is-active" : ""}`}
+                            data-snapshot-item=""
+                            className={`titlebar-project-snapshot-item${isActive ? " is-active" : ""}${isFocused ? " is-focused" : ""}`}
                           >
                             <button
                               type="button"
@@ -703,48 +816,50 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                           </div>
                         );
                       })}
-                      {editingSnapshot?.mode === "create" ? (
-                        <div className="titlebar-project-snapshot-item is-editing">
-                          <div className="titlebar-project-snapshot-editor">
-                            <input
-                              ref={snapshotInputRef}
-                              type="text"
-                              className="titlebar-project-snapshot-input"
-                              value={editingSnapshot.value}
-                              placeholder="New snapshot name"
-                              aria-label="New snapshot name"
-                              onChange={(event) => {
-                                const nextValue = event.target.value;
-                                setEditingSnapshot((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        value: nextValue,
-                                        error: validateSnapshotName(nextValue, current.originalName)
-                                      }
-                                    : current
-                                );
-                              }}
-                              onKeyDown={handleSnapshotInputKeyDown}
-                              onBlur={handleSnapshotInputBlur}
-                            />
-                            {editingSnapshot.error ? (
-                              <span className="titlebar-project-snapshot-error">{editingSnapshot.error}</span>
-                            ) : null}
+                      {!snapshotQuery ? (
+                        editingSnapshot?.mode === "create" ? (
+                          <div className="titlebar-project-snapshot-item is-editing">
+                            <div className="titlebar-project-snapshot-editor">
+                              <input
+                                ref={snapshotInputRef}
+                                type="text"
+                                className="titlebar-project-snapshot-input"
+                                value={editingSnapshot.value}
+                                placeholder="New snapshot name"
+                                aria-label="New snapshot name"
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  setEditingSnapshot((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          value: nextValue,
+                                          error: validateSnapshotName(nextValue, current.originalName)
+                                        }
+                                      : current
+                                  );
+                                }}
+                                onKeyDown={handleSnapshotInputKeyDown}
+                                onBlur={handleSnapshotInputBlur}
+                              />
+                              {editingSnapshot.error ? (
+                                <span className="titlebar-project-snapshot-error">{editingSnapshot.error}</span>
+                              ) : null}
+                            </div>
                           </div>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="titlebar-project-new-snapshot"
-                          disabled={isReadOnly}
-                          onClick={() => {
-                            startSnapshotCreate();
-                          }}
-                        >
-                          <span>New snapshot...</span>
-                        </button>
-                      )}
+                        ) : (
+                          <button
+                            type="button"
+                            className="titlebar-project-new-snapshot"
+                            disabled={isReadOnly}
+                            onClick={() => {
+                              startSnapshotCreate();
+                            }}
+                          >
+                            <span>New snapshot...</span>
+                          </button>
+                        )
+                      ) : null}
                     </div>
                   </div>
 

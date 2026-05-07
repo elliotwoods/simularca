@@ -74,11 +74,14 @@ const api = {
   writeMigrationReadme: (args) => ipcRenderer.invoke("migration:write-readme", args),
   deleteLegacyProject: (args) => ipcRenderer.invoke("migration:delete-legacy", args),
   importAsset: (args) => ipcRenderer.invoke("asset:import", args),
+  writeGeneratedAsset: (args) => ipcRenderer.invoke("asset:write-generated", args),
   importDae: (args) => ipcRenderer.invoke("asset:import-dae", args),
   transcodeHdriToKtx2: (args) => ipcRenderer.invoke("asset:transcode-hdri", args),
   deleteAsset: (args) => ipcRenderer.invoke("asset:delete", args),
   resolveAssetPath: (args) => ipcRenderer.invoke("asset:resolve-path", args),
   readAssetBytes: (args) => ipcRenderer.invoke("asset:read-bytes", args),
+  readProjectionCache: (args) => ipcRenderer.invoke("projection-cache:read", args),
+  writeProjectionCache: (args) => ipcRenderer.invoke("projection-cache:write", args),
   openFileDialog: (args) => ipcRenderer.invoke("dialog:open-file", args),
   openSaveDialog: (args) => ipcRenderer.invoke("dialog:save-file", args),
   openDirectoryDialog: (args) => ipcRenderer.invoke("dialog:open-directory", args),
@@ -120,6 +123,12 @@ const api = {
   windowSetFullscreen: (fullscreen) => ipcRenderer.invoke("window:set-fullscreen", fullscreen),
   windowClose: () => ipcRenderer.invoke("window:close"),
   showAppMenu: (args) => ipcRenderer.invoke("menu:show-app", args),
+  onBeforeClose: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on("window:before-close", handler);
+    return () => { ipcRenderer.removeListener("window:before-close", handler); };
+  },
+  confirmClose: (action) => ipcRenderer.invoke("window:confirm-close", action),
   onWindowStateChange: (listener) => {
     const handler = (_event, state) => listener(state);
     ipcRenderer.on("window:state", handler);

@@ -34,6 +34,7 @@ import type {
   AppState,
   ComponentNode,
   FileParameterDefinition,
+  LocationParameterValue,
   Material,
   ParameterDefinition,
   Vector3ParameterDefinition,
@@ -41,7 +42,8 @@ import type {
   ParameterValues,
   RenderEngine,
   SceneColorBufferPrecision,
-  SceneToneMappingMode
+  SceneToneMappingMode,
+  TimezoneParameterValue
 } from "@/core/types";
 import type { ActorStatusEntry, ReloadableDescriptor } from "@/core/hotReload/types";
 import {
@@ -75,19 +77,23 @@ import {
 } from "@/features/actors/mistVolumeLookupNoise";
 import { StatsBlock } from "@/ui/components/StatsBlock";
 import type { StatsGroup, StatsRow } from "@/ui/components/StatsBlock";
+import { MeshLodSection } from "@/ui/components/MeshLodSection";
 import {
   ActorRefField,
   ActorRefListField,
   BufferedNumberTextInput,
   ColorField,
+  DateTimeField,
   DigitScrubInput,
   DrillInRow,
   DxfLayerStatesField,
   FileField,
+  LocationField,
   NumberField,
   SegmentedControl,
   SelectField,
   TextField,
+  TimezoneField,
   ToggleField,
   MaterialRefField
 } from "@/ui/widgets";
@@ -504,6 +510,15 @@ function defaultValueForDefinition(definition: ParameterDefinition): BindingValu
   if (definition.type === "actor-ref-list") {
     return [];
   }
+  if (definition.type === "location") {
+    return { lat: definition.defaultLat ?? 0, lng: definition.defaultLng ?? 0 };
+  }
+  if (definition.type === "datetime") {
+    return new Date().toISOString();
+  }
+  if (definition.type === "timezone") {
+    return { mode: "auto" };
+  }
   return "";
 }
 
@@ -835,8 +850,18 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
   const sceneHistorySuppressRef = useRef(false);
   const previousSceneInspectorViewRef = useRef<SceneInspectorRoute>("root");
   const environmentActor = Object.values(props.appState.actors).find((actor) => actor.actorType === "environment");
-  const hasEnvironmentBackground =
+  const hasEnvironmentTexture =
     typeof environmentActor?.params.assetId === "string" && environmentActor.params.assetId.length > 0;
+  // Pick from any actor that can provide an environment: native env actors with an asset,
+  // env-probes, and plugin actors that publish a provider texture (best-effort: anything not
+  // explicitly excluded). The renderer makes the final selection; this is just for UI gating.
+  const environmentCapableActors = Object.values(props.appState.actors).filter(
+    (actor) =>
+      actor.actorType === "environment" ||
+      actor.actorType === "environment-probe" ||
+      actor.actorType === "plugin"
+  );
+  const hasEnvironmentBackground = hasEnvironmentTexture && props.appState.scene.useEnvironmentBackground;
   const canResetBackground = props.appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND;
   const canResetEngine = props.appState.scene.renderEngine !== DEFAULT_RENDER_ENGINE;
   const canResetAntialiasing = props.appState.scene.antialiasing !== true;
@@ -887,6 +912,37 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
   const canResetGrainEnabled = props.appState.scene.postProcessing.grain.enabled !== DEFAULT_POST_PROCESSING.grain.enabled;
   const canResetGrainIntensity =
     Math.abs(props.appState.scene.postProcessing.grain.intensity - DEFAULT_POST_PROCESSING.grain.intensity) > 1e-9;
+  const canResetAOEnabled =
+    props.appState.scene.postProcessing.ambientOcclusion.enabled !==
+    DEFAULT_POST_PROCESSING.ambientOcclusion.enabled;
+  const canResetAORadius =
+    Math.abs(
+      props.appState.scene.postProcessing.ambientOcclusion.radius -
+        DEFAULT_POST_PROCESSING.ambientOcclusion.radius
+    ) > 1e-9;
+  const canResetAOThickness =
+    Math.abs(
+      props.appState.scene.postProcessing.ambientOcclusion.thickness -
+        DEFAULT_POST_PROCESSING.ambientOcclusion.thickness
+    ) > 1e-9;
+  const canResetAODistanceExponent =
+    Math.abs(
+      props.appState.scene.postProcessing.ambientOcclusion.distanceExponent -
+        DEFAULT_POST_PROCESSING.ambientOcclusion.distanceExponent
+    ) > 1e-9;
+  const canResetAOScale =
+    Math.abs(
+      props.appState.scene.postProcessing.ambientOcclusion.scale -
+        DEFAULT_POST_PROCESSING.ambientOcclusion.scale
+    ) > 1e-9;
+  const canResetAOSamples =
+    props.appState.scene.postProcessing.ambientOcclusion.samples !==
+    DEFAULT_POST_PROCESSING.ambientOcclusion.samples;
+  const canResetAOResolutionScale =
+    Math.abs(
+      props.appState.scene.postProcessing.ambientOcclusion.resolutionScale -
+        DEFAULT_POST_PROCESSING.ambientOcclusion.resolutionScale
+    ) > 1e-9;
   const canResetKeyboardNavigation =
     props.appState.scene.cameraKeyboardNavigation !== DEFAULT_CAMERA_KEYBOARD_NAVIGATION;
   const canResetNavigationSpeed =
@@ -906,7 +962,8 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     props.appState.scene.postProcessing.bloom.enabled,
     props.appState.scene.postProcessing.vignette.enabled,
     props.appState.scene.postProcessing.chromaticAberration.enabled,
-    props.appState.scene.postProcessing.grain.enabled
+    props.appState.scene.postProcessing.grain.enabled,
+    props.appState.scene.postProcessing.ambientOcclusion.enabled
   ].filter(Boolean).length;
   const engineSummary = `${props.appState.scene.renderEngine === "webgl2" ? "WebGL2" : "WebGPU"} · ${
     props.appState.scene.tonemapping.mode === "aces" ? "ACES" : "Tone Off"
@@ -1413,8 +1470,66 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
           </div>
         </div>
         {hasEnvironmentBackground ? (
-          <p className="panel-empty">Background color is overridden while an Environment texture is active.</p>
+          <p className="panel-empty">Background color is overridden while the environment is shown as background.</p>
         ) : null}
+        <div className="inspector-common-grid">
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Environment as background</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                embedded
+                checked={props.appState.scene.useEnvironmentBackground}
+                disabled={props.readOnly}
+                onChange={(next) =>
+                  props.kernel.store
+                    .getState()
+                    .actions.setSceneRenderSettings({ useEnvironmentBackground: next })
+                }
+              />
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Default IBL fallback</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                embedded
+                checked={props.appState.scene.defaultIblEnabled}
+                disabled={props.readOnly}
+                onChange={(next) =>
+                  props.kernel.store
+                    .getState()
+                    .actions.setSceneRenderSettings({ defaultIblEnabled: next })
+                }
+              />
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Environment override</span>
+            <div className="inspector-common-control-wrap">
+              <select
+                className="widget-select"
+                value={props.appState.scene.environmentOverrideActorId ?? ""}
+                disabled={props.readOnly}
+                onChange={(event) =>
+                  props.kernel.store
+                    .getState()
+                    .actions.setSceneRenderSettings({
+                      environmentOverrideActorId: event.target.value || null
+                    })
+                }
+              >
+                <option value="">Auto (closest to origin)</option>
+                {environmentCapableActors.map((actor) => (
+                  <option key={actor.id} value={actor.id}>
+                    {actor.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
       </section>
       ) : null}
       {sceneInspectorView === "root" ? (
@@ -2033,6 +2148,238 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
                       grain: {
                         intensity: DEFAULT_POST_PROCESSING.grain.intensity
                       }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Ambient Occlusion</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                checked={props.appState.scene.postProcessing.ambientOcclusion.enabled}
+                disabled={props.readOnly}
+                embedded
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { enabled: next }
+                    }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAOEnabled ? "" : " is-hidden"}`}
+                title="Reset Ambient Occlusion"
+                disabled={props.readOnly || !canResetAOEnabled}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { enabled: DEFAULT_POST_PROCESSING.ambientOcclusion.enabled }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">AO Radius</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.postProcessing.ambientOcclusion.radius}
+                min={0}
+                step={0.05}
+                precision={3}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: { ambientOcclusion: { radius: next } }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAORadius ? "" : " is-hidden"}`}
+                title="Reset AO Radius"
+                disabled={props.readOnly || !canResetAORadius}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { radius: DEFAULT_POST_PROCESSING.ambientOcclusion.radius }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">AO Thickness</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.postProcessing.ambientOcclusion.thickness}
+                min={0.0001}
+                step={0.1}
+                precision={3}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: { ambientOcclusion: { thickness: next } }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAOThickness ? "" : " is-hidden"}`}
+                title="Reset AO Thickness"
+                disabled={props.readOnly || !canResetAOThickness}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { thickness: DEFAULT_POST_PROCESSING.ambientOcclusion.thickness }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">AO Distance Exp</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.postProcessing.ambientOcclusion.distanceExponent}
+                min={0.1}
+                step={0.1}
+                precision={2}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: { ambientOcclusion: { distanceExponent: next } }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAODistanceExponent ? "" : " is-hidden"}`}
+                title="Reset AO Distance Exp"
+                disabled={props.readOnly || !canResetAODistanceExponent}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { distanceExponent: DEFAULT_POST_PROCESSING.ambientOcclusion.distanceExponent }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">AO Scale</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.postProcessing.ambientOcclusion.scale}
+                min={0}
+                step={0.05}
+                precision={2}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: { ambientOcclusion: { scale: next } }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAOScale ? "" : " is-hidden"}`}
+                title="Reset AO Scale"
+                disabled={props.readOnly || !canResetAOScale}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { scale: DEFAULT_POST_PROCESSING.ambientOcclusion.scale }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">AO Samples</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.postProcessing.ambientOcclusion.samples}
+                min={4}
+                step={1}
+                precision={0}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: { ambientOcclusion: { samples: next } }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAOSamples ? "" : " is-hidden"}`}
+                title="Reset AO Samples"
+                disabled={props.readOnly || !canResetAOSamples}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { samples: DEFAULT_POST_PROCESSING.ambientOcclusion.samples }
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">AO Resolution</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.postProcessing.ambientOcclusion.resolutionScale}
+                min={0.25}
+                max={1}
+                step={0.05}
+                precision={2}
+                disabled={props.readOnly}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: { ambientOcclusion: { resolutionScale: next } }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetAOResolutionScale ? "" : " is-hidden"}`}
+                title="Reset AO Resolution"
+                disabled={props.readOnly || !canResetAOResolutionScale}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    postProcessing: {
+                      ambientOcclusion: { resolutionScale: DEFAULT_POST_PROCESSING.ambientOcclusion.resolutionScale }
                     }
                   });
                 }}
@@ -5225,6 +5572,11 @@ export function InspectorPane() {
           );
         }
 
+        if (definition.type === "mesh-lod-ref") {
+          // Rendered by the MeshLodSection block below — skip here.
+          return null;
+        }
+
         if (definition.type === "actor-ref-list") {
           const options = actorRefOptionsForDefinition(definition, actors, actorSelection);
           return (
@@ -5343,6 +5695,130 @@ export function InspectorPane() {
           );
         }
 
+        if (definition.type === "location") {
+          const locValue: LocationParameterValue =
+            current && typeof current === "object" && !Array.isArray(current)
+              ? {
+                  lat: typeof (current as LocationParameterValue).lat === "number" ? (current as LocationParameterValue).lat : 0,
+                  lng: typeof (current as LocationParameterValue).lng === "number" ? (current as LocationParameterValue).lng : 0,
+                  elevation:
+                    typeof (current as LocationParameterValue).elevation === "number"
+                      ? (current as LocationParameterValue).elevation
+                      : undefined
+                }
+              : { lat: definition.defaultLat ?? 0, lng: definition.defaultLng ?? 0 };
+          const primaryActor = actorSelection[0];
+          let siblingUtcDate: Date | null = null;
+          if (definition.dateTimeKey && primaryActor) {
+            const sibling = primaryActor.params[definition.dateTimeKey];
+            if (typeof sibling === "string" && sibling.length > 0) {
+              const d = new Date(sibling);
+              if (Number.isFinite(d.getTime())) siblingUtcDate = d;
+            }
+          }
+          let siblingTimezone: TimezoneParameterValue | null = null;
+          if (definition.timezoneKey && primaryActor) {
+            const tz = primaryActor.params[definition.timezoneKey];
+            if (tz && typeof tz === "object" && !Array.isArray(tz)) {
+              siblingTimezone = tz as TimezoneParameterValue;
+            }
+          }
+          return (
+            <LocationField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={locValue}
+              showElevation={definition.showElevation !== false}
+              mixed={mixed}
+              disabled={readOnly}
+              showReset={canReset}
+              siblingUtcDate={siblingUtcDate}
+              siblingTimezone={siblingTimezone}
+              onReset={() => {
+                updateSelectedActorParams(
+                  definition.key,
+                  (defaultValue && typeof defaultValue === "object" ? defaultValue : { lat: definition.defaultLat ?? 0, lng: definition.defaultLng ?? 0 }) as ParameterValue
+                );
+              }}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next as unknown as ParameterValue);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "datetime") {
+          const dt = typeof current === "string" ? current : "";
+          const primaryActor = actorSelection[0];
+          let siblingLocation: LocationParameterValue | null = null;
+          if (definition.locationKey && primaryActor) {
+            const loc = primaryActor.params[definition.locationKey];
+            if (loc && typeof loc === "object" && !Array.isArray(loc)) {
+              const candidate = loc as LocationParameterValue;
+              if (typeof candidate.lat === "number" && typeof candidate.lng === "number") {
+                siblingLocation = candidate;
+              }
+            }
+          }
+          let siblingTimezone: TimezoneParameterValue | null = null;
+          if (definition.timezoneKey && primaryActor) {
+            const tz = primaryActor.params[definition.timezoneKey];
+            if (tz && typeof tz === "object" && !Array.isArray(tz)) {
+              siblingTimezone = tz as TimezoneParameterValue;
+            }
+          }
+          return (
+            <DateTimeField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={dt}
+              mixed={mixed}
+              disabled={readOnly}
+              showReset={canReset}
+              siblingLocation={siblingLocation}
+              siblingTimezone={siblingTimezone}
+              onReset={() => {
+                updateSelectedActorParams(definition.key, typeof defaultValue === "string" ? defaultValue : "");
+              }}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next);
+              }}
+            />
+          );
+        }
+
+        if (definition.type === "timezone") {
+          const tzValue: TimezoneParameterValue =
+            current && typeof current === "object" && !Array.isArray(current)
+              ? {
+                  mode: (current as TimezoneParameterValue).mode === "manual" ? "manual" : "auto",
+                  ianaName: typeof (current as TimezoneParameterValue).ianaName === "string" ? (current as TimezoneParameterValue).ianaName : undefined
+                }
+              : { mode: "auto" };
+          return (
+            <TimezoneField
+              key={definition.key}
+              label={definition.label}
+              description={definition.description}
+              value={tzValue}
+              mixed={mixed}
+              disabled={readOnly}
+              showReset={canReset}
+              onReset={() => {
+                updateSelectedActorParams(
+                  definition.key,
+                  (defaultValue && typeof defaultValue === "object" ? defaultValue : { mode: "auto" }) as ParameterValue
+                );
+              }}
+              onChange={(next) => {
+                updateSelectedActorParams(definition.key, next as unknown as ParameterValue);
+              }}
+            />
+          );
+        }
+
         if (definition.type === "file") {
           const assetId = typeof current === "string" ? current : "";
           const asset = mixed ? undefined : assets.find((entry) => entry.id === assetId);
@@ -5435,6 +5911,19 @@ export function InspectorPane() {
           />
         );
       })}
+      {inspectorView.kind === "actor-root" && singleSelection && singleSelection.actorType === "mesh" ? (
+        <div className="inspector-section">
+          <div className="inspector-section-label">Level of Detail</div>
+          <MeshLodSection
+            kernel={kernel}
+            actor={singleSelection}
+            assets={assets}
+            activeProjectPath={activeProject?.path ?? null}
+            readOnly={readOnly}
+            onParamsChange={(key, value) => updateSelectedActorParams(key, value === "" ? null : value)}
+          />
+        </div>
+      ) : null}
       {inspectorView.kind === "actor-root" && singleSelection && singleSelection.componentIds.length > 0 && (
         <div className="inspector-component-list">
           <div className="inspector-section-label">Components</div>

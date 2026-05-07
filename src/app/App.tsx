@@ -39,6 +39,7 @@ import { KeyboardMapModal } from "@/ui/components/KeyboardMapModal";
 import { TextInputModal } from "@/ui/components/TextInputModal";
 import { RenderSettingsModal } from "@/ui/components/RenderSettingsModal";
 import { ProfileCaptureModal } from "@/ui/components/ProfileCaptureModal";
+import { QuitConfirmModal } from "@/ui/components/QuitConfirmModal";
 import { RenderOverlay } from "@/ui/components/RenderOverlay";
 import type { CameraState, SelectionEntry } from "@/core/types";
 import type { RenderProgress, RenderSettings } from "@/features/render/types";
@@ -152,6 +153,7 @@ export function App() {
   const [profileResults, setProfileResults] = useState<ProfileSessionResult | null>(null);
   const [profileResultsOpen, setProfileResultsOpen] = useState(false);
   const renderCancelRequestedRef = useRef(false);
+  const [quitConfirmOpen, setQuitConfirmOpen] = useState(false);
   const activeProject = useAppStore((store) => store.state.activeProject);
   const activeSnapshotName = useAppStore((store) => store.state.activeSnapshotName);
   const [legacyProjectsToMigrate, setLegacyProjectsToMigrate] = useState<LegacyProjectInfo[] | null>(null);
@@ -161,6 +163,8 @@ export function App() {
   const sceneColorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
   const actors = useAppStore((store) => store.state.actors);
   const selection = useAppStore((store) => store.state.selection);
+  const dirty = useAppStore((store) => store.state.dirty);
+  const dirtyRef = useRef(dirty);
   const readOnly = mode === "web-ro";
   const macPlatform = useMemo(() => isMacPlatform(typeof navigator === "object" ? navigator.platform : ""), []);
   const selectionHistoryBackRef = useRef<SelectionEntry[][]>([]);
@@ -206,6 +210,21 @@ export function App() {
     },
     [syncRealViewportFullscreen]
   );
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onBeforeClose) return;
+    return window.electronAPI.onBeforeClose(() => {
+      if (!dirtyRef.current) {
+        void window.electronAPI?.confirmClose("quit");
+        return;
+      }
+      setQuitConfirmOpen(true);
+    });
+  }, []);
 
   useEffect(() => {
     return kernel.profiler.subscribe(() => {
@@ -1395,6 +1414,29 @@ export function App() {
         }}
       />
       <PluginRuntimeHost />
+      {window.electronAPI ? (
+        <QuitConfirmModal
+          open={quitConfirmOpen}
+          onSaveAndQuit={async () => {
+            setQuitConfirmOpen(false);
+            try {
+              await kernel.projectService.saveProject();
+              void window.electronAPI?.confirmClose("save-and-quit");
+            } catch (e) {
+              void window.electronAPI?.confirmClose("cancel");
+              kernel.store.getState().actions.setStatus(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }}
+          onQuitWithoutSaving={() => {
+            setQuitConfirmOpen(false);
+            void window.electronAPI?.confirmClose("quit");
+          }}
+          onCancel={() => {
+            setQuitConfirmOpen(false);
+            void window.electronAPI?.confirmClose("cancel");
+          }}
+        />
+      ) : null}
     </div>
   );
 }

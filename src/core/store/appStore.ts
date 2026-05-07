@@ -74,11 +74,15 @@ export interface AppActions {
           vignette: Partial<ScenePostProcessingSettings["vignette"]>;
           chromaticAberration: Partial<ScenePostProcessingSettings["chromaticAberration"]>;
           grain: Partial<ScenePostProcessingSettings["grain"]>;
+          ambientOcclusion: Partial<ScenePostProcessingSettings["ambientOcclusion"]>;
         }>;
         cameraKeyboardNavigation: boolean;
         cameraNavigationSpeed: number;
         cameraFlyLookInvertYaw: boolean;
         cameraFlyLookSpeed: number;
+        useEnvironmentBackground: boolean;
+        environmentOverrideActorId: string | null;
+        defaultIblEnabled: boolean;
       }>
   ): void;
   createActor(input: {
@@ -134,9 +138,11 @@ export interface AppActions {
   setRuntimeDebugSettings(settings: Partial<RuntimeDebugState>): void;
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
+  setActorFrameTimings(timings: Record<string, number>): void;
   createMaterial(input?: Partial<Material>): string;
   createMaterialFromDef(def: Omit<Material, "id">): string;
   addAssets(assets: ProjectAssetRef[]): void;
+  removeAsset(assetId: string): void;
   updateMaterial(materialId: string, partial: Partial<Omit<Material, "id">>): void;
   deleteMaterial(materialId: string): void;
 }
@@ -511,6 +517,30 @@ export function createAppStore(mode: AppMode): AppStoreApi {
                   draft.scene.postProcessing.grain.intensity = Math.max(0, grain.intensity);
                 }
               }
+              if (settings.postProcessing.ambientOcclusion) {
+                const ao = settings.postProcessing.ambientOcclusion;
+                if (typeof ao.enabled === "boolean") {
+                  draft.scene.postProcessing.ambientOcclusion.enabled = ao.enabled;
+                }
+                if (typeof ao.radius === "number" && Number.isFinite(ao.radius)) {
+                  draft.scene.postProcessing.ambientOcclusion.radius = Math.max(0, ao.radius);
+                }
+                if (typeof ao.thickness === "number" && Number.isFinite(ao.thickness)) {
+                  draft.scene.postProcessing.ambientOcclusion.thickness = Math.max(1e-4, ao.thickness);
+                }
+                if (typeof ao.distanceExponent === "number" && Number.isFinite(ao.distanceExponent)) {
+                  draft.scene.postProcessing.ambientOcclusion.distanceExponent = Math.max(0.1, ao.distanceExponent);
+                }
+                if (typeof ao.scale === "number" && Number.isFinite(ao.scale)) {
+                  draft.scene.postProcessing.ambientOcclusion.scale = Math.max(0, ao.scale);
+                }
+                if (typeof ao.samples === "number" && Number.isFinite(ao.samples)) {
+                  draft.scene.postProcessing.ambientOcclusion.samples = Math.max(4, Math.round(ao.samples));
+                }
+                if (typeof ao.resolutionScale === "number" && Number.isFinite(ao.resolutionScale)) {
+                  draft.scene.postProcessing.ambientOcclusion.resolutionScale = Math.min(1, Math.max(0.25, ao.resolutionScale));
+                }
+              }
             }
             if (settings.helpers) {
               if (settings.helpers.grid) {
@@ -567,6 +597,16 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             if (typeof settings.cameraFlyLookSpeed === "number" && Number.isFinite(settings.cameraFlyLookSpeed)) {
               draft.scene.cameraFlyLookSpeed = Math.max(0, settings.cameraFlyLookSpeed);
+            }
+            if (typeof settings.useEnvironmentBackground === "boolean") {
+              draft.scene.useEnvironmentBackground = settings.useEnvironmentBackground;
+            }
+            if ("environmentOverrideActorId" in settings) {
+              const id = settings.environmentOverrideActorId;
+              draft.scene.environmentOverrideActorId = typeof id === "string" && id.length > 0 ? id : null;
+            }
+            if (typeof settings.defaultIblEnabled === "boolean") {
+              draft.scene.defaultIblEnabled = settings.defaultIblEnabled;
             }
             draft.dirty = true;
           })
@@ -985,6 +1025,13 @@ export function createAppStore(mode: AppMode): AppStoreApi {
           })
         });
       },
+      setActorFrameTimings(timings) {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.actorFrameTimingsMs = timings;
+          })
+        });
+      },
       createMaterial(input) {
         const id = createId("mat");
         const nameBase = input?.name ?? "New Material";
@@ -1043,6 +1090,16 @@ export function createAppStore(mode: AppMode): AppStoreApi {
                 draft.assets.push(asset);
               }
             }
+            draft.dirty = true;
+          })
+        });
+      },
+      removeAsset(assetId) {
+        set({
+          state: produce(get().state, (draft) => {
+            const idx = draft.assets.findIndex((a) => a.id === assetId);
+            if (idx === -1) return;
+            draft.assets.splice(idx, 1);
             draft.dirty = true;
           })
         });

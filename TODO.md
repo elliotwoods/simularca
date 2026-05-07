@@ -22,7 +22,7 @@ Scene can choose which environment is the 'backgruond plate'
 
 Let's also look into ambient occlusion, shadows, global illumination, etc
 
-# Rendering
+# Video Rendering
 
 * Speed up file handling
     * Async download (e.g. max buffer size)
@@ -48,7 +48,7 @@ Test deploying scenes to Vercel.
 
 # Ray-tracing
 
-e.g. Cycles/Octane/that open source optically accurate one
+e.g. Cycles/Octane/LuxCore
 
 This would be amazing if possible
 
@@ -89,24 +89,11 @@ X,Y,Z widget in the corner of the screen
 * If 'Render Debug Views' is disabled, then we shouldn't render curves
 * Smarten up this dialog box
 
-# Timings
-
-* If an actor takes > 1/framerate for draw or update, then show that time in the scene graph
-
 # Time
 
 Better transport controls
 Consider showing time at the bottom of the viewport (e.g. with keyframes, and skipping affects total time)
 Option of 'timeline mode' and 'continous mode'
-
-# Filesystem
-
-Use local filesystem default location in AppData, etc for:
-
-* Window layout
-* Recent projects
-
-Projects should live in their own folders. Also allow for filetype association
 
 # Camera Path
 

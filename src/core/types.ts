@@ -1,6 +1,6 @@
 import type { AppMode, HdriTranscodeOptions, ProjectAssetRef, ProjectIdentity } from "@/types/ipc";
 
-export const PROJECT_SCHEMA_VERSION = 7;
+export const PROJECT_SCHEMA_VERSION = 8;
 export { POINTER_SCHEMA_VERSION, SIMULARCA_EXTENSION, DEFAULT_PROJECTS_FOLDER_NAME } from "@/types/ipc";
 
 export type SceneNodeKind = "scene" | "actor" | "component";
@@ -20,6 +20,7 @@ export type ActorType =
   | "primitive"
   | "curve"
   | "camera-path"
+  | "cross-section"
   | "plugin";
 
 export type DxfInputUnits = "millimeters" | "centimeters" | "meters" | "inches" | "feet";
@@ -112,6 +113,16 @@ export interface SceneGrainSettings {
   intensity: number;
 }
 
+export interface SceneAmbientOcclusionSettings {
+  enabled: boolean;
+  radius: number;
+  thickness: number;
+  distanceExponent: number;
+  scale: number;
+  samples: number;
+  resolutionScale: number;
+}
+
 export interface SceneGridSettings {
   visible: boolean;
   size: number;
@@ -140,6 +151,7 @@ export interface ScenePostProcessingSettings {
   vignette: SceneVignetteSettings;
   chromaticAberration: SceneChromaticAberrationSettings;
   grain: SceneGrainSettings;
+  ambientOcclusion: SceneAmbientOcclusionSettings;
 }
 
 export interface ParameterDefinitionBase {
@@ -208,12 +220,42 @@ export interface MaterialRefParameterDefinition extends ParameterDefinitionBase 
   type: "material-ref";
 }
 
+export interface MeshLodRefParameterDefinition extends ParameterDefinitionBase {
+  type: "mesh-lod-ref";
+  mode: "viewport" | "render";
+  /** The actor param key holding the parent (original) asset id. */
+  parentAssetIdParam: string;
+}
+
 export interface MaterialSlotsParameterDefinition extends ParameterDefinitionBase {
   type: "material-slots";
 }
 
 export interface DxfLayerStatesParameterDefinition extends ParameterDefinitionBase {
   type: "dxf-layer-states";
+}
+
+export interface LocationParameterDefinition extends ParameterDefinitionBase {
+  type: "location";
+  showElevation?: boolean;
+  defaultLat?: number;
+  defaultLng?: number;
+  /** Sibling param key holding the current ISO datetime — drives day/night overlay. */
+  dateTimeKey?: string;
+  /** Sibling param key holding the current TimezoneParameterValue — used for wall-clock conversion. */
+  timezoneKey?: string;
+}
+
+export interface DateTimeParameterDefinition extends ParameterDefinitionBase {
+  type: "datetime";
+  /** Sibling param key holding the current LocationParameterValue — drives daylight track. */
+  locationKey?: string;
+  /** Sibling param key holding the current TimezoneParameterValue. */
+  timezoneKey?: string;
+}
+
+export interface TimezoneParameterDefinition extends ParameterDefinitionBase {
+  type: "timezone";
 }
 
 export interface FileParameterImportAsset {
@@ -245,9 +287,24 @@ export type ParameterDefinition =
   | ActorRefParameterDefinition
   | ActorRefListParameterDefinition
   | MaterialRefParameterDefinition
+  | MeshLodRefParameterDefinition
   | MaterialSlotsParameterDefinition
   | DxfLayerStatesParameterDefinition
+  | LocationParameterDefinition
+  | DateTimeParameterDefinition
+  | TimezoneParameterDefinition
   | FileParameterDefinition;
+
+export interface LocationParameterValue {
+  lat: number;
+  lng: number;
+  elevation?: number;
+}
+
+export interface TimezoneParameterValue {
+  mode: "auto" | "manual";
+  ianaName?: string;
+}
 
 export interface ParameterSchema {
   id: string;
@@ -295,6 +352,9 @@ export interface SceneState extends SceneNodeBase {
   cameraNavigationSpeed: number;
   cameraFlyLookInvertYaw: boolean;
   cameraFlyLookSpeed: number;
+  useEnvironmentBackground: boolean;
+  environmentOverrideActorId: string | null;
+  defaultIblEnabled: boolean;
 }
 
 export interface CameraState {
@@ -467,6 +527,7 @@ export interface AppState {
   statusMessage: string;
   consoleEntries: ConsoleEntry[];
   actorStatusByActorId: Record<string, ActorRuntimeStatus>;
+  actorFrameTimingsMs: Record<string, number>;
 }
 
 

@@ -1,8 +1,11 @@
 import type { ActorNode } from "@/core/types";
+import { getProjectedPolyline } from "@/features/curves/projectionCache";
 import { createCircleCurveData, createDefaultCurveData, sanitizeCurveData, type CurveData, type CurveKind } from "@/features/curves/types";
 
 export function getCurveTypeFromActor(actor: ActorNode): CurveKind {
-  return actor.params.curveType === "circle" ? "circle" : "spline";
+  if (actor.params.curveType === "circle") return "circle";
+  if (actor.params.curveType === "mesh-projection") return "mesh-projection";
+  return "spline";
 }
 
 export function getCurveRadiusFromActor(actor: ActorNode): number {
@@ -14,8 +17,12 @@ export function getCurveRadiusFromActor(actor: ActorNode): number {
 }
 
 export function getCurveDataFromActor(actor: ActorNode): CurveData {
-  if (getCurveTypeFromActor(actor) === "circle") {
+  const kind = getCurveTypeFromActor(actor);
+  if (kind === "circle") {
     return createCircleCurveData(getCurveRadiusFromActor(actor));
+  }
+  if (kind === "mesh-projection") {
+    return { kind: "mesh-projection", closed: true, points: [] };
   }
   const fallback = createDefaultCurveData();
   const source = actor.params.curveData;
@@ -23,7 +30,8 @@ export function getCurveDataFromActor(actor: ActorNode): CurveData {
 }
 
 export function getCurveClosedFromActor(actor: ActorNode): boolean {
-  if (getCurveTypeFromActor(actor) === "circle") {
+  const kind = getCurveTypeFromActor(actor);
+  if (kind === "circle" || kind === "mesh-projection") {
     return true;
   }
   const fromParam = actor.params.closed;
@@ -49,4 +57,13 @@ export function curveDataWithOverrides(actor: ActorNode): CurveData {
     curveData.radius = getCurveRadiusFromActor(actor);
   }
   return curveData;
+}
+
+export function buildSampleableCurveData(actor: ActorNode): CurveData {
+  const data = curveDataWithOverrides(actor);
+  if (data.kind === "mesh-projection") {
+    const cached = getProjectedPolyline(actor.id);
+    data.projectedPoints = cached?.points ?? [];
+  }
+  return data;
 }

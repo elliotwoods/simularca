@@ -39,10 +39,13 @@ export function createElectronStorageAdapter(): StorageAdapter {
     writeMigrationReadme: (args) => api.writeMigrationReadme(args),
     deleteLegacyProject: (legacyName) => api.deleteLegacyProject({ legacyName }),
     importAsset: (args) => api.importAsset(args),
+    writeGeneratedAsset: (args) => api.writeGeneratedAsset(args),
     importDae: (args) => api.importDae(args),
     transcodeHdriToKtx2: (args) => api.transcodeHdriToKtx2(args),
     deleteAsset: (args) => api.deleteAsset(args),
     resolveAssetPath: (args) => api.resolveAssetPath(args),
-    readAssetBytes: (args) => api.readAssetBytes(args)
+    readAssetBytes: (args) => api.readAssetBytes(args),
+    readProjectionCache: (projectPath) => api.readProjectionCache({ projectPath }),
+    writeProjectionCache: (projectPath, payload) => api.writeProjectionCache({ projectPath, payload })
   };
 }

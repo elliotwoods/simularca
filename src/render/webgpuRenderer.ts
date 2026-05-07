@@ -1,7 +1,12 @@
 import * as THREE from "three";
 import { PostProcessing, WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import * as TSL from "three/tsl";
 import { pass } from "three/tsl";
+import { AO_MESH_LAYER } from "./aoLayer";
+const mrt = (TSL as any).mrt as (outputs: Record<string, any>) => any;
+const normalView = (TSL as any).normalView as any;
+const tslOutput = (TSL as any).output as any;
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
 import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
@@ -32,6 +37,10 @@ export class WebGpuViewport {
   private readonly renderer: WebGPURenderer;
   private readonly postProcessing: PostProcessing;
   private readonly scenePass: any;
+  private readonly aoMeshPass: any;
+  private readonly aoPerspectiveCamera: THREE.PerspectiveCamera;
+  private readonly aoOrthographicCamera: THREE.OrthographicCamera;
+  private aoCamera: THREE.Camera;
   private readonly perspectiveCamera: any;
   private readonly orthographicCamera: any;
   private activeCamera: any;
@@ -138,6 +147,15 @@ export class WebGpuViewport {
 
     this.activeCamera = this.perspectiveCamera;
     this.scenePass = pass(this.sceneController.scene, this.activeCamera);
+
+    this.aoPerspectiveCamera = this.perspectiveCamera.clone();
+    this.aoPerspectiveCamera.layers.set(AO_MESH_LAYER);
+    this.aoOrthographicCamera = this.orthographicCamera.clone();
+    this.aoOrthographicCamera.layers.set(AO_MESH_LAYER);
+    this.aoCamera = this.aoPerspectiveCamera;
+    this.aoMeshPass = pass(this.sceneController.scene, this.aoCamera);
+    this.aoMeshPass.setMRT(mrt({ output: tslOutput, normal: normalView }));
+
     this.postProcessing = new PostProcessing(this.renderer, this.scenePass);
     this.postProcessing.outputColorTransform = false;
     this.syncToneMappingOutput();
@@ -798,14 +816,29 @@ export class WebGpuViewport {
     this.lastAppliedCameraState = cloneCameraState(nextCameraState);
   }
 
+  private syncAoCamera(): void {
+    const target =
+      this.activeCamera instanceof THREE.OrthographicCamera
+        ? this.aoOrthographicCamera
+        : this.aoPerspectiveCamera;
+    target.copy(this.activeCamera, false);
+    target.layers.set(AO_MESH_LAYER);
+    target.updateMatrixWorld(true);
+    this.aoCamera = target;
+    this.aoMeshPass.camera = this.aoCamera;
+  }
+
   private syncToneMappingOutput(): void {
     const tonemapping = this.kernel.store.getState().state.scene.tonemapping;
     const postProcessing = this.kernel.store.getState().state.scene.postProcessing;
+    const aoEnabled = postProcessing.ambientOcclusion.enabled;
+    this.syncAoCamera();
     const signature = JSON.stringify({
       mode: tonemapping.mode,
       dither: tonemapping.dither,
       postProcessing,
-      outputColorSpace: this.renderer.outputColorSpace
+      outputColorSpace: this.renderer.outputColorSpace,
+      aoCameraType: this.aoCamera instanceof THREE.OrthographicCamera ? "ortho" : "persp"
     });
     this.renderer.toneMapping = threeToneMappingForMode(tonemapping.mode);
     this.scenePass.camera = this.activeCamera;
@@ -813,11 +846,20 @@ export class WebGpuViewport {
       return;
     }
     this.lastOutputSignature = signature;
+    const aoSources = aoEnabled
+      ? {
+          meshDepth: this.aoMeshPass.getTextureNode("depth"),
+          meshNormal: this.aoMeshPass.getTextureNode("normal"),
+          sceneDepth: this.scenePass.getTextureNode("depth"),
+          camera: this.aoCamera
+        }
+      : null;
     this.postProcessing.outputNode = buildWebGpuToneMappedOutputNode(
       this.scenePass.getTextureNode("output"),
       this.renderer.outputColorSpace,
       tonemapping,
-      postProcessing
+      postProcessing,
+      aoSources
     );
     this.postProcessing.needsUpdate = true;
   }

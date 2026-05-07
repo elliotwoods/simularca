@@ -83,6 +83,9 @@ function makeStorage(overrides: Partial<StorageAdapter> = {}): StorageAdapter {
     importAsset: vi.fn(async () => {
       throw new Error("not implemented");
     }),
+    writeGeneratedAsset: vi.fn(async () => {
+      throw new Error("not implemented");
+    }),
     importDae: vi.fn(async () => {
       throw new Error("not implemented");
     }),
@@ -91,7 +94,9 @@ function makeStorage(overrides: Partial<StorageAdapter> = {}): StorageAdapter {
     }),
     deleteAsset: vi.fn(async () => {}),
     resolveAssetPath: vi.fn(async ({ projectUuid, relativePath }) => `simularca-asset://${projectUuid}/${relativePath}`),
-    readAssetBytes: vi.fn(async () => new Uint8Array())
+    readAssetBytes: vi.fn(async () => new Uint8Array()),
+    readProjectionCache: vi.fn(async () => null),
+    writeProjectionCache: vi.fn(async () => {})
   };
   return { ...base, ...overrides };
 }

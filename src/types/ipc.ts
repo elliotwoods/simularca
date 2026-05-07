@@ -69,6 +69,30 @@ export interface ProjectAssetRef {
   relativePath: string;
   sourceFileName: string;
   byteSize: number;
+  /** When set, this asset is a decimated LOD of the asset with this id. */
+  lodOf?: string;
+  /** Target ratio (0-1) used to generate the LOD relative to the parent. */
+  lodRatio?: number;
+  /** Triangle count of the generated LOD geometry. */
+  lodTriangleCount?: number;
+  /** Triangle count of the parent asset at the time of generation. */
+  lodOriginalTriangleCount?: number;
+}
+
+export interface ProjectionCacheEntryV1 {
+  signature: string;
+  polyline: {
+    points: ([number, number, number] | null)[];
+    hitCount: number;
+    resolution: number;
+    targetCount: number;
+  };
+  updatedAtIso?: string;
+}
+
+export interface ProjectionCacheFileV1 {
+  version: 1;
+  entries: Record<string, ProjectionCacheEntryV1>;
 }
 
 export interface DaeImportResult {
@@ -350,6 +374,12 @@ export interface ElectronApi {
     sourcePath: string;
     kind: ProjectAssetRef["kind"];
   }): Promise<ProjectAssetRef>;
+  writeGeneratedAsset(args: {
+    projectPath: string;
+    bytes: Uint8Array;
+    fileName: string;
+    kind: ProjectAssetRef["kind"];
+  }): Promise<ProjectAssetRef>;
   importDae(args: { projectPath: string; sourcePath: string }): Promise<DaeImportResult>;
   transcodeHdriToKtx2(args: {
     projectPath: string;
@@ -359,6 +389,8 @@ export interface ElectronApi {
   deleteAsset(args: { projectPath: string; relativePath: string }): Promise<void>;
   resolveAssetPath(args: { projectUuid: string; relativePath: string }): Promise<string>;
   readAssetBytes(args: { projectPath: string; relativePath: string }): Promise<Uint8Array>;
+  readProjectionCache(args: { projectPath: string }): Promise<ProjectionCacheFileV1 | null>;
+  writeProjectionCache(args: { projectPath: string; payload: ProjectionCacheFileV1 }): Promise<void>;
   openFileDialog(args: { title?: string; filters?: FileDialogFilter[] }): Promise<string | null>;
   openSaveDialog(args: SaveDialogArgs): Promise<string | null>;
   openDirectoryDialog(args: DirectoryDialogArgs): Promise<string | null>;
@@ -399,4 +431,6 @@ export interface ElectronApi {
   rotoControlPublishBank(bank: RotoControlBank): Promise<void>;
   onRotoControlState(listener: (state: RotoControlState) => void): () => void;
   onRotoControlInput(listener: (event: RotoControlInputEvent) => void): () => void;
+  onBeforeClose(listener: () => void): () => void;
+  confirmClose(action: "save-and-quit" | "quit" | "cancel"): Promise<void>;
 }

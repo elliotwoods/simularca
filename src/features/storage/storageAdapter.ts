@@ -7,6 +7,7 @@ import type {
   OpenProjectResult,
   ProjectAssetRef,
   ProjectIdentity,
+  ProjectionCacheFileV1,
   ProjectSnapshotListEntry,
   RecentsEntry
 } from "@/types/ipc";
@@ -68,6 +69,12 @@ export interface StorageAdapter {
     sourcePath: string;
     kind: ProjectAssetRef["kind"];
   }): Promise<ProjectAssetRef>;
+  writeGeneratedAsset(args: {
+    projectPath: string;
+    bytes: Uint8Array;
+    fileName: string;
+    kind: ProjectAssetRef["kind"];
+  }): Promise<ProjectAssetRef>;
   importDae(args: { projectPath: string; sourcePath: string }): Promise<DaeImportResult>;
   transcodeHdriToKtx2(args: {
     projectPath: string;
@@ -77,4 +84,8 @@ export interface StorageAdapter {
   deleteAsset(args: { projectPath: string; relativePath: string }): Promise<void>;
   resolveAssetPath(args: { projectUuid: string; relativePath: string }): Promise<string>;
   readAssetBytes(args: { projectPath: string; relativePath: string }): Promise<Uint8Array>;
+
+  // Per-project derived caches.
+  readProjectionCache(projectPath: string): Promise<ProjectionCacheFileV1 | null>;
+  writeProjectionCache(projectPath: string, payload: ProjectionCacheFileV1): Promise<void>;
 }

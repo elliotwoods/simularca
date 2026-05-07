@@ -55,6 +55,16 @@ function buildSchemaDefaultParams(kernel: AppKernel, descriptorId: string): Para
   for (const definition of descriptor.schema.params) {
     defaults[definition.key] = defaultValueForDefinition(definition);
   }
+  if (typeof descriptor.createInitialParams === "function") {
+    try {
+      const dynamic = descriptor.createInitialParams();
+      if (dynamic && typeof dynamic === "object") {
+        Object.assign(defaults, dynamic);
+      }
+    } catch {
+      // Best-effort: ignore failures from descriptor-side dynamic defaults.
+    }
+  }
   return defaults;
 }
 

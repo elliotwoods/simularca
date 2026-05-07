@@ -194,6 +194,15 @@ export const DEFAULT_POST_PROCESSING: ScenePostProcessingSettings = {
   grain: {
     enabled: false,
     intensity: 0.02
+  },
+  ambientOcclusion: {
+    enabled: false,
+    radius: 0.25,
+    thickness: 1,
+    distanceExponent: 1,
+    scale: 1,
+    samples: 16,
+    resolutionScale: 1
   }
 };
 
@@ -241,7 +250,10 @@ export function createDefaultScene(): {
     cameraKeyboardNavigation: true,
     cameraNavigationSpeed: 6,
     cameraFlyLookInvertYaw: true,
-    cameraFlyLookSpeed: 1
+    cameraFlyLookSpeed: 1,
+    useEnvironmentBackground: true,
+    environmentOverrideActorId: null,
+    defaultIblEnabled: true
   };
   return {
     scene,
@@ -307,7 +319,8 @@ export function createInitialState(
     dirty: false,
     statusMessage: "Ready",
     consoleEntries: [],
-    actorStatusByActorId: {}
+    actorStatusByActorId: {},
+    actorFrameTimingsMs: {}
   };
 }
 

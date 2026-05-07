@@ -36,7 +36,17 @@
       "Bash(ls:*)",
       "Bash(git checkout:*)",
       "Bash(git push:*)",
-      "Bash(npx vitest:*)"
+      "Bash(npx vitest:*)",
+      "Bash(Get-ChildItem -Path \"C:\\\\dev\\\\simularca\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(Get-ChildItem -Path C:\\\\dev\\\\simularca -Directory)",
+      "PowerShell(Get-ChildItem -Path C:\\\\dev\\\\simularca | Where-Object { $_.PSIsContainer } | Select-Object Name)",
+      "PowerShell(Get-ChildItem *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\dev\\\\simularca\" -Recurse -Directory)",
+      "Bash(Select-Object -First 20)",
+      "Bash(Format-Table Name, FullName)",
+      "Bash(Get-ChildItem -Path \"C:\\\\dev\\\\simularca\" -Recurse -Filter \"*.ts\" -o -Filter \"*.tsx\")",
+      "Bash(Select-Object -First 20 FullName)"
     ]
   }
 }
