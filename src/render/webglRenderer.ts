@@ -121,6 +121,8 @@ export class WebGlViewport {
   private activeRenderPromise: Promise<void> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
+  private resizeRafHandle = 0;
+  private lastAppliedSize: { width: number; height: number; pixelRatio: number } | null = null;
   private readonly maxRenderDimension = 4096;
   private readonly isExportViewport: boolean;
   private readonly manualFrameControl: boolean;
@@ -172,7 +174,7 @@ export class WebGlViewport {
     this.sceneController.setWebGlRenderer(this.renderer);
     const initialWidth = this.fixedViewportSize?.width ?? Math.max(1, this.mountEl.clientWidth);
     const initialHeight = this.fixedViewportSize?.height ?? Math.max(1, this.mountEl.clientHeight);
-    this.applyRenderScale(initialWidth, initialHeight);
+    this.renderer.setPixelRatio(this.computeRenderScale(initialWidth, initialHeight));
     this.renderer.setSize(initialWidth, initialHeight);
     this.mountEl.appendChild(this.renderer.domElement);
 
@@ -277,9 +279,9 @@ export class WebGlViewport {
     this.disposed = false;
     this.onResize();
     if (!this.fixedViewportSize) {
-      window.addEventListener("resize", this.onResize);
+      window.addEventListener("resize", this.scheduleResize);
       this.resizeObserver = new ResizeObserver(() => {
-        this.onResize();
+        this.scheduleResize();
       });
       this.resizeObservedElements = this.collectResizeObservedElements();
       for (const element of this.resizeObservedElements) {
@@ -296,10 +298,14 @@ export class WebGlViewport {
       return;
     }
     this.disposed = true;
-    window.removeEventListener("resize", this.onResize);
+    window.removeEventListener("resize", this.scheduleResize);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.resizeObservedElements = [];
+    if (this.resizeRafHandle) {
+      cancelAnimationFrame(this.resizeRafHandle);
+      this.resizeRafHandle = 0;
+    }
     if (this.frameHandle) {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
@@ -621,11 +627,34 @@ export class WebGlViewport {
     });
   }
 
+  private scheduleResize = (): void => {
+    if (this.disposed || this.resizeRafHandle) {
+      return;
+    }
+    this.resizeRafHandle = requestAnimationFrame(() => {
+      this.resizeRafHandle = 0;
+      if (this.disposed) {
+        return;
+      }
+      this.onResize();
+    });
+  };
+
   private onResize = (): void => {
     const { width, height } = this.getEffectiveViewportSize();
+    const pixelRatio = this.computeRenderScale(width, height);
+    if (
+      this.lastAppliedSize &&
+      this.lastAppliedSize.width === width &&
+      this.lastAppliedSize.height === height &&
+      this.lastAppliedSize.pixelRatio === pixelRatio
+    ) {
+      return;
+    }
+    this.lastAppliedSize = { width, height, pixelRatio };
     this.mountEl.style.width = `${width}px`;
     this.mountEl.style.height = `${height}px`;
-    this.applyRenderScale(width, height);
+    this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     this.bloomPass.setSize(width, height);
@@ -684,17 +713,15 @@ export class WebGlViewport {
     return { width, height };
   }
 
-  private applyRenderScale(width: number, height: number): void {
+  private computeRenderScale(width: number, height: number): number {
     if (this.isExportViewport) {
-      this.renderer.setPixelRatio(1);
-      return;
+      return 1;
     }
     const safeWidth = Math.max(1, width);
     const safeHeight = Math.max(1, height);
     const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
     const dimensionLimit = Math.max(1, this.maxRenderDimension / Math.max(safeWidth, safeHeight));
-    const pixelRatio = Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
-    this.renderer.setPixelRatio(pixelRatio);
+    return Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
   }
 
   private updateStats(): void {
