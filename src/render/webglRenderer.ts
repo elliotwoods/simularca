@@ -439,7 +439,7 @@ export class WebGlViewport {
       this.kernel.profiler.clearDrawHooks();
       return;
     }
-    pruneInvalidSceneGraph(this.sceneController.scene);
+    // syncFromState's final phase already runs pruneInvalidSceneGraph.
     const _rf1 = performance.now();
     const _rf2 = _rf1;
     this.enforceActorCompatibility("webgl2");

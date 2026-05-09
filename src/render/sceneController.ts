@@ -770,6 +770,11 @@ export class SceneController {
   private crossSectionLastError: string | null = null;
   private readonly patchedMaterials = new WeakSet<THREE.Material>();
   private readonly materialPlaneCount = new WeakMap<THREE.Material, number>();
+  // Per-actor signature for the cross-section apply phase. Skips the per-frame
+  // tree traverse on big meshes (the SSG Stadium FBX has thousands of nodes
+  // and traversing it ate 80-100ms during camera rotation).
+  private readonly crossSectionAppliedSigByActorId = new Map<string, string>();
+  private readonly crossSectionAppliedObjectByActorId = new WeakMap<object, true>();
   // WebGPU clipping uses ClippingGroup Object3Ds (material.clippingPlanes is ignored).
   // We host one shared ClippingGroup at scene root and reparent affected top-level actor objects under it.
   private readonly crossSectionClipGroup: THREE.Group = (() => {
@@ -972,6 +977,7 @@ export class SceneController {
           this.curveSignatureByActorId.delete(existing);
           clearProjectedPolyline(existing);
           this.meshMaterialSigByActorId.delete(existing);
+          this.crossSectionAppliedSigByActorId.delete(existing);
           this.pluginDescriptorByActorId.delete(existing);
           this.environmentTextureByActorId.get(existing)?.dispose?.();
           this.environmentTextureByActorId.delete(existing);
@@ -3153,7 +3159,12 @@ export class SceneController {
     if (!this.activeCrossSectionActorId) {
       return;
     }
-    this.crossSectionStatusFrame = (this.crossSectionStatusFrame + 1) % 10;
+    // Status is purely diagnostic; the inner clip-group traverse below walks
+    // every node parented under the ClippingGroup (the entire Stadium mesh on
+    // SSG Stadium, ~thousands of Object3Ds). Doing this every 10 frames was
+    // causing periodic 50-100ms slow-frame spikes during camera rotation.
+    // Update once per ~1s instead — fast enough for status display.
+    this.crossSectionStatusFrame = (this.crossSectionStatusFrame + 1) % 60;
     if (this.crossSectionStatusFrame !== 0) {
       return;
     }
@@ -3486,6 +3497,21 @@ export class SceneController {
     const allowed = this.activeCrossSectionActorId !== null
       && (this.crossSectionAffectAll || this.crossSectionAffectedActorIds.has(actor.id));
 
+    // Skip the expensive material traverse when nothing has changed for this
+    // actor since the last call. The traverse is O(scene-tree-of-actor) — on
+    // the SSG Stadium mesh that dominated slow-frame cost during camera
+    // rotation. We still run the parent-reparenting block below because
+    // syncActorSiblingOrder above re-parents top-level actor objects under
+    // the scene every frame.
+    const traverseSig = `${this.activeCrossSectionActorId ?? ""}|${allowed ? 1 : 0}`;
+    const objectSeen = this.crossSectionAppliedObjectByActorId.has(object);
+    const canSkipTraverse = objectSeen && this.crossSectionAppliedSigByActorId.get(actor.id) === traverseSig;
+    if (!canSkipTraverse) {
+      this.crossSectionAppliedSigByActorId.set(actor.id, traverseSig);
+      this.crossSectionAppliedObjectByActorId.set(object, true);
+    }
+
+    if (!canSkipTraverse) {
     // F2: walk all renderable child types (Mesh, Line, LineSegments, Points, Sprite, InstancedMesh).
     // Lines, points, and sprites in particular were silently escaping clipping in v1.
     object.traverse((node: any) => {
@@ -3513,6 +3539,7 @@ export class SceneController {
         }
       }
     });
+    } // end if (!canSkipTraverse)
 
     // WebGPU pathway: reparent top-level actor objects under the ClippingGroup.
     // Nested actors (parentActorId !== null) inherit clipping naturally if their ancestor is clipped.

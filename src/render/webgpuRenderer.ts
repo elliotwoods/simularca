@@ -388,7 +388,9 @@ export class WebGpuViewport {
       this.kernel.profiler.clearDrawHooks();
       return;
     }
-    pruneInvalidSceneGraph(this.sceneController.scene);
+    // Note: syncFromState already runs pruneInvalidSceneGraph as its last phase,
+    // so we don't repeat it here. The catch-path below still calls it
+    // defensively if a render error mentions a null child.
     const _rf1 = performance.now();
     await this.kernel.profiler.withFrameChunk("Viewport sync", () => {
       this.syncCameraState();
