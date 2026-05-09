@@ -417,6 +417,7 @@ export interface ElectronApi {
   renderTempFinalize(args: { jobId: string }): Promise<{ summary: string }>;
   renderTempAbort(args: { jobId: string }): Promise<void>;
   logRuntimeError(payload: Record<string, unknown>): void;
+  logRuntimeStats(payload: Record<string, unknown>): void;
   getWindowState(): Promise<{ isMaximized: boolean; isFullscreen: boolean }>;
   windowMinimize(): Promise<void>;
   windowToggleMaximize(): Promise<void>;

@@ -21,6 +21,13 @@ import {
 } from "@/render/colorBufferPrecision";
 import { SceneController } from "@/render/sceneController";
 import { reportSlowFrame } from "@/render/slowFrameDiagnostics";
+import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
+
+// See note in webgpuRenderer.ts: force a full reload on HMR rather than leaving
+// stale Three.js viewport instances bound to dead arrow-method listeners.
+if (import.meta.hot) {
+  import.meta.hot.decline();
+}
 import type { MistVolumeQualityMode } from "@/render/mistVolumeController";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "@/render/stats";
 import { SceneOutputPass, threeToneMappingForMode } from "@/render/tonemapping";
@@ -279,10 +286,8 @@ export class WebGlViewport {
     this.disposed = false;
     this.onResize();
     if (!this.fixedViewportSize) {
-      window.addEventListener("resize", this.scheduleResize);
-      this.resizeObserver = new ResizeObserver(() => {
-        this.scheduleResize();
-      });
+      window.addEventListener("resize", this.handleResizeEvent);
+      this.resizeObserver = new ResizeObserver(this.handleResizeEvent);
       this.resizeObservedElements = this.collectResizeObservedElements();
       for (const element of this.resizeObservedElements) {
         this.resizeObserver.observe(element);
@@ -291,6 +296,22 @@ export class WebGlViewport {
     if (!this.manualFrameControl) {
       this.animate();
     }
+    setViewportStatsProvider(() => {
+      if (this.disposed) {
+        return null;
+      }
+      const memInfo = this.renderer.info?.memory;
+      const renderInfo = this.renderer.info?.render;
+      const programs = (this.renderer.info as unknown as { programs?: { length: number } }).programs;
+      return {
+        geometries: memInfo?.geometries ?? 0,
+        textures: memInfo?.textures ?? 0,
+        programs: programs?.length ?? 0,
+        triangles: renderInfo?.triangles ?? 0,
+        calls: renderInfo?.calls ?? 0,
+        frame: renderInfo?.frame ?? 0
+      };
+    });
   }
 
   public async stop(): Promise<void> {
@@ -298,7 +319,8 @@ export class WebGlViewport {
       return;
     }
     this.disposed = true;
-    window.removeEventListener("resize", this.scheduleResize);
+    setViewportStatsProvider(null);
+    window.removeEventListener("resize", this.handleResizeEvent);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.resizeObservedElements = [];
@@ -405,6 +427,7 @@ export class WebGlViewport {
         }
       });
     this.activeRenderPromise = renderPromise;
+    bumpFrameCounter();
   };
 
   private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
@@ -626,6 +649,19 @@ export class WebGlViewport {
       samples: ao.samples
     });
   }
+
+  // See webgpuRenderer.ts handleResizeEvent — defensive wrapper guarding against
+  // listener-side `this.scheduleResize` going undefined under HMR.
+  private handleResizeEvent = (): void => {
+    if (this.disposed) {
+      return;
+    }
+    try {
+      this.scheduleResize();
+    } catch (error) {
+      console.warn("[simularca] resize listener failed; suppressing:", error);
+    }
+  };
 
   private scheduleResize = (): void => {
     if (this.disposed || this.resizeRafHandle) {

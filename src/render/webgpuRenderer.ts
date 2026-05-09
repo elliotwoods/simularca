@@ -24,6 +24,15 @@ import {
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 import { CurveEditController } from "./curveEditController";
 import { reportSlowFrame } from "./slowFrameDiagnostics";
+import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
+
+// This module owns long-lived Three.js GPU resources and DOM event listeners.
+// In-place HMR leaves stale instances whose class-field arrows can be replaced
+// out from under live event listeners (observed: "this.scheduleResize is not
+// a function" firing every frame for hours). Force a full page reload instead.
+if (import.meta.hot) {
+  import.meta.hot.decline();
+}
 import type { MistVolumeQualityMode } from "./mistVolumeController";
 import { buildWebGpuToneMappedOutputNode, threeToneMappingForMode } from "./tonemapping";
 import { pruneInvalidSceneGraph } from "./sceneGraphUtils";
@@ -211,10 +220,8 @@ export class WebGpuViewport {
     this.setGpuTimestampTracking(false);
     this.onResize();
     if (!this.fixedViewportSize) {
-      window.addEventListener("resize", this.scheduleResize);
-      this.resizeObserver = new ResizeObserver(() => {
-        this.scheduleResize();
-      });
+      window.addEventListener("resize", this.handleResizeEvent);
+      this.resizeObserver = new ResizeObserver(this.handleResizeEvent);
       this.resizeObservedElements = this.collectResizeObservedElements();
       for (const element of this.resizeObservedElements) {
         this.resizeObserver.observe(element);
@@ -223,6 +230,20 @@ export class WebGpuViewport {
     if (!this.manualFrameControl) {
       this.animate();
     }
+    setViewportStatsProvider(() => {
+      if (this.disposed) {
+        return null;
+      }
+      const memInfo = this.renderer.info?.memory;
+      const renderInfo = this.renderer.info?.render;
+      return {
+        geometries: memInfo?.geometries ?? 0,
+        textures: memInfo?.textures ?? 0,
+        triangles: renderInfo?.triangles ?? 0,
+        calls: renderInfo?.calls ?? 0,
+        frame: renderInfo?.frame ?? 0
+      };
+    });
   }
 
   public async stop(): Promise<void> {
@@ -230,7 +251,8 @@ export class WebGpuViewport {
       return;
     }
     this.disposed = true;
-    window.removeEventListener("resize", this.scheduleResize);
+    setViewportStatsProvider(null);
+    window.removeEventListener("resize", this.handleResizeEvent);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.resizeObservedElements = [];
@@ -352,6 +374,7 @@ export class WebGpuViewport {
         }
       });
     this.activeRenderPromise = renderPromise;
+    bumpFrameCounter();
   };
 
   private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
@@ -524,6 +547,22 @@ export class WebGpuViewport {
       });
     }
   }
+
+  // Wrapper used by `window.addEventListener` and `ResizeObserver`. Class-field
+  // arrows survive instance creation, but during Vite HMR cycles we observed the
+  // listener-side `this.scheduleResize` going undefined and firing
+  // "TypeError: ... is not a function" every animation frame. Catching here
+  // ensures one bad HMR can't burn the renderer process.
+  private handleResizeEvent = (): void => {
+    if (this.disposed) {
+      return;
+    }
+    try {
+      this.scheduleResize();
+    } catch (error) {
+      console.warn("[simularca] resize listener failed; suppressing:", error);
+    }
+  };
 
   private scheduleResize = (): void => {
     if (this.disposed || this.resizeRafHandle) {
@@ -852,7 +891,12 @@ export class WebGpuViewport {
     target.layers.set(AO_MESH_LAYER);
     target.updateMatrixWorld(true);
     this.aoCamera = target;
-    this.aoMeshPass.camera = this.aoCamera;
+    // Only assign the pass.camera when the camera *reference* changes — not every
+    // frame. Three.js v0.173 invalidates the pass's shader graph on camera setter,
+    // which leaks TSL nodes (StorageBufferNode/VarNode/SplitNode et al) every frame.
+    if (this.aoMeshPass.camera !== this.aoCamera) {
+      this.aoMeshPass.camera = this.aoCamera;
+    }
   }
 
   private syncToneMappingOutput(): void {
@@ -868,7 +912,9 @@ export class WebGpuViewport {
       aoCameraType: this.aoCamera instanceof THREE.OrthographicCamera ? "ortho" : "persp"
     });
     this.renderer.toneMapping = threeToneMappingForMode(tonemapping.mode);
-    this.scenePass.camera = this.activeCamera;
+    if (this.scenePass.camera !== this.activeCamera) {
+      this.scenePass.camera = this.activeCamera;
+    }
     if (signature === this.lastOutputSignature) {
       return;
     }

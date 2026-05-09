@@ -609,7 +609,9 @@ export class CurveEditController {
       visuals.handleOut.visible = showHandleOut;
       visuals.lineIn.visible = showHandleIn;
       visuals.lineOut.visible = showHandleOut;
+      visuals.lineIn.geometry.dispose();
       visuals.lineIn.geometry = new THREE.BufferGeometry().setFromPoints([anchor.clone(), inPos.clone()]);
+      visuals.lineOut.geometry.dispose();
       visuals.lineOut.geometry = new THREE.BufferGeometry().setFromPoints([anchor.clone(), outPos.clone()]);
     }
   }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, protocol, screen, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, screen, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -114,6 +114,30 @@ if (IS_DEV) {
 }
 
 const APP_DISPLAY_NAME = "Simularca";
+
+// Set the app name BEFORE anything that resolves userData — crashReporter.start
+// in particular reads app.getPath() which caches "Electron" as the directory
+// name if the rename hasn't happened yet, which then orphans recents.json.
+app.setName(APP_DISPLAY_NAME);
+
+// Diagnostic switches — must be set before app emits 'ready'.
+// Remote debugging exposes Chrome DevTools Protocol so a frozen renderer can
+// be inspected from outside the main process even if our IPC bridge is starved.
+const REMOTE_DEBUGGING_PORT = "9222";
+if (IS_DEV) {
+  app.commandLine.appendSwitch("remote-debugging-port", REMOTE_DEBUGGING_PORT);
+  // Don't let Chromium auto-disable the GPU process after a few crashes — we want
+  // every crash visible in the runtime log instead of silent fallback.
+  app.commandLine.appendSwitch("disable-gpu-process-crash-limit");
+}
+
+// Native (V8/GPU) crashes write minidumps to userData/Crashpad/reports. Local-only.
+crashReporter.start({
+  productName: APP_DISPLAY_NAME,
+  companyName: "Kimchi and Chips",
+  uploadToServer: false,
+  ignoreSystemCrashHandler: false
+});
 const DEFAULTS_FILE_NAME = "defaults.json";
 const RUNTIME_LOG_FILE_NAME = "electron-runtime.log";
 const WINDOW_STATE_FILE_NAME = "window-state.json";
@@ -435,8 +459,6 @@ void writeRuntimeLog("boot", "electron main module loaded", {
 let liveDebugServerController: LiveDebugServerController | null = null;
 let rotoControlHost: RotoControlHost | null = null;
 const closingConfirmedWindows = new WeakSet<BrowserWindow>();
-
-app.setName(APP_DISPLAY_NAME);
 
 /** Legacy savedata location, kept for migration only. */
 function getLegacySaveDataRoot(): string {
@@ -1219,7 +1241,22 @@ function createWindow(): BrowserWindow {
   });
 
   mainWindow.on("unresponsive", () => {
-    void writeRuntimeLog("window", "BrowserWindow became unresponsive", undefined, "warn");
+    let rendererPid: number | undefined;
+    try {
+      rendererPid = mainWindow.webContents.getOSProcessId();
+    } catch { /* ignore */ }
+    void writeRuntimeLog(
+      "window",
+      "BrowserWindow became unresponsive",
+      {
+        rendererPid,
+        mainMemoryUsage: process.memoryUsage()
+      },
+      "warn"
+    );
+  });
+  mainWindow.on("responsive", () => {
+    void writeRuntimeLog("window", "BrowserWindow recovered (responsive)");
   });
 
   mainWindow.on("closed", () => {
@@ -1298,6 +1335,20 @@ function createWindow(): BrowserWindow {
 function registerIpcHandlers(): void {
   ipcMain.on("renderer:runtime-error", (_event, payload: unknown) => {
     void writeRuntimeLog("renderer", "runtime-error", payload, "error");
+  });
+  // Heartbeat: renderer posts memory + GPU resource counts every ~30s.
+  // Kept on a separate scope ("renderer-stats") so it never collides with error
+  // dedup, and so it can be filtered from the log easily.
+  ipcMain.on("renderer:runtime-stats", (_event, payload: unknown) => {
+    void writeRuntimeLog("renderer-stats", "heartbeat", payload, "info");
+  });
+  // Forwarded console.error / console.warn from the renderer (in addition to
+  // Chromium's "console-message" event, which can be suppressed by devtools
+  // filtering). Lets us capture Three.js / WebGPU validation errors that the
+  // app explicitly logs but doesn't throw.
+  ipcMain.on("renderer:console", (_event, payload: { level?: "warn" | "error"; args?: unknown }) => {
+    const severity: LogSeverity = payload?.level === "error" ? "error" : "warn";
+    void writeRuntimeLog("renderer-app-console", `console.${payload?.level ?? "warn"}`, payload?.args, severity);
   });
 
   ipcMain.handle("mode:get", () => "electron-rw");
@@ -2828,7 +2879,9 @@ void app.whenReady().then(async () => {
   void writeRuntimeLog("app", "App starting", {
     isDev: IS_DEV,
     devServerUrl: DEV_SERVER_URL ?? null,
-    userDataRoot: getUserDataRoot()
+    userDataRoot: getUserDataRoot(),
+    remoteDebuggingPort: IS_DEV ? REMOTE_DEBUGGING_PORT : null,
+    crashpadDirectory: app.getPath("crashDumps")
   });
   migrateLegacyWindowState();
   const pushRotoState = (state: RotoControlState) => {
