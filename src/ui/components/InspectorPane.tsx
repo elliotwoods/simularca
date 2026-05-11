@@ -69,6 +69,7 @@ import {
   resolveCameraPathRefs,
   sampleCameraPathPoseAtTime
 } from "@/features/cameraPath/model";
+import { getCameraOrbitAngles } from "@/features/camera/viewUtils";
 import { importFileForActorParam } from "@/features/imports/fileParameterImport";
 import {
   MIST_LOOKUP_NOISE_PRESET_KEYS,
@@ -1007,6 +1008,7 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     setSceneInspectorView(nextRoute);
     return true;
   }, [sceneInspectorView]);
+  const cameraOrbitAngles = getCameraOrbitAngles(props.appState.camera);
   const sceneStatsRows: StatsRow[] = [
     {
       label: "Requested Precision",
@@ -1080,6 +1082,12 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     {
       label: "Camera Target (m)",
       value: `${props.appState.camera.target[0].toFixed(3)}, ${props.appState.camera.target[1].toFixed(3)}, ${props.appState.camera.target[2].toFixed(3)}`,
+      groupKey: "camera",
+      groupLabel: "Camera"
+    },
+    {
+      label: "Camera Rotation (deg)",
+      value: `yaw ${cameraOrbitAngles.yawDeg.toFixed(2)}, pitch ${cameraOrbitAngles.pitchDeg.toFixed(2)}`,
       groupKey: "camera",
       groupLabel: "Camera"
     },

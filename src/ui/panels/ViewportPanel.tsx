@@ -13,6 +13,7 @@ import {
   orbitCameraFromPointerDelta,
   projectWorldDirectionsAtViewportCenter,
   resolveRepeatedDirectionalShortcut,
+  snapOrbitAroundTarget,
   stepOrbitAroundTarget,
   toggleCameraProjectionMode,
   type CameraViewDirection
@@ -54,6 +55,9 @@ interface AxisHandleConfig {
 
 const AXES_WIDGET_RADIUS = 45;
 const VIEW_SHORTCUT_ROTATION_STEP = Math.PI / 12;
+const VIEW_SHORTCUT_HOLD_RATE_RAD_PER_SEC = Math.PI / 2;
+const VIEW_SHORTCUT_HOLD_MAX_DT_MS = 50;
+const VIEW_SHORTCUT_HOLD_ACTIVATION_MS = 250;
 
 const AXIS_HANDLES: AxisHandleConfig[] = [
   { id: "pos-x", label: "+X", vector: new THREE.Vector3(1, 0, 0), view: "right", axis: "x", negative: false },
@@ -141,17 +145,24 @@ function applyDirectionalShortcut(
   }
 }
 
-function applyOrbitShortcut(camera: CameraState, digit: "2" | "4" | "6" | "8"): CameraState {
+type OrbitDigit = "2" | "4" | "6" | "8";
+
+function getOrbitDirection(digit: OrbitDigit): { yaw: -1 | 0 | 1; pitch: -1 | 0 | 1 } {
   switch (digit) {
     case "2":
-      return stepOrbitAroundTarget(camera, 0, VIEW_SHORTCUT_ROTATION_STEP);
+      return { yaw: 0, pitch: -1 };
     case "4":
-      return stepOrbitAroundTarget(camera, -VIEW_SHORTCUT_ROTATION_STEP, 0);
+      return { yaw: 1, pitch: 0 };
     case "6":
-      return stepOrbitAroundTarget(camera, VIEW_SHORTCUT_ROTATION_STEP, 0);
+      return { yaw: -1, pitch: 0 };
     case "8":
-      return stepOrbitAroundTarget(camera, 0, -VIEW_SHORTCUT_ROTATION_STEP);
+      return { yaw: 0, pitch: 1 };
   }
+}
+
+function applyOrbitShortcut(camera: CameraState, digit: OrbitDigit): CameraState {
+  const { yaw, pitch } = getOrbitDirection(digit);
+  return snapOrbitAroundTarget(camera, yaw, pitch, VIEW_SHORTCUT_ROTATION_STEP);
 }
 
 function normalizeViewportShortcut(event: KeyboardEvent): string | null {
@@ -525,6 +536,69 @@ export function ViewportPanel(props: ViewportPanelProps) {
   }, []);
 
   useEffect(() => {
+    const heldOrbitKeys = new Set<OrbitDigit>();
+    const pendingHoldActivations = new Map<OrbitDigit, number>();
+    let rafId: number | null = null;
+    let lastFrameTime: number | null = null;
+
+    const stopOrbitLoop = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      lastFrameTime = null;
+    };
+
+    const clearPendingActivation = (digit: OrbitDigit) => {
+      const handle = pendingHoldActivations.get(digit);
+      if (handle !== undefined) {
+        window.clearTimeout(handle);
+        pendingHoldActivations.delete(digit);
+      }
+    };
+
+    const clearHeldOrbitKeys = () => {
+      heldOrbitKeys.clear();
+      for (const handle of pendingHoldActivations.values()) {
+        window.clearTimeout(handle);
+      }
+      pendingHoldActivations.clear();
+      stopOrbitLoop();
+    };
+
+    const orbitLoopTick = (now: number) => {
+      if (heldOrbitKeys.size === 0) {
+        stopOrbitLoop();
+        return;
+      }
+      const prev = lastFrameTime;
+      lastFrameTime = now;
+      const dtMs = prev === null ? 0 : Math.min(VIEW_SHORTCUT_HOLD_MAX_DT_MS, now - prev);
+      if (dtMs > 0) {
+        let yawSign = 0;
+        let pitchSign = 0;
+        for (const digit of heldOrbitKeys) {
+          const dir = getOrbitDirection(digit);
+          yawSign += dir.yaw;
+          pitchSign += dir.pitch;
+        }
+        if (yawSign !== 0 || pitchSign !== 0) {
+          const angle = (VIEW_SHORTCUT_HOLD_RATE_RAD_PER_SEC * dtMs) / 1000;
+          const next = stepOrbitAroundTarget(cameraRef.current, yawSign * angle, pitchSign * angle);
+          setCameraImmediate(next);
+        }
+      }
+      rafId = requestAnimationFrame(orbitLoopTick);
+    };
+
+    const startOrbitLoop = () => {
+      if (rafId !== null) {
+        return;
+      }
+      lastFrameTime = null;
+      rafId = requestAnimationFrame(orbitLoopTick);
+    };
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (props.suspended || !viewportHoveredRef.current || isEditableTarget(event.target)) {
         return;
@@ -537,16 +611,29 @@ export function ViewportPanel(props: ViewportPanelProps) {
       if (!shortcut) {
         return;
       }
-      if (event.repeat && (shortcut === "1" || shortcut === "3" || shortcut === "5" || shortcut === "7" || shortcut === "9")) {
+      if (event.repeat) {
         return;
       }
 
       const current = cameraRef.current;
+      if (shortcut === "2" || shortcut === "4" || shortcut === "6" || shortcut === "8") {
+        const digit = shortcut as OrbitDigit;
+        event.preventDefault();
+        const next = applyOrbitShortcut(current, digit);
+        setCameraImmediate(next);
+        clearPendingActivation(digit);
+        const handle = window.setTimeout(() => {
+          pendingHoldActivations.delete(digit);
+          heldOrbitKeys.add(digit);
+          startOrbitLoop();
+        }, VIEW_SHORTCUT_HOLD_ACTIVATION_MS);
+        pendingHoldActivations.set(digit, handle);
+        return;
+      }
+
       let next: CameraState | null = null;
       if (shortcut === "1" || shortcut === "3" || shortcut === "7") {
         next = applyDirectionalShortcut(current, rememberedPerspectiveCamera, shortcut);
-      } else if (shortcut === "2" || shortcut === "4" || shortcut === "6" || shortcut === "8") {
-        next = applyOrbitShortcut(current, shortcut);
       } else if (shortcut === "5") {
         next = toggleCameraProjectionMode(current, rememberedPerspectiveCamera);
       } else if (shortcut === "9") {
@@ -560,16 +647,32 @@ export function ViewportPanel(props: ViewportPanelProps) {
       requestCamera(next);
     };
 
+    const onKeyUp = (event: KeyboardEvent) => {
+      const shortcut = normalizeViewportShortcut(event);
+      if (shortcut === "2" || shortcut === "4" || shortcut === "6" || shortcut === "8") {
+        const digit = shortcut as OrbitDigit;
+        clearPendingActivation(digit);
+        heldOrbitKeys.delete(digit);
+        if (heldOrbitKeys.size === 0) {
+          stopOrbitLoop();
+        }
+      }
+    };
+
     const onBlur = () => {
       viewportHoveredRef.current = false;
       setViewportHovered(false);
+      clearHeldOrbitKeys();
     };
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("keyup", onKeyUp, { capture: true });
     window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onBlur);
+      clearHeldOrbitKeys();
     };
   }, [kernel, props.suspended]);
 

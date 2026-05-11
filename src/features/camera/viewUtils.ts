@@ -279,6 +279,63 @@ export function stepOrbitAroundTarget(current: CameraState, yawDelta: number, pi
   };
 }
 
+function snapAngleInDirection(value: number, step: number, direction: 1 | -1): number {
+  // Treat values within a tolerance of a grid line as on the grid line. Without this,
+  // floating-point drift from store/THREE.js round-trips can leave the angle at e.g.
+  // 14.9999999° after a snap to 15°, and the next press would advance by only a tiny
+  // delta — small enough that the renderer's approximate-equality cache discards it
+  // and reverts the camera. The tolerance must exceed the renderer's epsilon
+  // (POSITION_EPSILON_SQ = 1e-8 m^2 ≈ 0.0011° at 5 m) but stay well below step / 2.
+  const tolerance = step * 1e-3;
+  if (direction > 0) {
+    return (Math.floor((value + tolerance) / step) + 1) * step;
+  }
+  return (Math.ceil((value - tolerance) / step) - 1) * step;
+}
+
+export function snapOrbitAroundTarget(
+  current: CameraState,
+  yawDirection: -1 | 0 | 1,
+  pitchDirection: -1 | 0 | 1,
+  step: number
+): CameraState {
+  if (yawDirection === 0 && pitchDirection === 0) {
+    return current;
+  }
+  const target = toVector3(current.target);
+  const position = toVector3(current.position);
+  const offset = position.clone().sub(target);
+  if (offset.lengthSq() <= EPSILON) {
+    offset.set(0, 0, DEFAULT_PERSPECTIVE_DISTANCE);
+  }
+  const spherical = new THREE.Spherical().setFromVector3(offset);
+  if (yawDirection !== 0) {
+    spherical.theta = snapAngleInDirection(spherical.theta, step, yawDirection);
+  }
+  if (pitchDirection !== 0) {
+    spherical.phi = clamp(
+      snapAngleInDirection(spherical.phi, step, pitchDirection),
+      ORBIT_POLAR_EPSILON,
+      Math.PI - ORBIT_POLAR_EPSILON
+    );
+  }
+  offset.setFromSpherical(spherical);
+  return {
+    ...current,
+    position: toTuple(target.clone().add(offset))
+  };
+}
+
+export function getCameraOrbitAngles(camera: CameraState): { yawDeg: number; pitchDeg: number } {
+  const dx = camera.position[0] - camera.target[0];
+  const dy = camera.position[1] - camera.target[1];
+  const dz = camera.position[2] - camera.target[2];
+  const horiz = Math.hypot(dx, dz);
+  const yawRad = horiz <= EPSILON && Math.abs(dy) > EPSILON ? 0 : Math.atan2(dx, dz);
+  const pitchRad = Math.atan2(dy, horiz);
+  return { yawDeg: (yawRad * 180) / Math.PI, pitchDeg: (pitchRad * 180) / Math.PI };
+}
+
 export function orbitCameraFromPointerDelta(
   current: CameraState,
   deltaX: number,
