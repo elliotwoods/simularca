@@ -137,17 +137,26 @@ export function startRuntimeStatsHeartbeat(kernel: AppKernel): void {
         return null;
       }
     })();
-    const stallSnapshot = {
-      maxIntervalMs: Math.round(reg.maxIntervalSinceTickMs),
-      stallCount: reg.stallCountSinceTick,
-      thresholdMs: STALL_THRESHOLD_MS,
-      recent: reg.recentStalls.map((s) => ({
+    // Only include stalls that occurred within this heartbeat window —
+    // older entries from the ring re-appear in every heartbeat and dominate
+    // the log otherwise. Drop the `recent` block entirely when empty.
+    const recentWindowMs = HEARTBEAT_INTERVAL_MS;
+    const recent = reg.recentStalls
+      .filter((s) => now - s.atMs <= recentWindowMs)
+      .map((s) => ({
         deltaMs: Math.round(s.deltaMs),
         ageMs: Math.round(now - s.atMs),
         h: s.hidden ? 1 : 0,
         f: s.focused ? 1 : 0
-      }))
+      }));
+    const stallSnapshot: Record<string, unknown> = {
+      maxIntervalMs: Math.round(reg.maxIntervalSinceTickMs),
+      stallCount: reg.stallCountSinceTick,
+      thresholdMs: STALL_THRESHOLD_MS
     };
+    if (recent.length > 0) {
+      stallSnapshot.recent = recent;
+    }
     reg.maxIntervalSinceTickMs = 0;
     reg.stallCountSinceTick = 0;
     log({

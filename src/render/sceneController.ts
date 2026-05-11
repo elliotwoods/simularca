@@ -3503,7 +3503,15 @@ export class SceneController {
     // rotation. We still run the parent-reparenting block below because
     // syncActorSiblingOrder above re-parents top-level actor objects under
     // the scene every frame.
-    const traverseSig = `${this.activeCrossSectionActorId ?? ""}|${allowed ? 1 : 0}`;
+    //
+    // The signature must also invalidate when the actor's renderable
+    // materials change (mesh material reassignment, primitive rebuild, etc.)
+    // — otherwise a freshly-assigned material instance would never get
+    // clippingPlanes set and the cross-section silently stops affecting it.
+    const matSig = this.meshMaterialSigByActorId.get(actor.id)
+      ?? this.primitiveSignatureByActorId.get(actor.id)
+      ?? "";
+    const traverseSig = `${this.activeCrossSectionActorId ?? ""}|${allowed ? 1 : 0}|${matSig}`;
     const objectSeen = this.crossSectionAppliedObjectByActorId.has(object);
     const canSkipTraverse = objectSeen && this.crossSectionAppliedSigByActorId.get(actor.id) === traverseSig;
     if (!canSkipTraverse) {

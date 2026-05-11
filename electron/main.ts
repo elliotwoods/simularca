@@ -1342,14 +1342,6 @@ function registerIpcHandlers(): void {
   ipcMain.on("renderer:runtime-stats", (_event, payload: unknown) => {
     void writeRuntimeLog("renderer-stats", "heartbeat", payload, "info");
   });
-  // Forwarded console.error / console.warn from the renderer (in addition to
-  // Chromium's "console-message" event, which can be suppressed by devtools
-  // filtering). Lets us capture Three.js / WebGPU validation errors that the
-  // app explicitly logs but doesn't throw.
-  ipcMain.on("renderer:console", (_event, payload: { level?: "warn" | "error"; args?: unknown }) => {
-    const severity: LogSeverity = payload?.level === "error" ? "error" : "warn";
-    void writeRuntimeLog("renderer-app-console", `console.${payload?.level ?? "warn"}`, payload?.args, severity);
-  });
 
   ipcMain.handle("mode:get", () => "electron-rw");
   ipcMain.handle("window:get-state", (event) => {

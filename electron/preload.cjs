@@ -34,38 +34,6 @@ window.addEventListener("unhandledrejection", (event) => {
   });
 });
 
-// Forward console.error / console.warn to main so they're captured in the
-// runtime log even when DevTools isn't open or filters them out.
-function serializeConsoleArgs(args) {
-  try {
-    return Array.from(args).map((arg) => {
-      if (arg instanceof Error) {
-        return { name: arg.name, message: arg.message, stack: arg.stack };
-      }
-      if (typeof arg === "object" && arg !== null) {
-        try {
-          return JSON.parse(JSON.stringify(arg));
-        } catch {
-          return String(arg);
-        }
-      }
-      return arg;
-    });
-  } catch {
-    return [String(args)];
-  }
-}
-const originalConsoleError = console.error.bind(console);
-const originalConsoleWarn = console.warn.bind(console);
-console.error = (...args) => {
-  try { ipcRenderer.send("renderer:console", { level: "error", args: serializeConsoleArgs(args) }); } catch { /* ignore */ }
-  originalConsoleError(...args);
-};
-console.warn = (...args) => {
-  try { ipcRenderer.send("renderer:console", { level: "warn", args: serializeConsoleArgs(args) }); } catch { /* ignore */ }
-  originalConsoleWarn(...args);
-};
-
 const api = {
   mode: "electron-rw",
   getPathForFile: (file) => {
