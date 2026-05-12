@@ -217,7 +217,12 @@ export class CameraInteractionController {
   }
 
   private onPointerDown = (event: PointerEvent): void => {
-    if (event.pointerType !== "mouse" || this.controls.enabled === false) {
+    // Accept mouse and touch. Pen could also map cleanly to orbit but
+    // isn't a stated requirement; leave it out until needed.
+    if (
+      (event.pointerType !== "mouse" && event.pointerType !== "touch") ||
+      this.controls.enabled === false
+    ) {
       return;
     }
     if (this.pointerDownBlocker?.(event)) {
@@ -272,7 +277,10 @@ export class CameraInteractionController {
   };
 
   private onPointerMove = (event: PointerEvent): void => {
-    if (event.pointerType !== "mouse" || this.pointerId !== event.pointerId) {
+    if (
+      (event.pointerType !== "mouse" && event.pointerType !== "touch") ||
+      this.pointerId !== event.pointerId
+    ) {
       return;
     }
     const camera = this.getCamera();

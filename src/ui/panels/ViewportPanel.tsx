@@ -762,7 +762,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
       }}
     >
       <div className="viewport-canvas-host" ref={hostRef} />
-      {!props.suspended ? (
+      {!props.suspended && (kernel.viewerConfig?.interactions.transformGizmo ?? true) ? (
         <div className="viewport-transform-toolbar" role="toolbar" aria-label="Actor transform mode">
           <button
             type="button"

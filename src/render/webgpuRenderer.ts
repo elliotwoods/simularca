@@ -134,6 +134,10 @@ export class WebGpuViewport {
     const initialHeight = this.fixedViewportSize?.height ?? Math.max(1, this.mountEl.clientHeight);
     this.renderer.setPixelRatio(this.computeRenderScale(initialWidth, initialHeight));
     this.renderer.setSize(initialWidth, initialHeight);
+    // Prevent the browser from interpreting touch drags on the canvas as
+    // page scroll/zoom — otherwise pointermove events for orbit never fire
+    // on mobile.
+    this.renderer.domElement.style.touchAction = "none";
     this.mountEl.appendChild(this.renderer.domElement);
 
     this.perspectiveCamera = new THREE.PerspectiveCamera(

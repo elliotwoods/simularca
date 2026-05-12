@@ -172,6 +172,12 @@ function ActorItem(props: ActorItemProps) {
       ? runtimeStatus.values.pluginMissingReason
       : "Plugin actor type is unavailable.";
   const readOnly = mode === "web-ro";
+  // Visibility is the one mutation the publisher can selectively unlock for
+  // viewers (`permissions.canToggleVisibility`). The eye button is enabled
+  // either in the editor or when that flag is on; the store-level
+  // `mutationAllowed` gate still backstops if the permission isn't set.
+  const viewerPermissions = useAppStore((store) => store.state.viewerPermissions);
+  const visibilityLocked = readOnly && !viewerPermissions?.canToggleVisibility;
   const frameTimingMs = actorFrameTimingsMs[props.actor.id];
   const frameMs = statsFrameMs > 0 ? statsFrameMs : 1000 / 60;
   const timingWarning = frameTimingMs != null && frameTimingMs > frameMs ? frameTimingMs : null;
@@ -287,11 +293,11 @@ function ActorItem(props: ActorItemProps) {
         <button
           className={`scene-tree-visibility ${visibilityMode}`}
           type="button"
-          disabled={readOnly}
+          disabled={visibilityLocked}
           title={visibilityTitle(visibilityMode, isActive)}
           onClick={(event) => {
             event.stopPropagation();
-            if (readOnly) {
+            if (visibilityLocked) {
               return;
             }
             kernel.store
