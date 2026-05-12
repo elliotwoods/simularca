@@ -316,8 +316,17 @@ export function createAppStore(mode: AppMode): AppStoreApi {
     historyFuture: [],
     actions: {
       hydrate(nextState) {
+        // viewerPermissions is written once at viewer boot from publishConfig
+        // (see createViewerKernel) and is not part of the project snapshot.
+        // Project hydration must not clobber it or every mutation-permission
+        // gate (canToggleVisibility, canEditParameters, …) would silently
+        // reset to "deny" the moment openProject runs.
+        const previous = get().state;
         set({
-          state: nextState,
+          state: {
+            ...nextState,
+            viewerPermissions: nextState.viewerPermissions ?? previous.viewerPermissions
+          },
           historyPast: [],
           historyFuture: []
         });
