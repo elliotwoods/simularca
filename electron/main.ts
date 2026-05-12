@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, screen, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, shell, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -47,6 +47,45 @@ import {
   saveRecents,
   updateRecentPath
 } from "./recentsStore.js";
+import {
+  PUBLISH_SETTINGS_FILE_NAME,
+  findTarget,
+  loadPublishSettings,
+  recordPublish,
+  redactSettings,
+  savePublishSettings,
+  setDefaultPublishLayout,
+  setDefaultViewerPermissions,
+  type PublishSettings,
+  type PublishTarget
+} from "./publishStore.js";
+import {
+  startPublish,
+  type DiscoveredPluginEntry,
+  type PublishProgressEvent as ServicePublishProgressEvent
+} from "./publishService.js";
+import { resolvePluginEntry } from "./pluginBundler.js";
+import {
+  checkViewerVersion as checkViewerVersionRemote,
+  deployViewer,
+  ensureVercelProject,
+  verifyVercelToken,
+  type DeployViewerProgressEvent
+} from "./vercelDeploy.js";
+import { verifyTarget, type VerifyTargetResult } from "./publishVerify.js";
+import { DeleteObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import type {
+  ListedPublish,
+  PublishCheckViewerVersionRequest,
+  PublishCheckViewerVersionResult,
+  PublishDeleteResult,
+  PublishProgressEvent,
+  PublishRollbackRequest,
+  PublishStartAck,
+  PublishStartRequest,
+  PublishTargetWriteRequest,
+  RedactedPublishSettings
+} from "../src/types/ipc.js";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"]);
 // 1×1 transparent PNG
@@ -2844,6 +2883,792 @@ function registerIpcHandlers(): void {
       await fs.rm(folder, { recursive: true, force: true });
     }
   );
+
+  registerPublishIpcHandlers();
+}
+
+// ----------------------------------------------------------------------
+// Publish-to-web IPC handlers
+// ----------------------------------------------------------------------
+
+function getPublishSettingsFilePath(): string {
+  return path.join(getUserDataRoot(), PUBLISH_SETTINGS_FILE_NAME);
+}
+
+interface VercelTokenVerifyResult {
+  ok: boolean;
+  email?: string;
+  username?: string;
+  userId?: string;
+  teamSlug?: string;
+  error?: string;
+}
+
+interface VercelSettingsWriteRequest {
+  /** New token to set; if empty/absent only the metadata fields are patched. */
+  token?: string;
+  /** Pass true to wipe credentials entirely (logout). */
+  clear?: boolean;
+  projectName?: string;
+  projectId?: string;
+  teamId?: string;
+}
+
+interface DeployViewerProgressIpcEvent {
+  jobId: string;
+  phase: "build" | "project" | "deploy" | "ready" | "done" | "error";
+  message?: string;
+  uploadedFiles?: number;
+  totalFiles?: number;
+  uploadedBytes?: number;
+  totalBytes?: number;
+  url?: string;
+  error?: string;
+}
+
+async function runViewerBuild(args: {
+  onStdout?: (line: string) => void;
+  onStderr?: (line: string) => void;
+  signal?: AbortSignal;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const repoRoot = getRepoRoot();
+    const scriptPath = path.join(repoRoot, "scripts", "build-viewer.mjs");
+    const writeInfoPath = path.join(repoRoot, "scripts", "write-build-info.mjs");
+    // Run write-build-info then build-viewer in sequence as a small wrapper.
+    // Using `process.execPath` with `ELECTRON_RUN_AS_NODE=1` makes Electron's
+    // bundled node available even on packaged builds.
+    const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+    const writeInfo = spawn(process.execPath, [writeInfoPath, "build"], {
+      cwd: repoRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    writeInfo.stdout.on("data", (chunk: Buffer) => {
+      for (const line of String(chunk).split(/\r?\n/)) {
+        if (line.trim()) args.onStdout?.(line);
+      }
+    });
+    writeInfo.stderr.on("data", (chunk: Buffer) => {
+      for (const line of String(chunk).split(/\r?\n/)) {
+        if (line.trim()) args.onStderr?.(line);
+      }
+    });
+    writeInfo.on("error", reject);
+    writeInfo.on("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(`write-build-info exited ${String(code)}`));
+        return;
+      }
+      const child = spawn(process.execPath, [scriptPath], {
+        cwd: repoRoot,
+        env,
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      const cleanup = (): void => {
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+      };
+      args.signal?.addEventListener("abort", cleanup, { once: true });
+      child.stdout.on("data", (chunk: Buffer) => {
+        for (const line of String(chunk).split(/\r?\n/)) {
+          if (line.trim()) args.onStdout?.(line);
+        }
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        for (const line of String(chunk).split(/\r?\n/)) {
+          if (line.trim()) args.onStderr?.(line);
+        }
+      });
+      child.on("error", (error) => {
+        args.signal?.removeEventListener("abort", cleanup);
+        reject(error);
+      });
+      child.on("exit", (code) => {
+        args.signal?.removeEventListener("abort", cleanup);
+        if (code === 0) resolve();
+        else reject(new Error(`build-viewer exited ${String(code)}`));
+      });
+    });
+  });
+}
+
+interface BuildInfoFile {
+  version?: string;
+  commitShortSha?: string;
+}
+
+function loadEditorBuildInfo(): { version: string; commitShortSha: string } {
+  try {
+    const raw = fsSync.readFileSync(path.join(getRepoRoot(), ".simularca-build-info.json"), "utf8");
+    const parsed = JSON.parse(raw) as BuildInfoFile;
+    return {
+      version: parsed.version ?? app.getVersion() ?? "0.0.0",
+      commitShortSha: parsed.commitShortSha ?? "dev"
+    };
+  } catch {
+    return { version: app.getVersion() ?? "0.0.0", commitShortSha: "dev" };
+  }
+}
+
+const inFlightPublishJobs = new Map<string, AbortController>();
+
+function encryptVercelTokenIfPresent(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("Cannot store Vercel token: OS keychain is unavailable to safeStorage.");
+  }
+  return safeStorage.encryptString(token).toString("base64");
+}
+
+function decryptVercelToken(encryptedBase64: string | undefined): string | null {
+  if (!encryptedBase64) return null;
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(encryptedBase64, "base64"));
+  } catch {
+    return null;
+  }
+}
+
+function applyTargetWriteRequest(
+  existing: PublishTarget | null,
+  request: PublishTargetWriteRequest
+): PublishTarget {
+  const secrets = request.secrets ?? {};
+  const r2SecretAccessKey =
+    secrets.r2SecretAccessKey !== undefined ? secrets.r2SecretAccessKey : existing?.r2.secretAccessKey ?? "";
+  const vercelTokenEncryptedBase64 =
+    secrets.vercelToken !== undefined
+      ? encryptVercelTokenIfPresent(secrets.vercelToken)
+      : existing?.selfHosted?.vercelTokenEncryptedBase64;
+  const selfHosted =
+    request.selfHosted || vercelTokenEncryptedBase64
+      ? {
+          vercelTokenEncryptedBase64,
+          vercelProjectId: request.selfHosted?.vercelProjectId,
+          vercelTeamId: request.selfHosted?.vercelTeamId
+        }
+      : undefined;
+  return {
+    id: request.id,
+    label: request.label,
+    r2: {
+      accountId: request.r2.accountId,
+      accessKeyId: request.r2.accessKeyId,
+      secretAccessKey: r2SecretAccessKey,
+      bucket: request.r2.bucket,
+      region: request.r2.region
+    },
+    bucketBaseUrl: request.bucketBaseUrl,
+    viewerUrl: request.viewerUrl,
+    selfHosted,
+    manifestRetention: request.manifestRetention
+  };
+}
+
+function discoverInstalledPlugins(): DiscoveredPluginEntry[] {
+  const seen = new Set<string>();
+  const out: DiscoveredPluginEntry[] = [];
+  const roots = [
+    path.join(getRepoRoot(), "plugins-external"),
+    path.join(getRepoRoot(), "plugins")
+  ];
+  for (const root of roots) {
+    if (!fsSync.existsSync(root)) continue;
+    for (const entry of fsSync.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const pluginRoot = path.join(root, entry.name);
+      const pkgPath = path.join(pluginRoot, "package.json");
+      if (!fsSync.existsSync(pkgPath)) continue;
+      let pkg: { name?: string; version?: string } = {};
+      try {
+        pkg = JSON.parse(fsSync.readFileSync(pkgPath, "utf8")) as { name?: string; version?: string };
+      } catch {
+        continue;
+      }
+      const id = pkg.name ?? entry.name;
+      if (seen.has(id)) continue;
+      let entryPath: string;
+      try {
+        entryPath = resolvePluginEntry(pluginRoot);
+      } catch {
+        continue;
+      }
+      if (!fsSync.existsSync(entryPath)) {
+        // Plugin source exists but hasn't been built. Skip with a log;
+        // pre-flight can surface this to the user.
+        void writeRuntimeLog(
+          "publish",
+          "plugin not built; skipping",
+          { id, entryPath },
+          "warn"
+        );
+        continue;
+      }
+      seen.add(id);
+      out.push({ id, entryPath, version: pkg.version ?? "0.0.0" });
+    }
+  }
+  return out;
+}
+
+function registerPublishIpcHandlers(): void {
+  ipcMain.handle("publish:load-settings", async (): Promise<RedactedPublishSettings> => {
+    const settings = await loadPublishSettings(getPublishSettingsFilePath());
+    return redactSettings(settings);
+  });
+
+  ipcMain.handle(
+    "publish:save-settings",
+    async (
+      _event,
+      args: { targets: PublishTargetWriteRequest[]; defaultTargetId?: string }
+    ): Promise<RedactedPublishSettings> => {
+      const existing = await loadPublishSettings(getPublishSettingsFilePath());
+      const existingById = new Map(existing.targets.map((target) => [target.id, target]));
+      const nextTargets: PublishTarget[] = args.targets.map((request) =>
+        applyTargetWriteRequest(existingById.get(request.id) ?? null, request)
+      );
+      const next: PublishSettings = {
+        ...existing,
+        targets: nextTargets,
+        defaultTargetId: args.defaultTargetId
+      };
+      await savePublishSettings(getPublishSettingsFilePath(), next);
+      return redactSettings(next);
+    }
+  );
+
+  ipcMain.handle(
+    "publish:list-for-project",
+    async (_event, args: { projectUuid: string }): Promise<ListedPublish[]> => {
+      const settings = await loadPublishSettings(getPublishSettingsFilePath());
+      return settings.publishesByProjectUuid[args.projectUuid] ?? [];
+    }
+  );
+
+  ipcMain.handle(
+    "publish:check-viewer-version",
+    async (
+      _event,
+      args: PublishCheckViewerVersionRequest
+    ): Promise<PublishCheckViewerVersionResult> => {
+      const settings = await loadPublishSettings(getPublishSettingsFilePath());
+      const target = findTarget(settings, args.targetId);
+      if (!target) {
+        return { deployed: false, error: `Publish target not found: ${args.targetId}` };
+      }
+      return await checkViewerVersionRemote({ viewerUrl: target.viewerUrl, sha: args.sha });
+    }
+  );
+
+  ipcMain.handle(
+    "publish:verify-target",
+    async (
+      _event,
+      args: { draft: PublishTargetWriteRequest; skipNetwork?: boolean }
+    ): Promise<VerifyTargetResult> => {
+      // Resolve the secret: if the renderer didn't supply a fresh one, fall
+      // back to the saved value for the existing target so we can run the live
+      // probe against whatever is currently on disk.
+      const existing = (await loadPublishSettings(getPublishSettingsFilePath())).targets.find(
+        (target) => target.id === args.draft.id
+      );
+      const secrets = args.draft.secrets ?? {};
+      const r2SecretAccessKey =
+        secrets.r2SecretAccessKey ?? existing?.r2.secretAccessKey ?? "";
+      const target: PublishTarget = {
+        id: args.draft.id,
+        label: args.draft.label,
+        r2: {
+          accountId: args.draft.r2.accountId,
+          accessKeyId: args.draft.r2.accessKeyId,
+          secretAccessKey: r2SecretAccessKey,
+          bucket: args.draft.r2.bucket,
+          region: args.draft.r2.region
+        },
+        bucketBaseUrl: args.draft.bucketBaseUrl,
+        viewerUrl: args.draft.viewerUrl,
+        selfHosted: args.draft.selfHosted
+          ? {
+              vercelTokenEncryptedBase64: existing?.selfHosted?.vercelTokenEncryptedBase64,
+              vercelProjectId: args.draft.selfHosted.vercelProjectId,
+              vercelTeamId: args.draft.selfHosted.vercelTeamId
+            }
+          : undefined,
+        manifestRetention: args.draft.manifestRetention
+      };
+      return await verifyTarget({ target, skipNetwork: args.skipNetwork });
+    }
+  );
+
+  ipcMain.handle(
+    "publish:start",
+    async (event, args: PublishStartRequest): Promise<PublishStartAck> => {
+      const jobId = randomUUID();
+      const abort = new AbortController();
+      inFlightPublishJobs.set(jobId, abort);
+
+      const sender = event.sender;
+      const send = (eventPayload: PublishProgressEvent): void => {
+        if (!sender.isDestroyed()) {
+          sender.send("publish:progress", eventPayload);
+        }
+      };
+
+      void (async () => {
+        try {
+          const settings = await loadPublishSettings(getPublishSettingsFilePath());
+          const target = findTarget(settings, args.targetId);
+          if (!target) {
+            throw new Error(`Publish target not found: ${args.targetId}`);
+          }
+          const projectFolder = projectFolderForPath(args.projectPath);
+          const pointer = await readPointer(args.projectPath);
+          const projectName = projectNameFromSimularcaPath(args.projectPath);
+          const buildInfo = loadEditorBuildInfo();
+          const result = await startPublish({
+            jobId,
+            publishId: args.publishId,
+            projectFolder,
+            projectUuid: pointer.uuid,
+            projectName,
+            snapshotNames: args.snapshotNames,
+            title: args.title,
+            viewerConfig: args.viewerConfig,
+            target,
+            // Honour an explicit override (used by the "Use last deployed
+            // viewer" CTA), otherwise pin to the editor's current sha.
+            requiredViewerSha: args.requiredViewerShaOverride?.trim() || buildInfo.commitShortSha,
+            appVersion: buildInfo.version,
+            viewerExternalsPath: path.join(getRepoRoot(), "viewer-externals.json"),
+            discoveredPlugins: discoverInstalledPlugins(),
+            signal: abort.signal,
+            onProgress: (progress: ServicePublishProgressEvent) => send(progress)
+          });
+          const refreshed = await loadPublishSettings(getPublishSettingsFilePath());
+          const updated = recordPublish(refreshed, pointer.uuid, {
+            publishId: result.publishId,
+            title: args.title,
+            lastPublishedAtIso: new Date().toISOString(),
+            targetId: args.targetId,
+            viewerUrl: result.viewerUrl,
+            requiredViewerSha: result.requiredViewerSha,
+            referencedBlobs: result.referencedBlobs
+          });
+          await savePublishSettings(getPublishSettingsFilePath(), updated);
+        } catch (error) {
+          send({
+            jobId,
+            phase: "error",
+            error: error instanceof Error ? error.message : String(error)
+          });
+          void writeRuntimeLog("publish", "publish job failed", { jobId, error }, "error");
+        } finally {
+          inFlightPublishJobs.delete(jobId);
+        }
+      })();
+
+      return { jobId };
+    }
+  );
+
+  ipcMain.handle("publish:cancel", async (_event, args: { jobId: string }): Promise<void> => {
+    const abort = inFlightPublishJobs.get(args.jobId);
+    abort?.abort();
+  });
+
+  ipcMain.handle(
+    "publish:set-default-layout",
+    async (_event, args: { layout: unknown | null }): Promise<RedactedPublishSettings> => {
+      const existing = await loadPublishSettings(getPublishSettingsFilePath());
+      const next = setDefaultPublishLayout(existing, args.layout ?? undefined);
+      await savePublishSettings(getPublishSettingsFilePath(), next);
+      return redactSettings(next);
+    }
+  );
+
+  ipcMain.handle(
+    "publish:set-default-permissions",
+    async (_event, args: { permissions: unknown | null }): Promise<RedactedPublishSettings> => {
+      const existing = await loadPublishSettings(getPublishSettingsFilePath());
+      const next = setDefaultViewerPermissions(existing, args.permissions ?? undefined);
+      await savePublishSettings(getPublishSettingsFilePath(), next);
+      return redactSettings(next);
+    }
+  );
+
+  // -- Vercel viewer-deployment IPC ---------------------------------------
+  ipcMain.handle("publish:open-vercel-tokens", async (): Promise<void> => {
+    await shell.openExternal("https://vercel.com/account/tokens");
+  });
+
+  ipcMain.handle(
+    "shell:open-external",
+    async (_event, args: { url: string }): Promise<void> => {
+      const trimmed = args.url?.trim();
+      if (!trimmed) return;
+      // Only honour http/https schemes — never let the renderer hand us
+      // arbitrary URIs that could trigger native handlers (file://, etc.).
+      if (!/^https?:\/\//i.test(trimmed)) {
+        throw new Error(`Refusing to open URL with non-http(s) scheme: ${trimmed}`);
+      }
+      await shell.openExternal(trimmed);
+    }
+  );
+
+  ipcMain.handle(
+    "publish:verify-vercel-token",
+    async (
+      _event,
+      args: { token: string; teamId?: string }
+    ): Promise<VercelTokenVerifyResult> => {
+      const result = await verifyVercelToken({ token: args.token, teamId: args.teamId });
+      return result;
+    }
+  );
+
+  ipcMain.handle(
+    "publish:save-vercel-settings",
+    async (
+      _event,
+      args: VercelSettingsWriteRequest
+    ): Promise<RedactedPublishSettings> => {
+      const existing = await loadPublishSettings(getPublishSettingsFilePath());
+      let nextVercel = existing.viewerDeployment ?? undefined;
+      if (args.clear) {
+        // Wipe credentials entirely.
+        const next: PublishSettings = { ...existing, viewerDeployment: undefined };
+        await savePublishSettings(getPublishSettingsFilePath(), next);
+        return redactSettings(next);
+      }
+      const tokenInput = args.token?.trim();
+      if (tokenInput) {
+        if (!safeStorage.isEncryptionAvailable()) {
+          throw new Error(
+            "Cannot store Vercel token: OS keychain is unavailable to safeStorage."
+          );
+        }
+        const verify = await verifyVercelToken({ token: tokenInput, teamId: args.teamId });
+        if (!verify.ok) {
+          throw new Error(verify.error ?? "Vercel token verification failed.");
+        }
+        const accountLabel = verify.email ?? verify.username ?? "Vercel account";
+        nextVercel = {
+          vercelTokenEncryptedBase64: safeStorage.encryptString(tokenInput).toString("base64"),
+          vercelProjectId: args.projectId ?? nextVercel?.vercelProjectId,
+          vercelProjectName: args.projectName ?? nextVercel?.vercelProjectName,
+          vercelTeamId: args.teamId ?? nextVercel?.vercelTeamId,
+          cachedAccountLabel: accountLabel,
+          lastVerifiedAtIso: new Date().toISOString()
+        };
+      } else {
+        // No new token — patch the non-secret fields only.
+        if (!nextVercel) {
+          throw new Error("No Vercel credentials configured yet — provide a token.");
+        }
+        nextVercel = {
+          ...nextVercel,
+          vercelProjectId: args.projectId ?? nextVercel.vercelProjectId,
+          vercelProjectName: args.projectName ?? nextVercel.vercelProjectName,
+          vercelTeamId: args.teamId ?? nextVercel.vercelTeamId
+        };
+      }
+      const next: PublishSettings = { ...existing, viewerDeployment: nextVercel };
+      await savePublishSettings(getPublishSettingsFilePath(), next);
+      return redactSettings(next);
+    }
+  );
+
+  ipcMain.handle(
+    "publish:deploy-viewer",
+    async (event, _args: Record<string, never> | undefined): Promise<{ jobId: string }> => {
+      const jobId = randomUUID();
+      const abort = new AbortController();
+      inFlightPublishJobs.set(jobId, abort);
+      const sender = event.sender;
+      const send = (payload: DeployViewerProgressIpcEvent): void => {
+        if (!sender.isDestroyed()) sender.send("publish:viewer-deploy-progress", payload);
+      };
+
+      void (async () => {
+        try {
+          const settings = await loadPublishSettings(getPublishSettingsFilePath());
+          const vercel = settings.viewerDeployment;
+          if (!vercel?.vercelTokenEncryptedBase64) {
+            throw new Error(
+              "No Vercel credentials configured. Open the Vercel settings and paste a token first."
+            );
+          }
+          const token = safeStorage.decryptString(
+            Buffer.from(vercel.vercelTokenEncryptedBase64, "base64")
+          );
+          const projectName = vercel.vercelProjectName?.trim() || "simularca-viewer";
+          send({ jobId, phase: "build", message: "Building viewer bundle…" });
+          // Clean dist/ first so stale editor outputs from a prior `vite build`
+          // don't ship to the public viewer deployment.
+          try {
+            await fs.rm(path.join(getRepoRoot(), "dist"), { recursive: true, force: true });
+          } catch {
+            // ignore — dist may not exist yet
+          }
+          await runViewerBuild({
+            onStdout: (line) => send({ jobId, phase: "build", message: line }),
+            onStderr: (line) => send({ jobId, phase: "build", message: line }),
+            signal: abort.signal
+          });
+          send({ jobId, phase: "project", message: `Resolving project "${projectName}"…` });
+          const project = await ensureVercelProject({
+            token,
+            teamId: vercel.vercelTeamId,
+            name: projectName
+          });
+          if (project.created) {
+            send({ jobId, phase: "project", message: `Created Vercel project "${project.name}".` });
+          }
+          // Persist resolved project id so subsequent deploys map to the same project.
+          const refreshed = await loadPublishSettings(getPublishSettingsFilePath());
+          if (refreshed.viewerDeployment) {
+            await savePublishSettings(getPublishSettingsFilePath(), {
+              ...refreshed,
+              viewerDeployment: {
+                ...refreshed.viewerDeployment,
+                vercelProjectId: project.projectId,
+                vercelProjectName: project.name
+              }
+            });
+          }
+          const buildInfo = loadEditorBuildInfo();
+          const distDir = path.join(getRepoRoot(), "dist");
+          // Copy vercel.json into dist/ so the rewrites + headers apply at runtime.
+          try {
+            await fs.copyFile(
+              path.join(getRepoRoot(), "vercel.json"),
+              path.join(distDir, "vercel.json")
+            );
+          } catch {
+            // If we can't copy it, deploy continues — but rewrites won't work
+            // and the viewer URL won't be reachable. Surface as a warning.
+            send({
+              jobId,
+              phase: "build",
+              message: "WARNING: could not copy vercel.json into dist/. Rewrites may not apply."
+            });
+          }
+          send({ jobId, phase: "deploy", message: "Uploading bundle to Vercel…" });
+          const result = await deployViewer({
+            token,
+            teamId: vercel.vercelTeamId,
+            projectName: project.name,
+            distDir,
+            sha: buildInfo.commitShortSha,
+            signal: abort.signal,
+            onProgress: (progress: DeployViewerProgressEvent) => {
+              // Translate vercelDeploy's phase vocabulary to the IPC event's
+              // simpler vocabulary. "preparing"/"uploading" both surface as
+              // "deploy"; "ready" stays as "ready"; final done emit happens
+              // after this loop returns.
+              const phase: DeployViewerProgressIpcEvent["phase"] =
+                progress.phase === "preparing" || progress.phase === "uploading"
+                  ? "deploy"
+                  : progress.phase === "deploying"
+                    ? "deploy"
+                    : progress.phase === "ready"
+                      ? "ready"
+                      : "error";
+              send({
+                jobId,
+                phase,
+                message: progress.message,
+                uploadedFiles: progress.uploadedFiles,
+                totalFiles: progress.totalFiles,
+                uploadedBytes: progress.uploadedBytes,
+                totalBytes: progress.totalBytes,
+                url: progress.url,
+                error: progress.error
+              });
+            }
+          });
+          // Persist the deployed sha so the publish UI can offer "Use last
+          // deployed viewer" as a fallback when the editor's current sha
+          // doesn't have a viewer deployed.
+          {
+            const fresh = await loadPublishSettings(getPublishSettingsFilePath());
+            if (fresh.viewerDeployment) {
+              await savePublishSettings(getPublishSettingsFilePath(), {
+                ...fresh,
+                viewerDeployment: {
+                  ...fresh.viewerDeployment,
+                  lastDeployedSha: buildInfo.commitShortSha,
+                  lastDeployedAtIso: new Date().toISOString()
+                }
+              });
+            }
+          }
+          send({
+            jobId,
+            phase: "done",
+            url: result.url ? `https://${result.url}` : undefined,
+            message: `Deployment ready. View: https://${result.url}`
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          send({ jobId, phase: "error", error: message });
+          void writeRuntimeLog("publish", "viewer deploy failed", { jobId, error }, "error");
+        } finally {
+          inFlightPublishJobs.delete(jobId);
+        }
+      })();
+
+      return { jobId };
+    }
+  );
+
+  ipcMain.handle(
+    "publish:delete",
+    async (
+      _event,
+      args: { targetId: string; publishId: string }
+    ): Promise<PublishDeleteResult> => {
+      const settings = await loadPublishSettings(getPublishSettingsFilePath());
+      const target = findTarget(settings, args.targetId);
+      if (!target) {
+        throw new Error(`Publish target not found: ${args.targetId}`);
+      }
+      // Find the entry being deleted.
+      let foundEntry: ListedPublish | null = null;
+      for (const entries of Object.values(settings.publishesByProjectUuid)) {
+        const match = entries.find((entry) => entry.publishId === args.publishId);
+        if (match) {
+          foundEntry = match;
+          break;
+        }
+      }
+      if (!foundEntry) {
+        throw new Error(`Publish ${args.publishId} not found in publish-settings.json.`);
+      }
+
+      // Build the set of bucket keys that are STILL referenced by some other
+      // publish on the same target. After this delete, any key NOT in that
+      // set is orphaned and safe to purge — even content-addressed assets
+      // and plugin bundles. Reduces bucket bloat over time.
+      const stillReferenced = new Set<string>();
+      for (const entries of Object.values(settings.publishesByProjectUuid)) {
+        for (const entry of entries) {
+          if (entry.publishId === args.publishId) continue;
+          if (entry.targetId !== args.targetId) continue;
+          for (const blob of entry.referencedBlobs) {
+            stillReferenced.add(blob.key);
+          }
+        }
+      }
+
+      const blobsToDelete: { key: string; kind: string; byteSize: number }[] = [];
+      let bytesFreed = 0;
+      for (const blob of foundEntry.referencedBlobs) {
+        const isPerPublish =
+          blob.kind === "manifest" ||
+          blob.kind === "snapshot" ||
+          blob.kind === "config" ||
+          blob.kind === "latest";
+        const isOrphanedShared =
+          (blob.kind === "asset" || blob.kind === "plugin") && !stillReferenced.has(blob.key);
+        if (isPerPublish || isOrphanedShared) {
+          blobsToDelete.push({ key: blob.key, kind: blob.kind, byteSize: blob.byteSize });
+        }
+      }
+
+      const client = new S3Client({
+        region: target.r2.region ?? "auto",
+        endpoint: `https://${target.r2.accountId}.r2.cloudflarestorage.com`,
+        credentials: {
+          accessKeyId: target.r2.accessKeyId,
+          secretAccessKey: target.r2.secretAccessKey
+        }
+      });
+      const failed: string[] = [];
+      for (const blob of blobsToDelete) {
+        try {
+          await client.send(new DeleteObjectCommand({ Bucket: target.r2.bucket, Key: blob.key }));
+          bytesFreed += blob.byteSize;
+        } catch (error) {
+          failed.push(blob.key);
+          void writeRuntimeLog(
+            "publish",
+            "delete-blob failed (continuing)",
+            { key: blob.key, error: error instanceof Error ? error.message : error },
+            "warn"
+          );
+        }
+      }
+
+      // Remove from publish-settings.json
+      const nextPublishesByUuid: PublishSettings["publishesByProjectUuid"] = {};
+      for (const [uuid, list] of Object.entries(settings.publishesByProjectUuid)) {
+        nextPublishesByUuid[uuid] = list.filter((entry) => entry.publishId !== args.publishId);
+      }
+      const next: PublishSettings = { ...settings, publishesByProjectUuid: nextPublishesByUuid };
+      await savePublishSettings(getPublishSettingsFilePath(), next);
+
+      const deletedSharedCount = blobsToDelete.filter(
+        (b) => b.kind === "asset" || b.kind === "plugin"
+      ).length;
+      const retainedSharedCount = foundEntry.referencedBlobs.filter(
+        (b) => (b.kind === "asset" || b.kind === "plugin") && stillReferenced.has(b.key)
+      ).length;
+
+      return {
+        settings: redactSettings(next),
+        bytesFreed,
+        deletedBlobCount: blobsToDelete.length,
+        deletedSharedCount,
+        retainedSharedCount,
+        failedKeyCount: failed.length
+      };
+    }
+  );
+
+  ipcMain.handle(
+    "publish:rollback",
+    async (_event, args: PublishRollbackRequest): Promise<void> => {
+      const settings = await loadPublishSettings(getPublishSettingsFilePath());
+      const target = findTarget(settings, args.targetId);
+      if (!target) {
+        throw new Error(`Publish target not found: ${args.targetId}`);
+      }
+      const client = new S3Client({
+        region: target.r2.region ?? "auto",
+        endpoint: `https://${target.r2.accountId}.r2.cloudflarestorage.com`,
+        credentials: {
+          accessKeyId: target.r2.accessKeyId,
+          secretAccessKey: target.r2.secretAccessKey
+        }
+      });
+      const latestPayload = JSON.stringify(
+        { latestVersion: 1, manifestUrl: `manifest-${args.manifestSha}.json` },
+        null,
+        2
+      );
+      await client.send(
+        new PutObjectCommand({
+          Bucket: target.r2.bucket,
+          Key: `publishes/${args.publishId}/latest.json`,
+          Body: Buffer.from(latestPayload, "utf8"),
+          ContentType: "application/json; charset=utf-8",
+          CacheControl: "public, max-age=60, must-revalidate"
+        })
+      );
+    }
+  );
+
+  // Suppress unused-import lint for the decrypt helper (used by future
+  // self-hosted-deploy IPC; kept exported here so the safeStorage round-trip
+  // is verified by typecheck).
+  void decryptVercelToken;
 }
 
 void app.whenReady().then(async () => {

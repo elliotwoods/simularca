@@ -159,6 +159,9 @@ export function startRuntimeStatsHeartbeat(kernel: AppKernel): void {
     }
     reg.maxIntervalSinceTickMs = 0;
     reg.stallCountSinceTick = 0;
+    if (!state.runtimeDebug?.heartbeatLoggingEnabled) {
+      return;
+    }
     log({
       ts: new Date().toISOString(),
       mem: readPerfMemory(),

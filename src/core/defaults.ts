@@ -169,6 +169,7 @@ export const DEFAULT_TIME: TimeState = {
 };
 export const DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED = false;
 export const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
+export const DEFAULT_HEARTBEAT_LOGGING_ENABLED = false;
 export const DEFAULT_FRAME_PACING: SceneFramePacingSettings = {
   mode: "vsync",
   targetFps: 60
@@ -314,13 +315,15 @@ export function createInitialState(
     },
     runtimeDebug: {
       slowFrameDiagnosticsEnabled: DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED,
-      slowFrameDiagnosticsThresholdMs: DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS
+      slowFrameDiagnosticsThresholdMs: DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS,
+      heartbeatLoggingEnabled: DEFAULT_HEARTBEAT_LOGGING_ENABLED
     },
     dirty: false,
     statusMessage: "Ready",
     consoleEntries: [],
     actorStatusByActorId: {},
-    actorFrameTimingsMs: {}
+    actorFrameTimingsMs: {},
+    viewerPermissions: undefined
   };
 }
 

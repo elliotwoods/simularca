@@ -15,9 +15,10 @@ export function LeftPanel(props: LeftPanelProps) {
   const kernel = useKernel();
   usePluginRegistryRevision();
   const mode = useAppStore((store) => store.state.mode);
+  const canCreateActors = useAppStore((store) => store.state.viewerPermissions?.canCreateActors ?? false);
   const selection = useAppStore((store) => store.state.selection);
   const pluginsEnabled = useAppStore((store) => store.state.pluginsEnabled);
-  const readOnly = mode === "web-ro";
+  const readOnly = mode === "web-ro" && !canCreateActors;
   const plugins = kernel.pluginApi.listPlugins();
   const gitDirtyStatus = useGitDirtyStatus(plugins.map((entry) => entry.source?.modulePath));
 

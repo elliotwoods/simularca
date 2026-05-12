@@ -1,0 +1,10 @@
+{
+  "$schema-comment": "Externals exposed to plugins by the published-snapshot viewer. The plugin bundler (electron/pluginBundler.ts) marks these as externals; the viewer entry stashes this map on globalThis.__SIMULARCA_VIEWER_EXTERNALS__ so the loader can major-version-check at runtime.",
+  "externals": {
+    "three": "0.173.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "5.0.3",
+    "immer": "10.1.1"
+  }
+}

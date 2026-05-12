@@ -20,6 +20,7 @@
     "prebuild": "node scripts/write-build-info.mjs build",
     "build": "npm run build:plugins && tsc -b && vite build",
     "build:plugins": "node scripts/plugins.mjs build",
+    "build:viewer": "node scripts/write-build-info.mjs build && node scripts/build-viewer.mjs",
     "build:electron": "tsc -p tsconfig.electron.json",
     "preview": "vite preview",
     "lint": "eslint .",
@@ -30,12 +31,15 @@
     "test:plugins": "vitest run src/features/plugins src/features/actors/actorCatalog.test.ts src/render/mistVolumeController.test.ts src/render/mistVolumeController.pluginSources.test.ts src/render/engineCompatibility.test.ts src/render/stats.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
     "@fortawesome/fontawesome-svg-core": "^6.7.2",
     "@fortawesome/free-solid-svg-icons": "^6.7.2",
     "@fortawesome/react-fontawesome": "^0.2.2",
     "@julusian/midi": "^3.0.1",
     "@sparkjsdev/spark": "^0.1.10",
+    "@vercel/client": "^17.4.2",
     "dxf-parser": "^1.1.2",
+    "esbuild": "^0.28.0",
     "flexlayout-react": "^0.8.17",
     "immer": "^10.1.1",
     "meshoptimizer": "^1.1.1",

@@ -329,6 +329,289 @@ export type RotoControlInputEvent =
   | (RotoControlInputEventBase & { type: "navigate-forward" })
   | (RotoControlInputEventBase & { type: "raw-midi"; data: number[] });
 
+// ----------------------------------------------------------------------
+// Publish-to-web (snapshots → user's R2 bucket → central viewer)
+// ----------------------------------------------------------------------
+
+export interface RedactedR2Credentials {
+  accountId: string;
+  accessKeyId: string;
+  bucket: string;
+  region?: string;
+  hasSecret: boolean;
+}
+
+export interface RedactedSelfHostedViewer {
+  hasVercelToken: boolean;
+  vercelProjectId?: string;
+  vercelTeamId?: string;
+}
+
+export interface RedactedPublishTarget {
+  id: string;
+  label: string;
+  r2: RedactedR2Credentials;
+  bucketBaseUrl: string;
+  viewerUrl: string;
+  selfHosted?: RedactedSelfHostedViewer;
+  manifestRetention?: number;
+}
+
+export interface ListedPublish {
+  publishId: string;
+  title: string;
+  lastPublishedAtIso: string;
+  targetId: string;
+  viewerUrl?: string;
+  requiredViewerSha?: string;
+  referencedBlobs: PublishBlobRef[];
+}
+
+export interface RedactedPublishSettings {
+  schemaVersion: number;
+  targets: RedactedPublishTarget[];
+  defaultTargetId?: string;
+  publishesByProjectUuid: Record<string, ListedPublish[]>;
+  viewerDeployment?: RedactedVercelDeploySettings;
+}
+
+/**
+ * Inputs for `publish:saveSettings`. Plaintext secrets travel only renderer→
+ * main and only as part of a save (never returned via load).
+ */
+export interface PublishTargetSecrets {
+  /** Inserted only when (re)setting credentials; omit to keep existing. */
+  r2SecretAccessKey?: string;
+  /** Inserted only when (re)setting; omit to keep existing. */
+  vercelToken?: string;
+}
+
+export interface PublishTargetWriteRequest {
+  id: string;
+  label: string;
+  r2: {
+    accountId: string;
+    accessKeyId: string;
+    bucket: string;
+    region?: string;
+  };
+  bucketBaseUrl: string;
+  viewerUrl: string;
+  selfHosted?: {
+    vercelProjectId?: string;
+    vercelTeamId?: string;
+  };
+  manifestRetention?: number;
+  secrets?: PublishTargetSecrets;
+}
+
+export interface PublishViewerConfig {
+  configVersion: 1;
+  panels: {
+    sceneTree: boolean;
+    inspector: boolean;
+    console: boolean;
+    snapshotPicker: boolean;
+  };
+  interactions: {
+    transformGizmo: boolean;
+    axisWidget: boolean;
+    viewPresets: boolean;
+    postProcessing: boolean;
+    orbitPanZoom: boolean;
+  };
+  permissions: {
+    canEditParameters: boolean;
+    canToggleVisibility: boolean;
+    canCreateActors: boolean;
+    canDeleteActors: boolean;
+    canTransformActors: boolean;
+  };
+  /** Optional FlexLayout IJsonModel chosen by the publisher. Opaque to the main process. */
+  layout?: unknown;
+  branding: { title?: string };
+}
+
+export interface PublishStartRequest {
+  projectPath: string;
+  snapshotNames: string[];
+  title: string;
+  viewerConfig: PublishViewerConfig;
+  targetId: string;
+  publishId?: string;
+  /** Override the editor's current commit sha — used by "Use last deployed viewer". */
+  requiredViewerShaOverride?: string;
+}
+
+export interface PublishStartAck {
+  jobId: string;
+}
+
+export type PublishProgressPhase =
+  | "preflight"
+  | "snapshot-scan"
+  | "plugin-bundle"
+  | "asset-hash"
+  | "existence-check"
+  | "asset-upload"
+  | "plugin-upload"
+  | "snapshot-upload"
+  | "config-upload"
+  | "manifest-upload"
+  | "switch-live"
+  | "gc"
+  | "done"
+  | "error";
+
+export interface PublishProgressEvent {
+  jobId: string;
+  phase: PublishProgressPhase;
+  current?: number;
+  total?: number;
+  currentItem?: string;
+  message?: string;
+  /** Monotonic 0..1 across the entire publish. Use this to drive the UI bar. */
+  overallProgress?: number;
+  viewerUrl?: string;
+  manifestSha?: string;
+  error?: string;
+}
+
+export interface PublishCheckViewerVersionRequest {
+  targetId: string;
+  sha: string;
+}
+
+export interface PublishCheckViewerVersionResult {
+  deployed: boolean;
+  status?: number;
+  error?: string;
+}
+
+export interface PublishRollbackRequest {
+  targetId: string;
+  publishId: string;
+  manifestSha: string;
+}
+
+export type ValidationField =
+  | "label"
+  | "accountId"
+  | "accessKeyId"
+  | "secretAccessKey"
+  | "bucket"
+  | "region"
+  | "bucketBaseUrl"
+  | "viewerUrl"
+  | "vercelToken"
+  | "vercelProjectId"
+  | "general";
+
+export type ValidationSeverity = "error" | "warning" | "info";
+
+export interface ValidationIssue {
+  field: ValidationField;
+  severity: ValidationSeverity;
+  message: string;
+}
+
+export interface VerifyTargetResult {
+  ok: boolean;
+  issues: ValidationIssue[];
+}
+
+export interface RedactedVercelDeploySettings {
+  hasVercelToken: boolean;
+  vercelProjectId?: string;
+  vercelProjectName?: string;
+  vercelTeamId?: string;
+  cachedAccountLabel?: string;
+  lastVerifiedAtIso?: string;
+  lastDeployedSha?: string;
+  lastDeployedAtIso?: string;
+}
+
+export interface PublishBlobRef {
+  sha: string;
+  key: string;
+  byteSize: number;
+  kind: "asset" | "plugin" | "snapshot" | "config" | "manifest" | "latest";
+}
+
+export interface VercelTokenVerifyResult {
+  ok: boolean;
+  email?: string;
+  username?: string;
+  userId?: string;
+  teamSlug?: string;
+  error?: string;
+}
+
+export interface VercelSettingsWriteRequest {
+  token?: string;
+  clear?: boolean;
+  projectName?: string;
+  projectId?: string;
+  teamId?: string;
+}
+
+export type DeployViewerPhase =
+  | "build"
+  | "project"
+  | "deploy"
+  | "ready"
+  | "done"
+  | "error";
+
+export interface DeployViewerProgressEvent {
+  jobId: string;
+  phase: DeployViewerPhase;
+  message?: string;
+  uploadedFiles?: number;
+  totalFiles?: number;
+  uploadedBytes?: number;
+  totalBytes?: number;
+  url?: string;
+  error?: string;
+}
+
+export interface PublishDeleteResult {
+  settings: RedactedPublishSettings;
+  bytesFreed: number;
+  deletedBlobCount: number;
+  /** Of the deleted blobs, how many were content-addressed (assets/plugins). */
+  deletedSharedCount: number;
+  /** Shared blobs that were RETAINED because another publish still references them. */
+  retainedSharedCount: number;
+  failedKeyCount: number;
+}
+
+export interface PublishApi {
+  loadSettings(): Promise<RedactedPublishSettings>;
+  saveSettings(args: {
+    targets: PublishTargetWriteRequest[];
+    defaultTargetId?: string;
+  }): Promise<RedactedPublishSettings>;
+  listForProject(args: { projectUuid: string }): Promise<ListedPublish[]>;
+  checkViewerVersion(args: PublishCheckViewerVersionRequest): Promise<PublishCheckViewerVersionResult>;
+  verifyTarget(args: { draft: PublishTargetWriteRequest; skipNetwork?: boolean }): Promise<VerifyTargetResult>;
+  start(args: PublishStartRequest): Promise<PublishStartAck>;
+  cancel(args: { jobId: string }): Promise<void>;
+  rollback(args: PublishRollbackRequest): Promise<void>;
+  deletePublish(args: { targetId: string; publishId: string }): Promise<PublishDeleteResult>;
+  onProgress(listener: (event: PublishProgressEvent) => void): () => void;
+  openVercelTokens(): Promise<void>;
+  verifyVercelToken(args: { token: string; teamId?: string }): Promise<VercelTokenVerifyResult>;
+  saveVercelSettings(args: VercelSettingsWriteRequest): Promise<RedactedPublishSettings>;
+  deployViewer(): Promise<{ jobId: string }>;
+  onViewerDeployProgress(listener: (event: DeployViewerProgressEvent) => void): () => void;
+  openExternal(url: string): Promise<void>;
+  /** Persist the publisher's "use this layout next time" default. Layout is a FlexLayout IJsonModel. */
+  setDefaultLayout(args: { layout: unknown | null }): Promise<RedactedPublishSettings>;
+  /** Persist the publisher's "use these permissions next time" default. */
+  setDefaultPermissions(args: { permissions: unknown | null }): Promise<RedactedPublishSettings>;
+}
+
 export interface ElectronApi {
   mode: AppMode;
   getPathForFile(file: File): string | null;
@@ -434,4 +717,5 @@ export interface ElectronApi {
   onRotoControlInput(listener: (event: RotoControlInputEvent) => void): () => void;
   onBeforeClose(listener: () => void): () => void;
   confirmClose(action: "save-and-quit" | "quit" | "cancel"): Promise<void>;
+  publish: PublishApi;
 }

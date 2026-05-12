@@ -3,6 +3,14 @@ node_modules/.vite/
 dist/
 **/dist/
 dist-electron/
+
+# Local viewer staging artefacts produced by scripts/stage-dev-publish.mjs.
+# Contains hashed copies of the active project's assets (can be hundreds of MB).
+public/dev-publish/assets/
+public/dev-publish/plugins/
+public/dev-publish/publishes/
+public/dev-publish/snapshots/
+public/dev-publish/payload.json
 .vite/
 coverage/
 playwright-report/

@@ -31,7 +31,8 @@ import type {
   SceneToneMappingMode,
   SceneStats,
   SelectionEntry,
-  TimeSpeedPreset
+  TimeSpeedPreset,
+  ViewerPermissions
 } from "@/core/types";
 import type { AppMode, ProjectAssetRef, ProjectIdentity } from "@/types/ipc";
 
@@ -247,6 +248,21 @@ function removeActorRecursive(state: AppState, actorId: string): void {
     }
   }
   state.selection = state.selection.filter((entry) => entry.id !== actorId);
+}
+
+/**
+ * Returns true if a mutating action is permitted under the current mode.
+ *
+ * In editor mode every mutation is allowed; in the published-viewer build
+ * (`mode === "web-ro"`) the publisher's `viewerPermissions` flags decide
+ * which individual mutations leak through. Legacy publishes have no
+ * permissions object → everything stays locked.
+ */
+function mutationAllowed(state: AppState, permission: keyof ViewerPermissions): boolean {
+  if (state.mode !== "web-ro") {
+    return true;
+  }
+  return Boolean(state.viewerPermissions?.[permission]);
 }
 
 function insertActor(state: AppState, input: {
@@ -613,6 +629,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       createActor({ actorType, name, parentActorId = null, pluginType }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return "";
+        }
         const id = createId("actor");
         withHistory(get, set, "Create actor");
         set({
@@ -623,6 +642,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         return id;
       },
       createActorNoHistory({ actorType, name, parentActorId = null, pluginType, select = false }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return "";
+        }
         const id = createId("actor");
         set({
           state: produce(get().state, (draft) => {
@@ -632,7 +654,7 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         return id;
       },
       deleteSelection() {
-        if (get().state.mode === "web-ro") {
+        if (!mutationAllowed(get().state, "canDeleteActors")) {
           return;
         }
         const target = get().state.selection;
@@ -671,6 +693,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       renameNode(node, name) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         withHistory(get, set, "Rename node");
         set({
           state: produce(get().state, (draft) => {
@@ -691,6 +716,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setActorTransform(actorId, key, value) {
+        if (!mutationAllowed(get().state, "canTransformActors")) {
+          return;
+        }
         withHistory(get, set, "Transform actor");
         set({
           state: produce(get().state, (draft) => {
@@ -703,6 +731,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setActorTransformNoHistory(actorId, key, value) {
+        if (!mutationAllowed(get().state, "canTransformActors")) {
+          return;
+        }
         set({
           state: produce(get().state, (draft) => {
             if (!draft.actors[actorId]) {
@@ -714,6 +745,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setActorVisibilityMode(actorId, mode) {
+        if (!mutationAllowed(get().state, "canToggleVisibility")) {
+          return;
+        }
         withHistory(get, set, "Set actor visibility");
         set({
           state: produce(get().state, (draft) => {
@@ -727,6 +761,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setNodeEnabled(node, enabled) {
+        if (!mutationAllowed(get().state, "canToggleVisibility")) {
+          return;
+        }
         withHistory(get, set, "Toggle enabled");
         set({
           state: produce(get().state, (draft) => {
@@ -778,6 +815,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       reorderActor(actorId, newParentId, index) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return;
+        }
         withHistory(get, set, "Reparent actor");
         set({
           state: produce(get().state, (draft) => {
@@ -823,6 +863,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       updateComponentParams(componentId, partial) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         withHistory(get, set, "Update component params");
         set({
           state: produce(get().state, (draft) => {
@@ -836,6 +879,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       updateActorParams(actorId, partial) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         withHistory(get, set, "Update actor params");
         set({
           state: produce(get().state, (draft) => {
@@ -849,6 +895,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       updateActorParamsNoHistory(actorId, partial) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         set({
           state: produce(get().state, (draft) => {
             const actor = draft.actors[actorId];
@@ -1003,6 +1052,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               Number.isFinite(settings.slowFrameDiagnosticsThresholdMs)
             ) {
               draft.runtimeDebug.slowFrameDiagnosticsThresholdMs = Math.max(1, settings.slowFrameDiagnosticsThresholdMs);
+            }
+            if (typeof settings.heartbeatLoggingEnabled === "boolean") {
+              draft.runtimeDebug.heartbeatLoggingEnabled = settings.heartbeatLoggingEnabled;
             }
           })
         });

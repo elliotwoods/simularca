@@ -8,6 +8,7 @@ import {
   faCirclePlay,
   faForwardStep,
   faFilm,
+  faGlobe,
   faKeyboard,
   faPalette,
   faRotateLeft,
@@ -19,6 +20,7 @@ import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
 import { formatFramePacingLabel } from "@/render/framePacing";
 import type { ProfilingPublicState } from "@/render/profiling";
 import { MaterialsModal } from "@/ui/components/MaterialsModal";
+import { PublishModal } from "@/ui/components/PublishModal";
 import { DigitScrubInput } from "@/ui/widgets";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
@@ -79,6 +81,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const state = useAppStore((store) => store.state);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
   const [materialsModalOpen, setMaterialsModalOpen] = useState(false);
+  const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [fpsMenuOpen, setFpsMenuOpen] = useState(false);
   const [customTargetOpen, setCustomTargetOpen] = useState(false);
   const [customTargetDraft, setCustomTargetDraft] = useState("60");
@@ -430,6 +433,21 @@ export function TopBarPanel(props: TopBarPanelProps) {
         >
           <FontAwesomeIcon icon={faCamera} />
         </button>
+        <button
+          type="button"
+          title={
+            !state.activeProject
+              ? "Open a project first"
+              : isReadOnly
+                ? "Read-only mode"
+                : "Publish to web…"
+          }
+          aria-label="Publish to web"
+          onClick={() => setPublishModalOpen(true)}
+          disabled={!state.activeProject || isReadOnly}
+        >
+          <FontAwesomeIcon icon={faGlobe} />
+        </button>
       </div>
 
       <div className="toolbar-group toolbar-profile-group">
@@ -583,6 +601,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
         </div>
       </div>
       <MaterialsModal open={materialsModalOpen} onClose={() => setMaterialsModalOpen(false)} />
+      <PublishModal open={publishModalOpen} onClose={() => setPublishModalOpen(false)} />
     </div>
   );
 }

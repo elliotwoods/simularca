@@ -114,7 +114,15 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
       setAvailableSnapshots([]);
       return;
     }
-    void kernel.projectService.listSnapshots(activeProject.path).then(setAvailableSnapshots);
+    let cancelled = false;
+    const targetPath = activeProject.path;
+    void kernel.projectService.listSnapshots(targetPath).then((entries) => {
+      if (cancelled) return;
+      setAvailableSnapshots(entries);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [kernel, activeProject?.path, state.activeSnapshotName]);
 
   useEffect(() => {
@@ -182,11 +190,19 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   }, [isMenuOpen]);
 
   const refreshSnapshots = (): void => {
-    if (!activeProject) {
+    const project = kernel.store.getState().state.activeProject;
+    if (!project) {
       setAvailableSnapshots([]);
       return;
     }
-    void kernel.projectService.listSnapshots(activeProject.path).then(setAvailableSnapshots);
+    const targetPath = project.path;
+    void kernel.projectService.listSnapshots(targetPath).then((entries) => {
+      const current = kernel.store.getState().state.activeProject;
+      if (current?.path !== targetPath) {
+        return;
+      }
+      setAvailableSnapshots(entries);
+    });
   };
 
   const refreshDefaults = (): void => {
@@ -485,9 +501,12 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
     }
   };
 
-  const handleSnapshotInputBlur = (): void => {
-    cancelSnapshotEdit();
-  };
+  // Note: deliberately no onBlur cancellation. Transient focus shifts (Electron
+  // window focus quirks, repaint triggered re-renders, the project-search
+  // setTimeout autofocus on menu open) would otherwise wipe the inline editor
+  // before the user types a character. Cancellation happens via Escape or by
+  // closing the menu (clicking outside clears editingSnapshot via the
+  // isMenuOpen effect).
 
   const projectLabel = activeProject ? activeProject.name : "(no project)";
 
@@ -747,7 +766,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                                     );
                                   }}
                                   onKeyDown={handleSnapshotInputKeyDown}
-                                  onBlur={handleSnapshotInputBlur}
                                 />
                                 {editingSnapshot.error ? (
                                   <span className="titlebar-project-snapshot-error">{editingSnapshot.error}</span>
@@ -840,7 +858,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                                   );
                                 }}
                                 onKeyDown={handleSnapshotInputKeyDown}
-                                onBlur={handleSnapshotInputBlur}
                               />
                               {editingSnapshot.error ? (
                                 <span className="titlebar-project-snapshot-error">{editingSnapshot.error}</span>

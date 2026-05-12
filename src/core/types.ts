@@ -439,6 +439,7 @@ export interface SceneStats {
 export interface RuntimeDebugState {
   slowFrameDiagnosticsEnabled: boolean;
   slowFrameDiagnosticsThresholdMs: number;
+  heartbeatLoggingEnabled: boolean;
 }
 
 export type ActorStatusValue = string | number | boolean | number[] | string[] | object | null;
@@ -505,6 +506,23 @@ export interface ConsoleCommandEntry {
 
 export type ConsoleEntry = ConsoleLogEntry | ConsoleCommandEntry;
 
+/**
+ * Read-only viewer permission flags. Populated by `createViewerKernel` from
+ * the publish config; `undefined` in editor mode. Mutating store actions
+ * short-circuit when `mode === "web-ro"` and the relevant flag is false.
+ *
+ * Kept structurally compatible with `ViewerPermissions` exported from
+ * `@/features/publish/publishConfigSchema`. We don't import that type here
+ * to keep `core` free of `features` dependencies.
+ */
+export interface ViewerPermissions {
+  canEditParameters: boolean;
+  canToggleVisibility: boolean;
+  canCreateActors: boolean;
+  canDeleteActors: boolean;
+  canTransformActors: boolean;
+}
+
 export interface AppState {
   mode: AppMode;
   activeProject: ProjectIdentity | null;
@@ -528,6 +546,7 @@ export interface AppState {
   consoleEntries: ConsoleEntry[];
   actorStatusByActorId: Record<string, ActorRuntimeStatus>;
   actorFrameTimingsMs: Record<string, number>;
+  viewerPermissions?: ViewerPermissions;
 }
 
 

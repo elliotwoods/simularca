@@ -127,6 +127,7 @@ const DEFAULT_CAMERA_FLY_LOOK_SPEED = 1;
 const DEFAULT_CAMERA_FOV_DEGREES = 50;
 const DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED = false;
 const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
+const DEFAULT_HEARTBEAT_LOGGING_ENABLED = false;
 const CURVE_VERTEX_SELECT_EVENT = "simularca:curve-vertex-select";
 const NAVIGATE_BACK_REQUEST_EVENT = "simularca:navigate-back-request";
 const NAVIGATE_FORWARD_REQUEST_EVENT = "simularca:navigate-forward-request";
@@ -959,6 +960,8 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     Math.abs(
       props.appState.runtimeDebug.slowFrameDiagnosticsThresholdMs - DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS
     ) > 1e-9;
+  const canResetHeartbeatLoggingEnabled =
+    props.appState.runtimeDebug.heartbeatLoggingEnabled !== DEFAULT_HEARTBEAT_LOGGING_ENABLED;
   const postProcessingEnabledCount = [
     props.appState.scene.postProcessing.bloom.enabled,
     props.appState.scene.postProcessing.vignette.enabled,
@@ -981,9 +984,11 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     props.appState.scene.helpers.axes.visible ? "on" : "off"
   }`;
   const postProcessingSummary = postProcessingEnabledCount > 0 ? `${postProcessingEnabledCount} enabled` : "All off";
-  const diagnosticsSummary = props.appState.runtimeDebug.slowFrameDiagnosticsEnabled
+  const slowFrameSummary = props.appState.runtimeDebug.slowFrameDiagnosticsEnabled
     ? `Slow frames on · ${props.appState.runtimeDebug.slowFrameDiagnosticsThresholdMs.toFixed(0)} ms`
     : "Slow frames off";
+  const heartbeatSummary = props.appState.runtimeDebug.heartbeatLoggingEnabled ? "Heartbeat on" : "Heartbeat off";
+  const diagnosticsSummary = `${slowFrameSummary} · ${heartbeatSummary}`;
   const handleSceneBack = useCallback((): boolean => {
     const previousRoute = sceneBackHistoryRef.current.pop();
     if (!previousRoute) {
@@ -1328,6 +1333,7 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     }
     bindings.push(createRotoBooleanBinding("slow-frames-enabled", "Slow Frames", props.appState.runtimeDebug.slowFrameDiagnosticsEnabled, (next) => actions.setRuntimeDebugSettings({ slowFrameDiagnosticsEnabled: next }), "toggle", props.readOnly));
     bindings.push(createRotoNumberBinding({ id: "slow-frame-threshold", label: "Threshold", colorRole: "default", value: props.appState.runtimeDebug.slowFrameDiagnosticsThresholdMs, min: 1, step: 1, precision: 0, unit: "ms", disabled: props.readOnly, onChange: (next) => actions.setRuntimeDebugSettings({ slowFrameDiagnosticsThresholdMs: next }) }, enterRotoZoom));
+    bindings.push(createRotoBooleanBinding("heartbeat-enabled", "Heartbeat", props.appState.runtimeDebug.heartbeatLoggingEnabled, (next) => actions.setRuntimeDebugSettings({ heartbeatLoggingEnabled: next }), "toggle", props.readOnly));
     return bindings;
   }, [
     cameraSummary,
@@ -2913,6 +2919,35 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
                 onClick={() => {
                   props.kernel.store.getState().actions.setRuntimeDebugSettings({
                     slowFrameDiagnosticsEnabled: DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">Heartbeat Logging</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                checked={props.appState.runtimeDebug.heartbeatLoggingEnabled}
+                disabled={props.readOnly}
+                embedded
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setRuntimeDebugSettings({
+                    heartbeatLoggingEnabled: next
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetHeartbeatLoggingEnabled ? "" : " is-hidden"}`}
+                title="Reset Heartbeat Logging"
+                disabled={props.readOnly || !canResetHeartbeatLoggingEnabled}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setRuntimeDebugSettings({
+                    heartbeatLoggingEnabled: DEFAULT_HEARTBEAT_LOGGING_ENABLED
                   });
                 }}
               >

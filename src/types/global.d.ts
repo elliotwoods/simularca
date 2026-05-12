@@ -8,6 +8,7 @@ declare global {
   }
 
   const __SIMULARCA_BUILD_INFO__: BuildInfo;
+  const __SIMULARCA_VIEWER_EXTERNALS__: Record<string, string>;
 }
 
 export {};

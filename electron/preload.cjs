@@ -155,6 +155,38 @@ const api = {
     return () => {
       ipcRenderer.removeListener("roto-control:input", handler);
     };
+  },
+  publish: {
+    loadSettings: () => ipcRenderer.invoke("publish:load-settings"),
+    saveSettings: (args) => ipcRenderer.invoke("publish:save-settings", args),
+    listForProject: (args) => ipcRenderer.invoke("publish:list-for-project", args),
+    checkViewerVersion: (args) => ipcRenderer.invoke("publish:check-viewer-version", args),
+    verifyTarget: (args) => ipcRenderer.invoke("publish:verify-target", args),
+    start: (args) => ipcRenderer.invoke("publish:start", args),
+    cancel: (args) => ipcRenderer.invoke("publish:cancel", args),
+    rollback: (args) => ipcRenderer.invoke("publish:rollback", args),
+    deletePublish: (args) => ipcRenderer.invoke("publish:delete", args),
+    onProgress: (listener) => {
+      const handler = (_event, event) => listener(event);
+      ipcRenderer.on("publish:progress", handler);
+      return () => {
+        ipcRenderer.removeListener("publish:progress", handler);
+      };
+    },
+    openVercelTokens: () => ipcRenderer.invoke("publish:open-vercel-tokens"),
+    openExternal: (url) => ipcRenderer.invoke("shell:open-external", { url }),
+    verifyVercelToken: (args) => ipcRenderer.invoke("publish:verify-vercel-token", args),
+    saveVercelSettings: (args) => ipcRenderer.invoke("publish:save-vercel-settings", args),
+    deployViewer: () => ipcRenderer.invoke("publish:deploy-viewer"),
+    onViewerDeployProgress: (listener) => {
+      const handler = (_event, event) => listener(event);
+      ipcRenderer.on("publish:viewer-deploy-progress", handler);
+      return () => {
+        ipcRenderer.removeListener("publish:viewer-deploy-progress", handler);
+      };
+    },
+    setDefaultLayout: (args) => ipcRenderer.invoke("publish:set-default-layout", args),
+    setDefaultPermissions: (args) => ipcRenderer.invoke("publish:set-default-permissions", args)
   }
 };
 
