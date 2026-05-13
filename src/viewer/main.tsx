@@ -67,6 +67,22 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// WebGPU's ClippingGroup pathway (used for cross-section geometry hiding in
+// `sceneController.ts`) is unreliable on mobile browsers — the edge band shows
+// but back-side meshes are not discarded. The WebGL2 path
+// (`material.clippingPlanes` + `renderer.localClippingEnabled`) works
+// everywhere, so on mobile we force the viewer to WebGL2.
+function isMobileDevice(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return false;
+  }
+  const coarse = window.matchMedia?.("(pointer: coarse)").matches === true;
+  const ua = navigator.userAgent || "";
+  const mobileUa = /iPhone|iPad|iPod|Android|Mobile/i.test(ua)
+    || (/Macintosh/i.test(ua) && (navigator.maxTouchPoints ?? 0) > 1);
+  return coarse && mobileUa;
+}
+
 interface FetchManifestArgs {
   bucketBaseUrl: string;
   publishId: string;
@@ -254,6 +270,16 @@ async function main(): Promise<void> {
     await kernel.projectService.openProject(manifest.project.uuid, null);
   } catch (error) {
     fatal("Failed to load published snapshot.", error);
+  }
+
+  // Must run after `openProject` (which hydrates `state.scene` from the
+  // snapshot and would otherwise clobber this override).
+  if (isMobileDevice() && kernel.store.getState().state.scene.renderEngine !== "webgl2") {
+    kernel.store.setState((s) => ({
+      ...s,
+      state: { ...s.state, scene: { ...s.state.scene, renderEngine: "webgl2" } }
+    }));
+    log("Mobile device detected — forcing WebGL2 renderer for reliable cross-section clipping.");
   }
 
   ReactDOM.createRoot(document.getElementById("root")!).render(

@@ -60,7 +60,7 @@ export const PublishBlobRefSchema = z.object({
   /** Bucket-relative key (e.g. `assets/sha256/abc...` or `publishes/<id>/...`). */
   key: z.string().min(1),
   byteSize: z.number().int().nonnegative(),
-  kind: z.enum(["asset", "plugin", "snapshot", "config", "manifest", "latest"])
+  kind: z.enum(["asset", "plugin", "snapshot", "config", "manifest", "latest", "thumbnail"])
 });
 export type PublishBlobRef = z.infer<typeof PublishBlobRefSchema>;
 

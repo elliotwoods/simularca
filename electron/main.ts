@@ -654,6 +654,104 @@ async function readPluginPackageVersion(packageJsonPath: string): Promise<string
   }
 }
 
+/**
+ * Parse the `version: "..."` literal out of `pluginBuildInfo.generated.ts`.
+ * This is the version baked into the plugin module at build time, which is
+ * the authoritative answer when `dist/package.json` is stale or missing.
+ */
+async function readPluginGeneratedVersion(generatedPath: string): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(generatedPath, "utf8");
+    const match = /\bversion\s*:\s*"([^"]+)"/.exec(raw);
+    const captured = match?.[1]?.trim();
+    if (captured && captured.length > 0) {
+      return captured;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the count of commits reachable from the plugin's standalone git HEAD.
+ * External plugins (under `plugins-external/<plugin>`) are separate git
+ * repositories whose commit history is the natural progression signal — the
+ * baseline version in their `package.json` is just a placeholder, so we
+ * append the commit count to it so the published manifest reflects real
+ * authorship progression instead of being stuck at the baseline forever.
+ */
+function tryReadPluginGitCommitCount(pluginDir: string): number | null {
+  try {
+    const out = execFileSync("git", ["rev-list", "--count", "HEAD"], {
+      cwd: pluginDir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    const count = Number.parseInt(out, 10);
+    return Number.isFinite(count) && count >= 0 ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+function bumpPatchVersion(baseVersion: string, addPatch: number): string {
+  const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(baseVersion.trim());
+  if (!match || !match[1] || !match[2] || !match[3]) return baseVersion;
+  const major = Number.parseInt(match[1], 10);
+  const minor = Number.parseInt(match[2], 10);
+  const patch = Number.parseInt(match[3], 10) + Math.max(0, addPatch);
+  return `${String(major)}.${String(minor)}.${String(patch)}`;
+}
+
+/**
+ * Resolve the most accurate version string for a plugin by walking the
+ * fallback chain: built `dist/pluginBuildInfo.generated.ts` → built
+ * `dist/package.json` (bumped by plugin-build.mjs) → source
+ * `src/pluginBuildInfo.generated.ts` (what the running plugin reports as
+ * `PLUGIN_VERSION`) → source `package.json`. Finally, if the plugin lives in
+ * its own git repo, append the plugin-local commit count as a patch bump so
+ * external plugins whose bundled build scripts don't derive versions from git
+ * still get a meaningful, monotonically-advancing version.
+ */
+async function resolvePluginVersion(pluginDir: string): Promise<string> {
+  const candidates: Array<() => Promise<string | null>> = [
+    () => readPluginGeneratedVersion(path.join(pluginDir, "dist", "pluginBuildInfo.generated.ts")),
+    async () => {
+      const distPackageJson = path.join(pluginDir, "dist", "package.json");
+      if (!(await fileExists(distPackageJson))) return null;
+      const value = await readPluginPackageVersion(distPackageJson);
+      return value === "0.0.0" ? null : value;
+    },
+    () => readPluginGeneratedVersion(path.join(pluginDir, "src", "pluginBuildInfo.generated.ts")),
+    async () => {
+      const sourcePackageJson = path.join(pluginDir, "package.json");
+      if (!(await fileExists(sourcePackageJson))) return null;
+      const value = await readPluginPackageVersion(sourcePackageJson);
+      return value === "0.0.0" ? null : value;
+    }
+  ];
+  let baseVersion: string | null = null;
+  for (const candidate of candidates) {
+    const value = await candidate();
+    if (value !== null) {
+      baseVersion = value;
+      break;
+    }
+  }
+  if (baseVersion === null) baseVersion = "0.0.0";
+
+  // If a `.git` directory sits inside this plugin directory, treat it as a
+  // standalone plugin git repo and bump the patch by commit count.
+  if (await fileExists(path.join(pluginDir, ".git"))) {
+    const commitCount = tryReadPluginGitCommitCount(pluginDir);
+    if (commitCount !== null && commitCount > 0) {
+      return bumpPatchVersion(baseVersion, commitCount);
+    }
+  }
+  return baseVersion;
+}
+
 async function discoverExternalPlugins(): Promise<Array<{ modulePath: string; sourceGroup: "plugins-external" | "plugins"; updatedAtMs: number; version: string }>> {
   const roots: Array<{ sourceGroup: "plugins-external" | "plugins"; directory: string }> = [
     { sourceGroup: "plugins-external", directory: path.join(getRepoRoot(), "plugins-external") },
@@ -668,18 +766,15 @@ async function discoverExternalPlugins(): Promise<Array<{ modulePath: string; so
         .map((entry) => entry.name)
         .sort((a, b) => a.localeCompare(b));
       for (const childName of directories) {
-        const builtEntry = path.join(root.directory, childName, "dist", "index.js");
-        const builtPackageJsonPath = path.join(root.directory, childName, "dist", "package.json");
-        const sourcePackageJsonPath = path.join(root.directory, childName, "package.json");
+        const pluginDir = path.join(root.directory, childName);
+        const builtEntry = path.join(pluginDir, "dist", "index.js");
         try {
           const stat = await fs.stat(builtEntry);
           discovered.push({
             modulePath: `file:///${builtEntry.replaceAll("\\", "/")}`,
             sourceGroup: root.sourceGroup,
             updatedAtMs: stat.mtimeMs,
-            version: await readPluginPackageVersion(
-              (await fileExists(builtPackageJsonPath)) ? builtPackageJsonPath : sourcePackageJsonPath
-            )
+            version: await resolvePluginVersion(pluginDir)
           });
         } catch {
           // Ignore entries without built output.
@@ -3162,7 +3257,10 @@ function registerPublishIpcHandlers(): void {
       if (!target) {
         return { deployed: false, error: `Publish target not found: ${args.targetId}` };
       }
-      return await checkViewerVersionRemote({ viewerUrl: target.viewerUrl, sha: args.sha });
+      return await checkViewerVersionRemote(
+        { viewerUrl: target.viewerUrl, sha: args.sha },
+        { maxRetries: args.maxRetries, retryDelayMs: args.retryDelayMs }
+      );
     }
   );
 
@@ -3247,6 +3345,14 @@ function registerPublishIpcHandlers(): void {
             appVersion: buildInfo.version,
             viewerExternalsPath: path.join(getRepoRoot(), "viewer-externals.json"),
             discoveredPlugins: discoverInstalledPlugins(),
+            thumbnail: args.thumbnail
+              ? {
+                  bytes: Buffer.from(args.thumbnail.bytes),
+                  width: args.thumbnail.width,
+                  height: args.thumbnail.height,
+                  contentType: args.thumbnail.contentType
+                }
+              : undefined,
             signal: abort.signal,
             onProgress: (progress: ServicePublishProgressEvent) => send(progress)
           });
@@ -3444,19 +3550,54 @@ function registerPublishIpcHandlers(): void {
           }
           const buildInfo = loadEditorBuildInfo();
           const distDir = path.join(getRepoRoot(), "dist");
-          // Copy vercel.json into dist/ so the rewrites + headers apply at runtime.
+          // Ship a stripped-down vercel.json inside dist/ so the rewrites +
+          // headers apply at runtime. We MUST drop the repo's
+          // `buildCommand`/`outputDirectory`/`framework`: the deploy target is
+          // the already-built `dist/`, and if Vercel sees a buildCommand it
+          // will try to re-run the editor build inside its sandbox (which
+          // doesn't have the source tree). `framework: null` keeps the
+          // platform's autodetection from second-guessing the upload.
           try {
-            await fs.copyFile(
+            const repoVercelRaw = await fs.readFile(
               path.join(getRepoRoot(), "vercel.json"),
-              path.join(distDir, "vercel.json")
+              "utf8"
+            );
+            const repoVercel = JSON.parse(repoVercelRaw) as Record<string, unknown>;
+            const {
+              buildCommand: _b,
+              outputDirectory: _o,
+              framework: _f,
+              ...rest
+            } = repoVercel;
+            void _b; void _o; void _f;
+            const deployVercel = { ...rest, framework: null };
+            await fs.writeFile(
+              path.join(distDir, "vercel.json"),
+              JSON.stringify(deployVercel, null, 2)
             );
           } catch {
-            // If we can't copy it, deploy continues — but rewrites won't work
+            // If we can't write it, deploy continues — but rewrites won't work
             // and the viewer URL won't be reachable. Surface as a warning.
             send({
               jobId,
               phase: "build",
-              message: "WARNING: could not copy vercel.json into dist/. Rewrites may not apply."
+              message: "WARNING: could not write vercel.json into dist/. Rewrites may not apply."
+            });
+          }
+          // Copy middleware.ts into dist/ so Vercel autodetects it as a
+          // routing middleware. Without this, /v/:sha/p/:id URLs go
+          // straight through the vercel.json rewrite and crawlers see the
+          // generic viewer.html with no per-publish OpenGraph tags.
+          try {
+            await fs.copyFile(
+              path.join(getRepoRoot(), "middleware.ts"),
+              path.join(distDir, "middleware.ts")
+            );
+          } catch {
+            send({
+              jobId,
+              phase: "build",
+              message: "WARNING: could not copy middleware.ts into dist/. Social-card thumbnails will not be injected."
             });
           }
           send({ jobId, phase: "deploy", message: "Uploading bundle to Vercel…" });

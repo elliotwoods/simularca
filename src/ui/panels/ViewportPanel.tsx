@@ -21,8 +21,10 @@ import {
 import { DEFAULT_CAMERA_TRANSITION_DURATION_MS } from "@/features/camera/transitionController";
 import {
   formatViewportScreenshotStatus,
-  type ViewportScreenshotResult
+  type ViewportScreenshotResult,
+  type ViewportThumbnailResult
 } from "@/features/render/viewportScreenshot";
+import { registerThumbnailCapturer } from "@/features/render/viewportThumbnailBridge";
 import type { ActorTransformMode } from "@/render/actorTransformController";
 import { WebGpuViewport } from "@/render/webgpuRenderer";
 import { WebGlViewport } from "@/render/webglRenderer";
@@ -31,6 +33,7 @@ interface ViewportRuntime {
   start(): Promise<void>;
   stop(): Promise<void>;
   captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult>;
+  captureViewportThumbnail(): Promise<ViewportThumbnailResult>;
   setActorTransformMode(mode: ActorTransformMode): void;
   setActorTransformSnappingEnabled(enabled: boolean): void;
   setFramePacing(settings: SceneFramePacingSettings): void;
@@ -390,6 +393,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
     viewport.setActorTransformSnappingEnabled(actorTransformSnappingEnabled);
     viewport.setFramePacing(framePacing);
     viewportRef.current = viewport;
+    registerThumbnailCapturer(() => viewport.captureViewportThumbnail());
     let cancelled = false;
     void viewport.start().catch((error) => {
       if (cancelled) {
@@ -405,6 +409,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
       cancelled = true;
       void viewport.stop();
       viewportRef.current = null;
+      registerThumbnailCapturer(null);
     };
   }, [antialiasing, backend, colorBufferPrecision, kernel, props.suspended]);
 

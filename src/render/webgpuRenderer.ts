@@ -36,7 +36,12 @@ if (import.meta.hot) {
 import type { MistVolumeQualityMode } from "./mistVolumeController";
 import { buildWebGpuToneMappedOutputNode, threeToneMappingForMode } from "./tonemapping";
 import { pruneInvalidSceneGraph } from "./sceneGraphUtils";
-import { captureViewportScreenshotFromCanvas, type ViewportScreenshotResult } from "@/features/render/viewportScreenshot";
+import {
+  captureViewportScreenshotFromCanvas,
+  captureViewportThumbnail,
+  type ViewportScreenshotResult,
+  type ViewportThumbnailResult
+} from "@/features/render/viewportScreenshot";
 import type { ProfileFrameGpuInput } from "./profiling";
 
 const FAST_STATS_INTERVAL_MS = 500;
@@ -347,6 +352,26 @@ export class WebGpuViewport {
         backend: "webgpu",
         canvas: this.renderer.domElement
       });
+    } finally {
+      this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+    }
+  }
+
+  public async captureViewportThumbnail(): Promise<ViewportThumbnailResult> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    while (this.renderInFlight) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    }
+    const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    try {
+      this.sceneController.setDebugHelpersVisible(false);
+      for (let passIndex = 0; passIndex < 2; passIndex += 1) {
+        await this.renderOnce();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      }
+      return await captureViewportThumbnail({ canvas: this.renderer.domElement });
     } finally {
       this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
     }

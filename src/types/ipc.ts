@@ -441,6 +441,18 @@ export interface PublishStartRequest {
   publishId?: string;
   /** Override the editor's current commit sha — used by "Use last deployed viewer". */
   requiredViewerShaOverride?: string;
+  /**
+   * Optional social-card / OpenGraph thumbnail captured from the editor's
+   * viewport at publish time. The renderer encodes it as JPEG; the publish
+   * service uploads it to the bucket and records the URL in
+   * `manifest.thumbnail`.
+   */
+  thumbnail?: {
+    bytes: Uint8Array;
+    width: number;
+    height: number;
+    contentType: string;
+  };
 }
 
 export interface PublishStartAck {
@@ -480,6 +492,14 @@ export interface PublishProgressEvent {
 export interface PublishCheckViewerVersionRequest {
   targetId: string;
   sha: string;
+  /**
+   * Optional retry budget. The renderer passes a non-zero value right after
+   * a successful viewer deploy because Vercel's production-alias swap can
+   * lag 5–30s behind the deploy "ready" signal, during which a HEAD against
+   * the production URL still returns 404.
+   */
+  maxRetries?: number;
+  retryDelayMs?: number;
 }
 
 export interface PublishCheckViewerVersionResult {
@@ -535,7 +555,7 @@ export interface PublishBlobRef {
   sha: string;
   key: string;
   byteSize: number;
-  kind: "asset" | "plugin" | "snapshot" | "config" | "manifest" | "latest";
+  kind: "asset" | "plugin" | "snapshot" | "config" | "manifest" | "latest" | "thumbnail";
 }
 
 export interface VercelTokenVerifyResult {

@@ -69,13 +69,35 @@ export function computeScopedCommitCount(gitRoot, anchorCommit, scopePath) {
   return count;
 }
 
+export function computeTotalScopedCommitCount(gitRoot, scopePath) {
+  const normalizedScope = scopePath.split(path.sep).join("/") || ".";
+  const count = Number.parseInt(runGit(["rev-list", "--count", "HEAD", "--", normalizedScope], gitRoot), 10);
+  if (!Number.isFinite(count) || count < 0) {
+    throw new Error(`Unable to calculate total commit count for ${normalizedScope}.`);
+  }
+  return count;
+}
+
 export function buildInfoFromGit({ gitRoot, baseline, buildKind, scopePath }) {
-  validateAnchorCommit(gitRoot, baseline.anchorCommit);
-  const commitsSinceAnchor = computeScopedCommitCount(gitRoot, baseline.anchorCommit, scopePath);
+  // The anchor commit may have originated in a different git history (e.g.
+  // the plugin used to live inside the main Simularca repo and is now a
+  // standalone repo). When that happens fall back to counting every commit
+  // that touched the plugin scope in the *current* git, so version numbers
+  // still progress instead of permanently sticking at the baseline.
+  let commitsSinceAnchor;
+  let anchorReachable = true;
+  try {
+    validateAnchorCommit(gitRoot, baseline.anchorCommit);
+    commitsSinceAnchor = computeScopedCommitCount(gitRoot, baseline.anchorCommit, scopePath);
+  } catch {
+    anchorReachable = false;
+    commitsSinceAnchor = computeTotalScopedCommitCount(gitRoot, scopePath);
+  }
   return {
     version: computeDerivedVersion(baseline.baseVersion, commitsSinceAnchor, buildKind),
     baseVersion: baseline.baseVersion,
     commitsSinceAnchor,
+    anchorReachable,
     buildKind,
     buildTimestampIso: new Date().toISOString(),
     commitSha: runGit(["rev-parse", "HEAD"], gitRoot),

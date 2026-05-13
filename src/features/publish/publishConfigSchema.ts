@@ -52,6 +52,29 @@ export const publishConfigSchema = z.object({
     .object({
       title: z.string().optional()
     })
+    .default({}),
+  /**
+   * Header bar configuration for the published viewer. `showTitleBar` covers
+   * the logo + version + snapshot picker + project title strip. `showToolbar`
+   * controls the secondary row below it; individual `toolbar.*` flags choose
+   * which sections appear (render/profile/publish are always omitted from the
+   * viewer regardless of these flags).
+   */
+  header: z
+    .object({
+      showTitleBar: z.boolean().default(true),
+      showToolbar: z.boolean().default(true),
+      toolbar: z
+        .object({
+          camera: z.boolean().default(true),
+          time: z.boolean().default(true),
+          fps: z.boolean().default(true),
+          edit: z.boolean().default(false),
+          materials: z.boolean().default(false),
+          keyboard: z.boolean().default(false)
+        })
+        .default({})
+    })
     .default({})
 });
 

@@ -55,7 +55,22 @@ export const publishManifestSchema = z.object({
       })
     )
     .default([]),
-  publishConfigUrl: z.string().min(1)
+  publishConfigUrl: z.string().min(1),
+  /**
+   * Optional social-card / OpenGraph thumbnail. Captured from the editor's
+   * viewport at publish time, uploaded to the bucket alongside other
+   * publish blobs. The Vercel routing middleware reads `thumbnail.url` and
+   * injects it as `<meta property="og:image">` when crawlers (or anyone)
+   * fetch `/v/<sha>/p/<publishId>`.
+   */
+  thumbnail: z
+    .object({
+      url: z.string().min(1),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      contentType: z.string().min(1)
+    })
+    .optional()
 });
 
 export type PublishManifest = z.infer<typeof publishManifestSchema>;

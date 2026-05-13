@@ -135,7 +135,7 @@ export interface PublishedBlobRef {
   /** Bucket-relative key. */
   key: string;
   byteSize: number;
-  kind: "asset" | "plugin" | "snapshot" | "config" | "manifest" | "latest";
+  kind: "asset" | "plugin" | "snapshot" | "config" | "manifest" | "latest" | "thumbnail";
 }
 
 export type PublishProgressCallback = (event: PublishProgressEvent) => void;
@@ -202,6 +202,18 @@ export interface StartPublishArgs {
    * editor and doesn't reliably reflect which plugins the scene needs.)
    */
   discoveredPlugins?: DiscoveredPluginEntry[];
+  /**
+   * Optional pre-encoded thumbnail captured from the editor viewport. The
+   * bytes are uploaded to the publisher's bucket and recorded in
+   * `manifest.thumbnail` so the Vercel routing middleware can serve it as
+   * `<meta property="og:image">` when the URL is shared on social media.
+   */
+  thumbnail?: {
+    bytes: Buffer;
+    width: number;
+    height: number;
+    contentType: string;
+  };
   /** Cancellation signal — checked between phases. */
   signal?: AbortSignal;
   onProgress?: PublishProgressCallback;
@@ -787,6 +799,42 @@ export async function startPublish(args: StartPublishArgs): Promise<PublishResul
   });
   emit({ phase: "config-upload", current: 1, total: 1 });
 
+  // 9b. Thumbnail upload (optional). Content-addressed so re-publishing
+  // the same image is a no-op and stale thumbnails are GC'd along with
+  // their manifest. The image is the OpenGraph social-card image served
+  // by the viewer routing middleware.
+  let thumbnailManifestEntry: { url: string; width: number; height: number; contentType: string } | undefined;
+  if (args.thumbnail) {
+    checkAborted(signal);
+    const thumb = args.thumbnail;
+    const ext = thumb.contentType === "image/png" ? "png" : "jpg";
+    const thumbSha = shortContentSha(thumb.bytes);
+    const thumbKey = `publishes/${publishId}/thumbnail-${thumbSha}.${ext}`;
+    await putObjectWithRetry(
+      r2,
+      bucket,
+      thumbKey,
+      {
+        body: thumb.bytes,
+        contentType: thumb.contentType,
+        cacheControl: ASSET_CACHE_CONTROL
+      },
+      ASSET_UPLOAD_RETRIES
+    );
+    recordBlob({
+      sha: thumbSha,
+      key: thumbKey,
+      byteSize: thumb.bytes.byteLength,
+      kind: "thumbnail"
+    });
+    thumbnailManifestEntry = {
+      url: thumbKey,
+      width: thumb.width,
+      height: thumb.height,
+      contentType: thumb.contentType
+    };
+  }
+
   // 10. Manifest build + upload
   const assetMap: Record<string, string> = {};
   for (const plan of assetPlans) {
@@ -810,7 +858,8 @@ export async function startPublish(args: StartPublishArgs): Promise<PublishResul
       core: false,
       externals: plugin.externals
     })),
-    publishConfigUrl
+    publishConfigUrl,
+    ...(thumbnailManifestEntry ? { thumbnail: thumbnailManifestEntry } : {})
   };
   const manifestRaw = JSON.stringify(manifest, null, 2);
   const manifestSha = shortContentSha(manifestRaw);

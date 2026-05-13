@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
-  faCircleInfo,
   faClone,
   faFloppyDisk,
   faFolderOpen,
@@ -13,21 +12,15 @@ import {
   faTrash,
   faUpRightFromSquare
 } from "@fortawesome/free-solid-svg-icons";
-import { BUILD_INFO, formatBuildTimestamp } from "@/app/buildInfo";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
-import { AboutModal } from "@/ui/components/AboutModal";
-import { GitDirtyBadge } from "@/ui/components/GitDirtyBadge";
+import { TitleBarBrand } from "@/ui/components/TitleBarBrand";
 import { WindowControls } from "@/ui/components/WindowControls";
-import { useGitDirtyStatus } from "@/ui/useGitDirtyStatus";
 import type {
   DefaultProjectPointer,
   ProjectSnapshotListEntry,
   RecentsEntry
 } from "@/types/ipc";
-import appIconUrl from "../../../icon.png";
-
-const APP_NAME = "Simularca";
 
 interface TitleBarPanelProps {
   requestTextInput(args: {
@@ -53,7 +46,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   } | null>(null);
   const [editingSnapshotKey, setEditingSnapshotKey] = useState(0);
   const [isMenuOpen, setMenuOpen] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
   const [projectQuery, setProjectQuery] = useState("");
   const [snapshotQuery, setSnapshotQuery] = useState("");
   const [focusedProjectIndex, setFocusedProjectIndex] = useState<number | null>(null);
@@ -64,8 +56,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   const projectListRef = useRef<HTMLDivElement | null>(null);
   const snapshotListRef = useRef<HTMLDivElement | null>(null);
   const isReadOnly = state.mode === "web-ro";
-  const buildMeta = `${BUILD_INFO.commitShortSha || "unknown"} | ${formatBuildTimestamp(BUILD_INFO.buildTimestampIso)}`;
-  const gitDirtyStatus = useGitDirtyStatus([]);
   const activeProject = state.activeProject;
 
   const snapshotOptions = useMemo(() => {
@@ -513,27 +503,7 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   return (
     <div className="titlebar">
       <div className="titlebar-left titlebar-interactive">
-        <div className="titlebar-app-icon" aria-hidden="true">
-          <img src={appIconUrl} alt="" />
-        </div>
-        <button
-          type="button"
-          className="titlebar-brand-button"
-          title={BUILD_INFO.commitSubject}
-          onClick={() => {
-            setAboutOpen(true);
-          }}
-        >
-          <div className="titlebar-brand">
-            <strong>{APP_NAME}</strong>
-            <span>v{BUILD_INFO.version}</span>
-            <span className="titlebar-build-meta">
-              {buildMeta}
-              <GitDirtyBadge count={gitDirtyStatus.app?.changedFileCount ?? 0} className="git-dirty-badge titlebar-git-dirty-badge" />
-            </span>
-          </div>
-          <FontAwesomeIcon icon={faCircleInfo} />
-        </button>
+        <TitleBarBrand showDirtyBadge />
       </div>
 
       <div className="titlebar-center titlebar-interactive">
@@ -910,7 +880,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
       <div className="titlebar-right titlebar-interactive">
         <WindowControls />
       </div>
-      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );
 }

@@ -250,6 +250,63 @@ export async function createRenderExporter(settings: RenderSettings, context?: R
   return await createWebTempExporter(settings, context);
 }
 
+/**
+ * Render a canvas through an optional resize step and return JPEG bytes at
+ * the given quality (0–1). Used for OpenGraph / social-card thumbnails
+ * where ~150 kB of JPEG is dramatically smaller than the ~600 kB PNG you
+ * would otherwise get from a 1200×630 3D-scene frame.
+ *
+ * `coverFit` resizes by scaling the source to *cover* the output canvas,
+ * cropping the longer axis — matching how Facebook/Twitter renders
+ * `og:image` so the publisher's preview matches what social platforms show.
+ */
+export async function canvasToJpegBytes(
+  canvas: HTMLCanvasElement,
+  outputSize: { width: number; height: number },
+  quality = 0.85
+): Promise<Uint8Array> {
+  const scaledCanvas = document.createElement("canvas");
+  scaledCanvas.width = Math.max(1, Math.round(outputSize.width));
+  scaledCanvas.height = Math.max(1, Math.round(outputSize.height));
+  const context = scaledCanvas.getContext("2d");
+  if (!context) {
+    throw new Error("Failed to create JPEG resize context.");
+  }
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  // JPEG has no alpha — fill black first to avoid the alpha channel becoming
+  // smeared white when toBlob encodes.
+  context.fillStyle = "#000000";
+  context.fillRect(0, 0, scaledCanvas.width, scaledCanvas.height);
+  const srcW = Math.max(1, canvas.width);
+  const srcH = Math.max(1, canvas.height);
+  const dstW = scaledCanvas.width;
+  const dstH = scaledCanvas.height;
+  // Cover-fit: scale so the source fills the dst, crop the overflowing axis.
+  const scale = Math.max(dstW / srcW, dstH / srcH);
+  const renderedW = srcW * scale;
+  const renderedH = srcH * scale;
+  const offsetX = (dstW - renderedW) / 2;
+  const offsetY = (dstH - renderedH) / 2;
+  context.drawImage(canvas, offsetX, offsetY, renderedW, renderedH);
+  const safeQuality = Math.max(0.1, Math.min(1, quality));
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    scaledCanvas.toBlob(
+      (value) => {
+        if (!value) {
+          reject(new Error("Failed to encode thumbnail JPEG."));
+          return;
+        }
+        resolve(value);
+      },
+      "image/jpeg",
+      safeQuality
+    );
+  });
+  const arrayBuffer = await blob.arrayBuffer();
+  return new Uint8Array(arrayBuffer);
+}
+
 export async function canvasToPngBytes(
   canvas: HTMLCanvasElement,
   outputSize?: { width: number; height: number }

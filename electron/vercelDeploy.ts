@@ -27,21 +27,57 @@ function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
-export async function checkViewerVersion(args: CheckViewerVersionArgs): Promise<CheckViewerVersionResult> {
+export interface CheckViewerVersionOptions {
+  /**
+   * When > 0, retry on a non-OK response with linear backoff (`retryDelayMs`
+   * per attempt). Useful immediately after a deploy when the Vercel alias
+   * swap to the production URL can lag behind the deployment's "ready"
+   * signal by 5–30 seconds. The HEAD always uses a cache-bust query
+   * parameter so a stale CDN-cached 404 doesn't keep returning forever.
+   */
+  maxRetries?: number;
+  retryDelayMs?: number;
+}
+
+export async function checkViewerVersion(
+  args: CheckViewerVersionArgs,
+  options: CheckViewerVersionOptions = {}
+): Promise<CheckViewerVersionResult> {
   const { viewerUrl, sha } = args;
   if (!viewerUrl || !sha) {
     return { deployed: false, error: "viewerUrl and sha are required." };
   }
-  const targetUrl = `${trimTrailingSlash(viewerUrl)}/v/${encodeURIComponent(sha)}/viewer.html`;
-  try {
-    const response = await fetch(targetUrl, { method: "HEAD" });
-    return { deployed: response.ok, status: response.status };
-  } catch (error) {
-    return {
-      deployed: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
+  const maxRetries = Math.max(0, options.maxRetries ?? 0);
+  const retryDelayMs = Math.max(250, options.retryDelayMs ?? 2000);
+  const base = `${trimTrailingSlash(viewerUrl)}/v/${encodeURIComponent(sha)}/viewer.html`;
+  let lastStatus: number | undefined;
+  let lastError: string | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    // Cache-bust each attempt so a stale CDN-cached 404 (which happens when
+    // someone HEADed the URL before the deploy went live) can't keep us
+    // stuck in a non-deployed state.
+    const targetUrl = `${base}?_cb=${String(Date.now())}-${String(attempt)}`;
+    try {
+      const response = await fetch(targetUrl, {
+        method: "HEAD",
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" }
+      });
+      lastStatus = response.status;
+      if (response.ok) {
+        return { deployed: true, status: response.status };
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < maxRetries) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
   }
+  return {
+    deployed: false,
+    status: lastStatus,
+    error: lastError
+  };
 }
 
 // --------------------------------------------------------------------------
@@ -296,15 +332,16 @@ export async function deployViewer(args: DeployViewerArgs): Promise<DeployViewer
     {
       name: args.projectName,
       target: "production",
-      // Explicit `builds` tells Vercel to use the static builder. Without it,
-      // the deployment sits in QUEUED forever because Vercel auto-detection
-      // doesn't know what to do with a `framework: null` project that has
-      // no buildCommand / outputDirectory configured.
-      builds: [{ src: "**", use: "@vercel/static" }],
+      // No `builds` array: legacy `builds` disables Vercel's auto-detection
+      // of `middleware.ts` at the upload root, and there is no `@vercel/edge`
+      // builder package — passing it produces "builder.build is not a
+      // function" server-side. With auto-detection on and a stripped-down
+      // `vercel.json` shipped inside `dist/` (no buildCommand, no
+      // outputDirectory), Vercel treats `dist/` as already-built static
+      // content and turns `middleware.ts` into Routing Middleware on
+      // Fluid Compute.
       projectSettings: {
         framework: null,
-        buildCommand: null,
-        outputDirectory: null,
         installCommand: null,
         devCommand: null
       }

@@ -21,6 +21,11 @@ import type { PublishConfig, ViewerPermissions } from "@/features/publish/publis
 import { defaultPublishConfig } from "@/features/publish/publishConfigSchema";
 import { PublishLayoutDesigner } from "@/ui/components/PublishLayoutDesigner";
 import { applyPanelToggleToLayout, reconcileLayoutWithPanels } from "@/ui/FlexLayoutHost";
+import {
+  captureActiveThumbnail,
+  hasActiveThumbnailCapturer
+} from "@/features/render/viewportThumbnailBridge";
+import type { ViewportThumbnailResult } from "@/features/render/viewportScreenshot";
 import type { IJsonModel } from "flexlayout-react";
 import type {
   DeployViewerProgressEvent,
@@ -39,8 +44,14 @@ interface PublishModalProps {
   onClose: () => void;
 }
 
+type ProgressPhase = PublishProgressEvent["phase"] | DeployViewerProgressEvent["phase"];
+
 interface ProgressState {
-  phase: PublishProgressEvent["phase"];
+  /** Distinguishes the deploy half of the flow from the R2 publish half so
+   * `phaseLabel` and label switches can disambiguate `done` / `error`
+   * (which exist in both vocabularies). */
+  kind: "publish" | "deploy";
+  phase: ProgressPhase;
   overallProgress?: number;
   message?: string;
   currentItem?: string;
@@ -81,6 +92,33 @@ function permissionKeys(): Array<{
     { key: "canCreateActors", label: "Create new actors", help: "Allow viewers to add new actors via the Add Actor menu." },
     { key: "canDeleteActors", label: "Delete actors", help: "Allow viewers to delete selected actors." },
     { key: "canTransformActors", label: "Move / rotate / scale", help: "Allow viewers to edit actor transforms (position, rotation, scale)." }
+  ];
+}
+
+function toolbarSectionKeys(): Array<{
+  key: keyof PublishConfig["header"]["toolbar"];
+  label: string;
+  help: string;
+  /** When set, the section requires this viewer permission to take effect. */
+  requiresPermission?: keyof PublishConfig["permissions"];
+}> {
+  return [
+    { key: "camera", label: "Camera presets", help: "View preset dropdown (top / front / iso / etc.)." },
+    { key: "time", label: "Time controls", help: "Play / pause / step / timecode for time-based scenes." },
+    { key: "fps", label: "FPS readout", help: "Frame rate value + sparkline." },
+    {
+      key: "edit",
+      label: "Undo / redo",
+      help: "Edit history buttons. Only effective when the 'Edit parameters' viewer permission is granted.",
+      requiresPermission: "canEditParameters"
+    },
+    {
+      key: "materials",
+      label: "Materials palette",
+      help: "Material library button. Only effective when the 'Edit parameters' viewer permission is granted.",
+      requiresPermission: "canEditParameters"
+    },
+    { key: "keyboard", label: "Keyboard map", help: "Button to open the keyboard shortcut overlay." }
   ];
 }
 
@@ -197,9 +235,41 @@ export function PublishModal(props: PublishModalProps) {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
 
-  const [viewerDeployProgress, setViewerDeployProgress] = useState<DeployViewerProgressEvent | null>(null);
   const [viewerDeployJobId, setViewerDeployJobId] = useState<string | null>(null);
   const viewerDeployJobIdRef = useRef<string | null>(null);
+  const [thumbnail, setThumbnail] = useState<ViewportThumbnailResult | null>(null);
+  const [thumbnailCapturing, setThumbnailCapturing] = useState(false);
+  const [thumbnailError, setThumbnailError] = useState<string | null>(null);
+  const thumbnailPreviewUrl = useMemo(() => {
+    if (!thumbnail) return null;
+    // Cast through BlobPart — the runtime Uint8Array works fine; the strict
+    // TS check rejects it because `.buffer` could in theory be a
+    // SharedArrayBuffer, which it isn't here.
+    const blob = new Blob([thumbnail.jpegBytes as BlobPart], { type: thumbnail.contentType });
+    return URL.createObjectURL(blob);
+  }, [thumbnail]);
+  useEffect(() => {
+    return () => {
+      if (thumbnailPreviewUrl) URL.revokeObjectURL(thumbnailPreviewUrl);
+    };
+  }, [thumbnailPreviewUrl]);
+
+  const captureThumbnail = useCallback(async (): Promise<void> => {
+    if (!hasActiveThumbnailCapturer()) {
+      setThumbnailError("Viewport isn't ready — open or focus a project first.");
+      return;
+    }
+    setThumbnailCapturing(true);
+    setThumbnailError(null);
+    try {
+      const result = await captureActiveThumbnail();
+      setThumbnail(result);
+    } catch (reason) {
+      setThumbnailError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setThumbnailCapturing(false);
+    }
+  }, []);
   useEffect(() => {
     viewerDeployJobIdRef.current = viewerDeployJobId;
   }, [viewerDeployJobId]);
@@ -278,6 +348,13 @@ export function PublishModal(props: PublishModalProps) {
     setDoneInfo(null);
     setActiveJobId(null);
     setViewerStrategy(null);
+    // Auto-capture a thumbnail from the live viewport so the publisher
+    // sees what their social card will look like the moment the modal
+    // opens. Errors are non-fatal (e.g. no project loaded yet) — publisher
+    // can Retake later or Skip.
+    setThumbnail(null);
+    setThumbnailError(null);
+    void captureThumbnail();
     void reload(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.open]);
@@ -286,21 +363,47 @@ export function PublishModal(props: PublishModalProps) {
     if (!props.open || !window.electronAPI) return;
     return subscribeViewerDeployProgress((event) => {
       if (event.jobId !== viewerDeployJobIdRef.current) return;
-      setViewerDeployProgress(event);
-      if (event.phase === "done") {
+      // Drive a unified progress bar across deploy + publish. While the
+      // deploy is uploading files, derive 0..1 from uploadedFiles/totalFiles
+      // so the bar moves visibly. The terminal "done" of the deploy stays at
+      // 1 until the publish kicks in and resets to its own preflight=0.
+      const fileFraction =
+        event.totalFiles && event.totalFiles > 0 && event.uploadedFiles !== undefined
+          ? event.uploadedFiles / event.totalFiles
+          : undefined;
+      setProgress({
+        kind: "deploy",
+        phase: event.phase,
+        overallProgress: fileFraction,
+        message: event.message,
+        currentItem:
+          event.uploadedFiles !== undefined && event.totalFiles
+            ? `${String(event.uploadedFiles)}/${String(event.totalFiles)} files`
+            : undefined,
+        error: event.error
+      });
+      if (event.phase === "done" || event.phase === "ready") {
         setViewerDeployJobId(null);
         void (async () => {
-          // Re-run pre-flight; if we kicked the deploy from handlePublish
-          // (the user picked "Deploy first then publish"), continue into
-          // the actual publish step now that the viewer is live.
-          await runVersionCheck();
+          // The deploy we just ran is the source of truth — trust it. The
+          // production-alias swap on Vercel can lag the deploy "ready"
+          // signal by 5–30s, during which a HEAD against the production URL
+          // returns 404 and would incorrectly send us back to the "needs
+          // deploy" state. Optimistically mark the pre-flight as passed,
+          // refresh saved settings so `lastDeployedSha` reflects this sha,
+          // continue into publish if the user chained one, and only then
+          // run a confirmation check (with retries) in the background.
+          setVersionCheck({ deployed: true, status: 200 });
+          await reload();
           if (pendingPublishAfterDeployRef.current) {
             pendingPublishAfterDeployRef.current = false;
             await runPublishStartIpc();
           }
+          void runVersionCheck({ maxRetries: 10, retryDelayMs: 3000 });
         })();
       }
       if (event.phase === "error") {
+        console.error("[publish] viewer deploy failed:", event.error, event);
         setViewerDeployJobId(null);
         pendingPublishAfterDeployRef.current = false;
       }
@@ -313,6 +416,7 @@ export function PublishModal(props: PublishModalProps) {
     return subscribePublishProgress((event) => {
       if (event.jobId !== activeJobIdRef.current) return;
       setProgress({
+        kind: "publish",
         phase: event.phase,
         overallProgress: event.overallProgress,
         message: event.message,
@@ -326,6 +430,7 @@ export function PublishModal(props: PublishModalProps) {
         void reload();
       }
       if (event.phase === "error") {
+        console.error("[publish] publish failed:", event.error, event);
         setActiveJobId(null);
       }
     });
@@ -343,12 +448,19 @@ export function PublishModal(props: PublishModalProps) {
     viewerStrategy === "use-last" && lastDeployedSha ? lastDeployedSha : null;
   const effectiveViewerSha = requiredViewerShaOverride ?? currentEditorSha;
 
+  // Treat a local "we already deployed this sha" record as authoritative for
+  // gating purposes. The HEAD check against the production URL can lag for
+  // 5–30s after Vercel's "ready" signal (alias swap / CDN), so we must not
+  // fall back to "needs deploy" while our own records say we just did it.
+  const locallyKnownDeployed =
+    lastDeployedSha !== null && lastDeployedSha === effectiveViewerSha;
+
   // Auto-pick a strategy when the editor sha isn't deployed and the user
   // hasn't already chosen one. Cleared whenever the deploy succeeds.
   useEffect(() => {
     if (!versionCheck) return;
-    if (versionCheck.deployed) {
-      // Pre-flight passed — no strategy needed.
+    if (versionCheck.deployed || locallyKnownDeployed) {
+      // Pre-flight passed (or we just deployed locally) — no strategy needed.
       if (viewerStrategy !== null) setViewerStrategy(null);
       return;
     }
@@ -356,9 +468,9 @@ export function PublishModal(props: PublishModalProps) {
     if (hasVercelToken) setViewerStrategy("deploy");
     else if (lastDeployedSha) setViewerStrategy("use-last");
     else setViewerStrategy("override");
-  }, [versionCheck, viewerStrategy, hasVercelToken, lastDeployedSha]);
+  }, [versionCheck, viewerStrategy, hasVercelToken, lastDeployedSha, locallyKnownDeployed]);
 
-  const runVersionCheck = useCallback(async () => {
+  const runVersionCheck = useCallback(async (options: { maxRetries?: number; retryDelayMs?: number } = {}) => {
     if (!selectedTargetId) {
       setVersionCheck(null);
       return;
@@ -367,7 +479,9 @@ export function PublishModal(props: PublishModalProps) {
     try {
       const result = await checkViewerVersion({
         targetId: selectedTargetId,
-        sha: effectiveViewerSha
+        sha: effectiveViewerSha,
+        maxRetries: options.maxRetries,
+        retryDelayMs: options.retryDelayMs
       });
       setVersionCheck(result);
     } catch (reason) {
@@ -611,6 +725,7 @@ export function PublishModal(props: PublishModalProps) {
   // accept the URL will 404 until a viewer ships).
   const versionGatePassed =
     versionCheck?.deployed === true ||
+    locallyKnownDeployed ||
     viewerStrategy === "deploy" ||
     viewerStrategy === "use-last" ||
     viewerStrategy === "override";
@@ -630,7 +745,7 @@ export function PublishModal(props: PublishModalProps) {
 
   const runPublishStartIpc = useCallback(async (): Promise<void> => {
     if (!selectedTargetId || !activeProject) return;
-    setProgress({ phase: "preflight", overallProgress: 0 });
+    setProgress({ kind: "publish", phase: "preflight", overallProgress: 0 });
     setDoneInfo(null);
     try {
       const ack = await startPublish({
@@ -640,12 +755,21 @@ export function PublishModal(props: PublishModalProps) {
         viewerConfig,
         targetId: selectedTargetId,
         publishId: reusePublishId ?? undefined,
-        requiredViewerShaOverride: requiredViewerShaOverride ?? undefined
+        requiredViewerShaOverride: requiredViewerShaOverride ?? undefined,
+        thumbnail: thumbnail
+          ? {
+              bytes: thumbnail.jpegBytes,
+              width: thumbnail.width,
+              height: thumbnail.height,
+              contentType: thumbnail.contentType
+            }
+          : undefined
       });
       setActiveJobId(ack.jobId);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
-      setProgress({ phase: "error", error: message });
+      console.error("[publish] failed to start publish:", reason);
+      setProgress({ kind: "publish", phase: "error", error: message });
       setActiveJobId(null);
     }
   }, [
@@ -654,6 +778,7 @@ export function PublishModal(props: PublishModalProps) {
     requiredViewerShaOverride,
     reusePublishId,
     selectedTargetId,
+    thumbnail,
     title,
     viewerConfig
   ]);
@@ -663,9 +788,13 @@ export function PublishModal(props: PublishModalProps) {
 
     // Strategy "deploy" → run the Vercel deploy first, then publish. The
     // deploy is async via IPC; we set a flag so the deploy "done" handler
-    // continues into the publish step automatically.
+    // continues into the publish step automatically. Skip if we already
+    // deployed this sha locally (CDN/alias lag would otherwise force a
+    // redundant deploy every time).
     const needsDeployFirst =
-      versionCheck?.deployed !== true && viewerStrategy === "deploy";
+      versionCheck?.deployed !== true &&
+      !locallyKnownDeployed &&
+      viewerStrategy === "deploy";
     if (needsDeployFirst) {
       if (!hasVercelToken) {
         setError(
@@ -674,17 +803,15 @@ export function PublishModal(props: PublishModalProps) {
         return;
       }
       pendingPublishAfterDeployRef.current = true;
-      setViewerDeployProgress({ jobId: "pending", phase: "build", message: "Starting build…" });
+      setProgress({ kind: "deploy", phase: "build", message: "Starting build…" });
       try {
         const ack = await deployViewerToVercel();
         setViewerDeployJobId(ack.jobId);
       } catch (reason) {
         pendingPublishAfterDeployRef.current = false;
-        setViewerDeployProgress({
-          jobId: "pending",
-          phase: "error",
-          error: reason instanceof Error ? reason.message : String(reason)
-        });
+        const message = reason instanceof Error ? reason.message : String(reason);
+        console.error("[publish] failed to start viewer deploy:", reason);
+        setProgress({ kind: "deploy", phase: "error", error: message });
         setViewerDeployJobId(null);
       }
       return;
@@ -722,7 +849,7 @@ export function PublishModal(props: PublishModalProps) {
       <div
         className="modal-backdrop"
         onClick={(e) => {
-          if (e.target === e.currentTarget && !activeJobId) props.onClose();
+          if (e.target === e.currentTarget && !activeJobId && !viewerDeployJobId) props.onClose();
         }}
       >
         <div className="publish-modal" role="dialog" aria-modal="true" aria-label="Publish to web">
@@ -824,7 +951,6 @@ export function PublishModal(props: PublishModalProps) {
                       hasVercelToken={hasVercelToken}
                       accountLabel={settings.viewerDeployment?.cachedAccountLabel}
                       deployJobId={viewerDeployJobId}
-                      deployProgress={viewerDeployProgress}
                       activeJobId={activeJobId}
                       strategy={viewerStrategy}
                       onChangeStrategy={setViewerStrategy}
@@ -968,6 +1094,135 @@ export function PublishModal(props: PublishModalProps) {
                   </div>
                 </PublishSection>
 
+                <PublishSection title="Thumbnail">
+                  <p className="publish-modal-section-help">
+                    Captured from the viewport at 1200 × 630 (the size used by Slack, Discord, Facebook, LinkedIn, and Twitter cards). The image is uploaded with the publish and shown whenever the published URL is shared.
+                  </p>
+                  <div className="publish-thumbnail-row">
+                    <div className="publish-thumbnail-preview">
+                      {thumbnailPreviewUrl ? (
+                        <img src={thumbnailPreviewUrl} alt="Publish thumbnail preview" />
+                      ) : (
+                        <div className="publish-thumbnail-empty">
+                          {thumbnailCapturing
+                            ? "Capturing…"
+                            : thumbnailError
+                              ? thumbnailError
+                              : "No thumbnail. Click Retake to capture one."}
+                        </div>
+                      )}
+                    </div>
+                    <div className="publish-thumbnail-meta">
+                      {thumbnail ? (
+                        <>
+                          <div>
+                            {thumbnail.width} × {thumbnail.height} {thumbnail.contentType.split("/")[1]?.toUpperCase() ?? ""}
+                          </div>
+                          <div>{formatBytes(thumbnail.jpegBytes.byteLength)}</div>
+                        </>
+                      ) : null}
+                      <div className="publish-thumbnail-actions">
+                        <button
+                          type="button"
+                          onClick={() => void captureThumbnail()}
+                          disabled={thumbnailCapturing || Boolean(activeJobId)}
+                        >
+                          {thumbnail ? "Retake" : "Capture"}
+                        </button>
+                        {thumbnail ? (
+                          <button
+                            type="button"
+                            className="link"
+                            onClick={() => {
+                              setThumbnail(null);
+                              setThumbnailError(null);
+                            }}
+                            disabled={thumbnailCapturing || Boolean(activeJobId)}
+                          >
+                            Skip
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </PublishSection>
+
+                <PublishSection title="Header bar">
+                  <p className="publish-modal-section-help">
+                    Controls the top of the published page. The title bar shows the Simularca logo, version, snapshot picker, and project title. The toolbar is a secondary row of viewer-friendly controls.
+                  </p>
+                  <div className="publish-modal-toggle-grid">
+                    <fieldset>
+                      <legend>Title bar</legend>
+                      <label title="Show the row containing the Simularca logo / version, snapshot picker, and project title.">
+                        <input
+                          type="checkbox"
+                          checked={viewerConfig.header.showTitleBar}
+                          onChange={(e) =>
+                            setViewerConfig({
+                              ...viewerConfig,
+                              header: { ...viewerConfig.header, showTitleBar: e.target.checked }
+                            })
+                          }
+                          disabled={Boolean(activeJobId)}
+                        />
+                        <span>Show title bar</span>
+                      </label>
+                    </fieldset>
+                    <fieldset>
+                      <legend>Toolbar</legend>
+                      <label title="Show the secondary toolbar row.">
+                        <input
+                          type="checkbox"
+                          checked={viewerConfig.header.showToolbar}
+                          onChange={(e) =>
+                            setViewerConfig({
+                              ...viewerConfig,
+                              header: { ...viewerConfig.header, showToolbar: e.target.checked }
+                            })
+                          }
+                          disabled={Boolean(activeJobId)}
+                        />
+                        <span>Show toolbar</span>
+                      </label>
+                      {toolbarSectionKeys().map((entry) => {
+                        const permissionMissing =
+                          entry.requiresPermission !== undefined &&
+                          !viewerConfig.permissions[entry.requiresPermission];
+                        const disabled =
+                          Boolean(activeJobId) ||
+                          !viewerConfig.header.showToolbar ||
+                          permissionMissing;
+                        const title = permissionMissing
+                          ? `${entry.help} (Requires the "${entry.requiresPermission ?? ""}" viewer permission.)`
+                          : entry.help;
+                        return (
+                          <label key={entry.key} title={title} style={{ paddingLeft: 16, opacity: disabled ? 0.6 : 1 }}>
+                            <input
+                              type="checkbox"
+                              checked={viewerConfig.header.toolbar[entry.key]}
+                              onChange={(e) =>
+                                setViewerConfig({
+                                  ...viewerConfig,
+                                  header: {
+                                    ...viewerConfig.header,
+                                    toolbar: {
+                                      ...viewerConfig.header.toolbar,
+                                      [entry.key]: e.target.checked
+                                    }
+                                  }
+                                })
+                              }
+                              disabled={disabled}
+                            />
+                            <span>{entry.label}</span>
+                          </label>
+                        );
+                      })}
+                    </fieldset>
+                  </div>
+                </PublishSection>
+
                 <PublishSection title="Panel layout">
                   <PublishLayoutDesigner
                     publishConfig={viewerConfig}
@@ -1020,17 +1275,19 @@ export function PublishModal(props: PublishModalProps) {
             </div>
           )}
           <footer>
-            {activeJobId && progress ? (
+            {(activeJobId || viewerDeployJobId) && progress ? (
               <>
                 <FooterProgress progress={progress} />
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleCancel();
-                  }}
-                >
-                  Cancel publish
-                </button>
+                {activeJobId ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleCancel();
+                    }}
+                  >
+                    Cancel publish
+                  </button>
+                ) : null}
               </>
             ) : selectedPublishIds.size >= 2 ? (
               <>
@@ -1254,7 +1511,6 @@ interface ViewerSectionProps {
   hasVercelToken: boolean;
   accountLabel?: string;
   deployJobId: string | null;
-  deployProgress: DeployViewerProgressEvent | null;
   activeJobId: string | null;
   strategy: ViewerStrategyValue | null;
   onChangeStrategy: (next: ViewerStrategyValue) => void;
@@ -1352,8 +1608,6 @@ function ViewerSection(props: ViewerSectionProps) {
           </button>
         </div>
       ) : null}
-
-      {props.deployProgress ? <DeployViewerProgressPanel progress={props.deployProgress} /> : null}
     </>
   );
 }
@@ -1410,11 +1664,16 @@ function PreflightRow({ result, checking, sha, onRetry }: PreflightRowProps) {
   } else if (result.deployed) {
     statusText = `Viewer v${sha} is deployed.`;
     statusClass += " is-ok";
-  } else {
-    statusText = result.error
-      ? `Viewer v${sha} unavailable: ${result.error}`
-      : `Viewer v${sha} not yet released (HTTP ${String(result.status ?? "—")}).`;
+  } else if (result.error) {
+    // Actual fetch failure (DNS, network, malformed response, etc.) — this
+    // IS an error.
+    statusText = `Viewer v${sha} unavailable: ${result.error}`;
     statusClass += " is-error";
+  } else {
+    // Expected state: HEAD 404 because the viewer hasn't been deployed yet.
+    // Not an error — a normal "you should deploy first" cue.
+    statusText = `⚠ Viewer v${sha} not yet released (HTTP ${String(result.status ?? "—")}).`;
+    statusClass += " is-warning";
   }
   return (
     <div className={statusClass}>
@@ -1437,7 +1696,7 @@ function FooterProgress({ progress }: { progress: ProgressState }) {
         />
       </div>
       <div className="publish-footer-progress-label">
-        <span className="publish-footer-progress-phase">{phaseLabel(progress.phase)}</span>
+        <span className="publish-footer-progress-phase">{phaseLabel(progress)}</span>
         {percent !== null ? <span className="publish-footer-progress-pct">{percent}%</span> : null}
         {progress.currentItem ? (
           <span className="publish-footer-progress-item">{progress.currentItem}</span>
@@ -1452,7 +1711,7 @@ function ProgressPanel({ progress }: { progress: ProgressState }) {
   return (
     <section className="publish-section publish-modal-progress">
       <header>
-        <h4>{phaseLabel(progress.phase)}</h4>
+        <h4>{phaseLabel(progress)}</h4>
         {percent !== null ? <span>{percent}%</span> : null}
       </header>
       <div className="publish-progress-bar">
@@ -1470,8 +1729,28 @@ function ProgressPanel({ progress }: { progress: ProgressState }) {
   );
 }
 
-function phaseLabel(phase: ProgressState["phase"]): string {
-  switch (phase) {
+function phaseLabel(state: ProgressState): string {
+  // Deploy and publish share `done` / `error` phase names — disambiguate
+  // via the kind so the label matches what the user is looking at.
+  if (state.kind === "deploy") {
+    switch (state.phase) {
+      case "build":
+        return "Building viewer bundle";
+      case "project":
+        return "Preparing Vercel project";
+      case "deploy":
+        return "Deploying viewer";
+      case "ready":
+        return "Viewer ready";
+      case "done":
+        return "Viewer deployed";
+      case "error":
+        return "Deploy failed";
+      default:
+        return state.phase;
+    }
+  }
+  switch (state.phase) {
     case "preflight":
       return "Preflight";
     case "snapshot-scan":
@@ -1501,7 +1780,7 @@ function phaseLabel(phase: ProgressState["phase"]): string {
     case "error":
       return "Error";
     default:
-      return phase;
+      return state.phase;
   }
 }
 
@@ -1542,40 +1821,3 @@ function DonePanel({ viewerUrl }: { viewerUrl: string }) {
   );
 }
 
-function DeployViewerProgressPanel({ progress }: { progress: DeployViewerProgressEvent }) {
-  const percent =
-    progress.totalFiles && progress.totalFiles > 0 && progress.uploadedFiles !== undefined
-      ? Math.round((progress.uploadedFiles / progress.totalFiles) * 100)
-      : null;
-  return (
-    <div className={`publish-deploy-viewer-progress is-${progress.phase}`}>
-      <div className="publish-deploy-viewer-progress-row">
-        <strong>{deployPhaseLabel(progress.phase)}</strong>
-        {percent !== null ? <span>{percent}%</span> : null}
-      </div>
-      {progress.message ? (
-        <div className="publish-deploy-viewer-progress-message">{progress.message}</div>
-      ) : null}
-      {progress.error ? <div className="publish-modal-error">{progress.error}</div> : null}
-    </div>
-  );
-}
-
-function deployPhaseLabel(phase: DeployViewerProgressEvent["phase"]): string {
-  switch (phase) {
-    case "build":
-      return "Building viewer bundle";
-    case "project":
-      return "Preparing Vercel project";
-    case "deploy":
-      return "Deploying";
-    case "ready":
-      return "Ready";
-    case "done":
-      return "Deployed";
-    case "error":
-      return "Failed";
-    default:
-      return phase;
-  }
-}
