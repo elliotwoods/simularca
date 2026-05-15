@@ -1,0 +1,103 @@
+name: Deploy viewer
+
+# Builds the published-snapshot viewer at dist/v/<sha>/ and deploys to Vercel.
+# Old <sha> paths stay live indefinitely so already-published snapshot URLs
+# (which embed their required viewer sha) keep working.
+#
+# Required secrets on the repo:
+#   VERCEL_TOKEN       - personal/team Vercel API token
+#   VERCEL_ORG_ID      - the team or personal account id
+#   VERCEL_PROJECT_ID  - the dedicated viewer project (e.g. simularca-viewer)
+#
+# Until those secrets are configured the workflow is a no-op outside of the
+# build step — it builds locally on the runner but skips the deploy.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-viewer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci
+
+      - name: Write build info
+        run: node scripts/write-build-info.mjs build
+
+      - name: Build viewer bundle
+        run: node scripts/build-viewer.mjs
+
+      - name: Resolve viewer sha
+        id: sha
+        run: |
+          SHA=$(node -e "console.log(JSON.parse(require('fs').readFileSync('.simularca-build-info.json','utf8')).commitShortSha)")
+          echo "viewer_sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Skip deploy if no Vercel secrets configured
+        id: gate
+        run: |
+          if [ -z "${{ secrets.VERCEL_TOKEN }}" ] || [ -z "${{ secrets.VERCEL_PROJECT_ID }}" ]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Vercel secrets not configured — skipping deploy. Configure VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID to enable."
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull Vercel project settings
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel@latest pull --yes --environment=production --token=$VERCEL_TOKEN
+
+      - name: Deploy to Vercel (production)
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        # `--prebuilt` would skip Vercel's own build step, but we want it to
+        # honour vercel.json's `buildCommand` so the leak assertion runs in
+        # the deploy environment too. (Same script runs idempotently on the
+        # runner above for fast-fail.)
+        run: npx vercel@latest deploy --prod --yes --token=$VERCEL_TOKEN
+
+      - name: Post-deploy probe
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          SHA="${{ steps.sha.outputs.viewer_sha }}"
+          # Inspect the most recent production deployment URL.
+          URL=$(npx vercel@latest ls --token=$VERCEL_TOKEN --prod | head -n 1 | awk '{print $1}')
+          if [ -z "$URL" ]; then
+            echo "::warning::Could not resolve the just-deployed URL."
+            exit 0
+          fi
+          PROBE="https://$URL/v/$SHA/viewer.html"
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$PROBE")
+          echo "Probed $PROBE → $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Viewer probe failed — $PROBE returned $STATUS"
+            exit 1
+          fi

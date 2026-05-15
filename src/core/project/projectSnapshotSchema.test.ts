@@ -50,7 +50,7 @@ describe("project snapshot schema", () => {
     const payload = serializeProjectSnapshot({
       schemaVersion: PROJECT_SCHEMA_VERSION,
       appMode: "electron-rw",
-      projectName: state.activeProjectName,
+      projectName: state.activeProject?.name ?? "demo",
       snapshotName: state.activeSnapshotName,
       createdAtIso: "2026-03-02T00:00:00.000Z",
       updatedAtIso: "2026-03-02T00:00:00.000Z",
@@ -61,6 +61,7 @@ describe("project snapshot schema", () => {
       lastPerspectiveCamera: state.lastPerspectiveCamera,
       time: state.time,
       pluginViews: {},
+      pluginsEnabled: {},
       materials: state.materials,
       assets: state.assets
     });
@@ -74,6 +75,7 @@ describe("project snapshot schema", () => {
       dither: true
     });
     expect(parsed.scene.renderEngine).toBe("webgpu");
+    expect(parsed.scene.colorBufferPrecision).toBe("float32");
     expect(parsed.scene.framePacing).toEqual({
       mode: "vsync",
       targetFps: 60
@@ -116,7 +118,7 @@ describe("project snapshot schema", () => {
     const payload = serializeProjectSnapshot({
       schemaVersion: PROJECT_SCHEMA_VERSION,
       appMode: "electron-rw",
-      projectName: state.activeProjectName,
+      projectName: state.activeProject?.name ?? "demo",
       snapshotName: state.activeSnapshotName,
       createdAtIso: "2026-03-31T00:00:00.000Z",
       updatedAtIso: "2026-03-31T00:00:00.000Z",
@@ -127,6 +129,7 @@ describe("project snapshot schema", () => {
       lastPerspectiveCamera: state.lastPerspectiveCamera,
       time: state.time,
       pluginViews: {},
+      pluginsEnabled: {},
       materials: state.materials,
       assets: state.assets
     });
@@ -234,6 +237,7 @@ describe("project snapshot schema", () => {
       mode: "vsync",
       targetFps: 60
     });
+    expect(parsed.scene.colorBufferPrecision).toBe("float32");
     expect(parsed.scene.helpers).toEqual(DEFAULT_SCENE_HELPERS);
     expect(parsed.scene.cameraFlyLookInvertYaw).toBe(true);
     expect(parsed.scene.cameraFlyLookSpeed).toBe(1);

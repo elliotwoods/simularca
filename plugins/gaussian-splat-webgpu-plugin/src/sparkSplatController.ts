@@ -7,6 +7,7 @@ const SPARK_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "X
 interface SyncContext {
   actor: { id: string; params: Record<string, unknown> };
   state: unknown;
+  profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: unknown): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
 }
@@ -52,10 +53,12 @@ export class SparkSplatController {
   private pointCount = 0;
   private bounds: { min: [number, number, number]; max: [number, number, number] } | null = null;
   private lastWarning: string | null = null;
+  private profileChunk?: <T>(label: string, run: () => T) => T;
 
   public constructor(private readonly renderRoot: THREE.Group) {}
 
   public sync(context: SyncContext): void {
+    this.profileChunk = context.profileChunk;
     const actor = context.actor;
     const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
     const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
@@ -72,7 +75,9 @@ export class SparkSplatController {
       if (assetId !== this.pendingAssetId || reloadToken !== this.pendingReloadToken) {
         this.pendingAssetId = assetId;
         this.pendingReloadToken = reloadToken;
-        void this.loadAsset(assetId, reloadToken, context.readAssetBytes, context.setActorStatus);
+        this.runProfileChunk("Asset load request", () => {
+          void this.loadAsset(assetId, reloadToken, context.readAssetBytes, context.setActorStatus);
+        });
       }
       return;
     }
@@ -81,8 +86,12 @@ export class SparkSplatController {
       return;
     }
 
-    this.applyRuntimeParams(actor, context.state);
-    this.reportLoadedStatus(actor, context.setActorStatus);
+    this.runProfileChunk("Runtime params", () => {
+      this.applyRuntimeParams(actor, context.state);
+    });
+    this.runProfileChunk("Status refresh", () => {
+      this.reportLoadedStatus(actor, context.setActorStatus);
+    });
   }
 
   public dispose(): void {
@@ -105,6 +114,13 @@ export class SparkSplatController {
       this.mesh.dispose();
     }
     this.mesh = null;
+  }
+
+  private runProfileChunk<T>(label: string, run: () => T): T {
+    if (this.profileChunk) {
+      return this.profileChunk(label, run);
+    }
+    return run();
   }
 
   private async loadAsset(

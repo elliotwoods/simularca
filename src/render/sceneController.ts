@@ -1,5 +1,18 @@
 import * as THREE from "three";
+import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { PMREMGenerator as WebGpuPMREMGenerator, WebGPURenderer } from "three/webgpu";
+// Three's `ClippingGroup` is exported from `three/webgpu` at runtime but is missing from the
+// installed @types/three barrel for that subpath, so we resolve it via a deep path.
+import { ClippingGroup as WebGpuClippingGroup } from "three/src/objects/ClippingGroup.js";
+import * as TSL from "three/tsl";
+
+// Patch Three globally so any Mesh raycast can use a precomputed BVH when one is built.
+// acceleratedRaycast falls back to the stock raycast when no boundsTree is present, so
+// existing raycasts (curve handles, camera pan, etc.) are unaffected unless we explicitly
+// build a BVH on the geometry.
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+(THREE.BufferGeometry.prototype as unknown as { computeBoundsTree: typeof computeBoundsTree }).computeBoundsTree = computeBoundsTree;
+(THREE.BufferGeometry.prototype as unknown as { disposeBoundsTree: typeof disposeBoundsTree }).disposeBoundsTree = disposeBoundsTree;
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
@@ -7,6 +20,9 @@ import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { Sky as SkyShaderMesh } from "three/examples/jsm/objects/Sky.js";
+import { SkyMesh as SkyNodeMesh } from "three/examples/jsm/objects/SkyMesh.js";
 import type { AppKernel } from "@/app/kernel";
 import type {
   ActorNode,
@@ -21,12 +37,22 @@ import type {
 } from "@/core/types";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import { getEffectiveCurveHandlesAt } from "@/features/curves/handles";
-import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
+import { buildSampleableCurveData, curveDataWithOverrides, getCurveSamplesPerSegmentFromActor, getCurveTypeFromActor } from "@/features/curves/model";
+import {
+  clearProjectedPolyline,
+  getProjectedPolyline,
+  getProjectedPolylineSignature,
+  setProjectedPolyline,
+  setProjectedPolylineSignature,
+  type ProjectedPolyline
+} from "@/features/curves/projectionCache";
 import { estimateCurveLength, sampleCurvePositionAndTangent } from "@/features/curves/sampler";
 import { parseDxf } from "@/features/dxf/parseDxf";
 import { buildDxfScene, createDxfObject, disposeDxfObject, syncDxfAppearance } from "@/features/dxf/dxfToScene";
 import type { BuiltDxfScene, ParsedDxfDocument } from "@/features/dxf/dxfTypes";
 import { PluginActorRuntimeController } from "@/features/plugins/pluginActorRuntimeController";
+import { resolveActorPlugin } from "@/features/plugins/pluginViews";
+import { isPluginEnabled } from "@/features/plugins/pluginEnabled";
 import { tryParseSplatBinary } from "@/features/splats/splatBinaryFormat";
 import { getGaussianFilterMode, getGaussianFilterRegionActorIds } from "@/render/gaussianFilter";
 import {
@@ -34,12 +60,60 @@ import {
   formatEnvironmentProbeSkippedWarning
 } from "@/render/environmentProbeCompatibility";
 import { MistVolumeController, type MistVolumeQualityMode } from "@/render/mistVolumeController";
+import type { ActorProfileMeta } from "@/render/profiling";
 import { collectActorRenderOrder } from "@/render/sceneRenderOrder";
 import { pruneInvalidSceneGraph } from "@/render/sceneGraphUtils";
+import { enableAOMeshLayer } from "@/render/aoLayer";
 
 const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
 const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
 const MESH_RENDER_ROOT_NAME = "mesh-render-root";
+
+// Detect the source-units → meters factor for a freshly loaded mesh.
+// Returns null when the format has no detectable units, when the source is already in meters,
+// or when the loader did not surface unit metadata.
+function buildMeshProjectionSignature(actor: ActorNode, state: AppState): string {
+  const targetActorIds = (Array.isArray(actor.params.targetActorIds) ? actor.params.targetActorIds : [])
+    .filter((id): id is string => typeof id === "string");
+  const targets = targetActorIds.map((id) => {
+    const t = state.actors[id];
+    if (!t) {
+      return { id, missing: true };
+    }
+    return {
+      id,
+      assetId: typeof t.params.assetId === "string" ? t.params.assetId : null,
+      reloadToken: typeof t.params.assetIdReloadToken === "number" ? t.params.assetIdReloadToken : 0,
+      transform: t.transform,
+      enabled: t.enabled,
+      visibilityMode: t.visibilityMode ?? "visible"
+    };
+  });
+  return JSON.stringify({
+    v: 1,
+    targets,
+    curveTransform: actor.transform,
+    curveEnabled: actor.enabled,
+    projectionPlane: actor.params.projectionPlane ?? "XZ",
+    resolution: Math.max(3, Math.min(4096, Math.floor(Number(actor.params.resolution ?? 64)))),
+    maxDistance: Number(actor.params.maxDistance ?? 100)
+  });
+}
+
+function detectMeshImportScale(extension: string, loadedObject: any): number | null {
+  if (extension === "fbx") {
+    // Three's FBXLoader stashes GlobalSettings.UnitScaleFactor on the returned group's userData.
+    // FBX semantics: the factor converts cm-internal coords to the source app's display unit.
+    //   cm source  → factor 1     → import scale 0.01
+    //   m source   → factor 100   → import scale 1   (skip; default already correct)
+    //   in source  → factor 2.54  → import scale 0.0254
+    const u = loadedObject?.userData?.unitScaleFactor;
+    if (typeof u === "number" && u > 0 && Math.abs(u - 100) > 1e-6) {
+      return u / 100;
+    }
+  }
+  return null;
+}
 const DXF_RENDER_ROOT_NAME = "dxf-render-root";
 const CURVE_RENDER_LINE_NAME = "curve-render-line";
 const SPLAT_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ");
@@ -83,6 +157,21 @@ interface GaussianSortChunk {
   radius: number;
 }
 
+interface MeshAnimationState {
+  rootObject: THREE.Object3D;
+  clips: THREE.AnimationClip[];
+  mixer: THREE.AnimationMixer | null;
+  action: THREE.AnimationAction | null;
+  activeClipName: string | null;
+  activeClipDurationSeconds: number;
+  enabled: boolean;
+  clipTimeSeconds: number;
+  poseRevision: number;
+  skinnedMeshCount: number;
+  morphTargetMeshCount: number;
+  lastStatusSignature: string;
+}
+
 type SupportedRenderer = THREE.WebGLRenderer | {
   coordinateSystem?: unknown;
   xr: { enabled: boolean };
@@ -116,9 +205,27 @@ type SupportedPmremGenerator = {
 
 interface EnvironmentSourceResolution {
   actorId: string | null;
-  actorType: "environment" | "environment-probe" | null;
+  actorType: ActorNode["actorType"] | null;
   name: string;
   texture: THREE.Texture | null;
+}
+
+export interface SkyIblParams {
+  turbidity: number;
+  rayleigh: number;
+  mieCoefficient: number;
+  mieDirectionalG: number;
+  /** Unit vector from origin pointing toward the sun (scene space). */
+  sunDirection: [number, number, number];
+  /** Optional PMREM blur radius in radians. */
+  sigma?: number;
+}
+
+interface SkyIblSceneEntry {
+  scene: THREE.Scene;
+  sky: SkyShaderMesh | SkyNodeMesh;
+  isNode: boolean;
+  target: { texture: THREE.Texture; dispose: () => void } | null;
 }
 
 interface EnvironmentProbeState {
@@ -155,9 +262,49 @@ export function buildEnvironmentProbeSelectedActorSignature(
   });
 }
 
+function buildActorProfileMeta(actor: ActorNode): ActorProfileMeta {
+  return {
+    actorId: actor.id,
+    actorName: actor.name,
+    actorType: actor.actorType,
+    pluginType: actor.pluginType
+  };
+}
+
 export interface SceneControllerOptions {
   qualityMode?: MistVolumeQualityMode;
   showDebugHelpers?: boolean;
+}
+
+function isDebugOnlyActor(actor: Pick<ActorNode, "actorType">): boolean {
+  return actor.actorType === "curve";
+}
+
+export function computeActorObjectVisibility(
+  actor: Pick<ActorNode, "actorType" | "enabled" | "visibilityMode">,
+  isSelected: boolean,
+  debugHelpersVisible: boolean
+): boolean {
+  const visibilityMode = actor.visibilityMode ?? "visible";
+  const visibleByMode = visibilityMode === "visible" || (visibilityMode === "selected" && isSelected);
+  return actor.enabled && visibleByMode && (!isDebugOnlyActor(actor) || debugHelpersVisible);
+}
+
+export function resolveMeshAssetId(
+  actor: Pick<ActorNode, "params">,
+  qualityMode: MistVolumeQualityMode,
+  assets: Array<{ id: string; lodOf?: string }>
+): string | undefined {
+  const originalId = typeof actor.params.assetId === "string" ? actor.params.assetId : undefined;
+  if (!originalId) return undefined;
+  const isExport = qualityMode === "export";
+  const choice = isExport
+    ? (typeof actor.params.renderLodAssetId === "string" ? actor.params.renderLodAssetId : "")
+    : (typeof actor.params.viewportLodAssetId === "string" ? actor.params.viewportLodAssetId : "");
+  if (!choice) return originalId;
+  const lodAsset = assets.find((entry) => entry.id === choice);
+  if (lodAsset && lodAsset.lodOf === originalId) return choice;
+  return originalId;
 }
 
 function formatLoadError(error: unknown): string {
@@ -220,6 +367,54 @@ function clamp01(value: number): number {
 
 function alignTo(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
+}
+
+function sanitizeMeshAnimationSpeed(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 1;
+}
+
+function sanitizeMeshAnimationStartOffset(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function computeAnimationClipTimeSeconds(
+  simTimeSeconds: number,
+  speed: number,
+  startOffsetSeconds: number,
+  durationSeconds: number,
+  loop: boolean
+): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return 0;
+  }
+  const rawTime = simTimeSeconds * speed + startOffsetSeconds;
+  if (loop) {
+    return ((rawTime % durationSeconds) + durationSeconds) % durationSeconds;
+  }
+  return Math.max(0, Math.min(durationSeconds, rawTime));
+}
+
+function countAnimatedMeshFeatures(object: THREE.Object3D): {
+  skinnedMeshCount: number;
+  morphTargetMeshCount: number;
+} {
+  let skinnedMeshCount = 0;
+  let morphTargetMeshCount = 0;
+  object.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) {
+      return;
+    }
+    if (node instanceof THREE.SkinnedMesh) {
+      skinnedMeshCount += 1;
+    }
+    const morphPosition = node.geometry?.morphAttributes?.position;
+    if (Array.isArray(morphPosition) && morphPosition.length > 0) {
+      morphTargetMeshCount += 1;
+    }
+  });
+  return { skinnedMeshCount, morphTargetMeshCount };
 }
 
 function detectColorDenominator(attribute: any): number {
@@ -488,6 +683,7 @@ export class SceneController {
   private readonly dxfStatusSignatureByActorId = new Map<string, string>();
   private readonly gaussianBoundsHelpers = new Map<string, any>();
   private readonly meshLoadTokenByActorId = new Map<string, number>();
+  private readonly meshAnimationStateByActorId = new Map<string, MeshAnimationState>();
   private readonly primitiveSignatureByActorId = new Map<string, string>();
   private readonly materialByMaterialId = new Map<string, THREE.MeshStandardMaterial>();
   private readonly gaussianGeometryByActorId = new Map<string, any>();
@@ -496,6 +692,10 @@ export class SceneController {
   private readonly gaussianTriangleCountByActorId = new Map<string, number>();
   private readonly gaussianSortableBatchesByActorId = new Map<string, GaussianSortableBatch>();
   private readonly curveSignatureByActorId = new Map<string, string>();
+  private readonly meshProjectionRaycaster = new THREE.Raycaster();
+  private readonly meshProjectionLocalDir = new THREE.Vector3();
+  private readonly meshProjectionWorldDir = new THREE.Vector3();
+  private readonly meshProjectionTmpVec = new THREE.Vector3();
   private readonly lastKnownActorById = new Map<string, ActorNode>();
   private readonly meshMaterialSigByActorId = new Map<string, string>();
   private readonly plyLoader = new PLYLoader();
@@ -511,15 +711,19 @@ export class SceneController {
   private readonly environmentAssetByActorId = new Map<string, string>();
   private readonly environmentReloadTokenByActorId = new Map<string, number>();
   private readonly environmentProbeStateByActorId = new Map<string, EnvironmentProbeState>();
+  private readonly environmentProviderTextureByActorId = new Map<string, THREE.Texture>();
+  private readonly skyIblScenesByActorId = new Map<string, SkyIblSceneEntry>();
+  private defaultIblTexture: THREE.Texture | null = null;
   private readonly deferredGpuDisposals: DeferredGpuDisposable[] = [];
   private gaussianSpriteTexture: any | null = null;
-  private currentEnvironmentAssetId: string | null = null;
   private gaussianSortFrameCounter = 0;
   private hasGaussianCameraState = false;
   private readonly gaussianLastCameraPosition = new THREE.Vector3();
   private readonly gaussianLastCameraQuaternion = new THREE.Quaternion();
   private gaussianSortDirty = true;
   private previousSimTimeSeconds = 0;
+  private readonly actorUpdateTimingsMs = new Map<string, number>();
+  private syncTimingFrameCount = 0;
   private readonly mistVolumeController: MistVolumeController;
   private readonly pluginActorRuntimeController: PluginActorRuntimeController;
   private readonly showDebugHelpers: boolean;
@@ -527,9 +731,67 @@ export class SceneController {
   private renderer: SupportedRenderer | null = null;
   private pmremGenerator: SupportedPmremGenerator | null = null;
 
+  // Cross-section state — single global plane, most-recently-id-sorted enabled actor wins.
+  private readonly crossSectionPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  private readonly crossSectionPlaneArray: THREE.Plane[] = [this.crossSectionPlane];
+  private readonly crossSectionEmptyArray: THREE.Plane[] = [];
+  private activeCrossSectionActorId: string | null = null;
+  private readonly crossSectionUniforms = {
+    uXSecPlane: { value: new THREE.Vector4(0, 0, 1, 0) },
+    uXSecEdgeColor: { value: new THREE.Color(0xff8800) },
+    uXSecEdgeWidthPx: { value: 2 },
+    uXSecEdgeEnabled: { value: 0 }
+  };
+  // TSL uniforms for the WebGPU edge-highlight (NodeMaterial colorNode wrap).
+  // Lazily initialized on first WebGPU patch, since they require a TSL import.
+  private xsecTslUniforms: {
+    plane: any; // uniform<Vector4>
+    color: any; // uniform<Color>
+    widthPx: any; // uniform<number>
+    enabled: any; // uniform<number>
+    planeValue: THREE.Vector4;
+    colorValue: THREE.Color;
+  } | null = null;
+  private readonly patchedMaterialsWebGpu = new WeakSet<THREE.Material>();
+  private crossSectionAffectAll = false;
+  private readonly crossSectionAffectedActorIds = new Set<string>();
+  private crossSectionStatusFrame = 0;
+  private crossSectionAppliedActorCount = 0;
+  private crossSectionMaterialPatchCount = 0;
+  private crossSectionReparentToClipCount = 0;
+  private crossSectionReparentToSceneCount = 0;
+  private crossSectionTopLevelAllowedCount = 0;
+  private crossSectionLineCount = 0;
+  private crossSectionPointsCount = 0;
+  private crossSectionSpriteCount = 0;
+  private crossSectionGizmoMisparented = false;
+  private crossSectionGizmoParentName: string | null = null;
+  private readonly crossSectionUnsupportedTypes = new Map<string, number>();
+  private crossSectionLastError: string | null = null;
+  private readonly patchedMaterials = new WeakSet<THREE.Material>();
+  private readonly materialPlaneCount = new WeakMap<THREE.Material, number>();
+  // Per-actor signature for the cross-section apply phase. Skips the per-frame
+  // tree traverse on big meshes (the SSG Stadium FBX has thousands of nodes
+  // and traversing it ate 80-100ms during camera rotation).
+  private readonly crossSectionAppliedSigByActorId = new Map<string, string>();
+  private readonly crossSectionAppliedObjectByActorId = new WeakMap<object, true>();
+  // WebGPU clipping uses ClippingGroup Object3Ds (material.clippingPlanes is ignored).
+  // We host one shared ClippingGroup at scene root and reparent affected top-level actor objects under it.
+  private readonly crossSectionClipGroup: THREE.Group = (() => {
+    const group = new WebGpuClippingGroup() as unknown as THREE.Group;
+    (group as unknown as { clippingPlanes: THREE.Plane[] }).clippingPlanes = [];
+    (group as unknown as { enabled: boolean }).enabled = false;
+    (group as unknown as { clipShadows: boolean }).clipShadows = true;
+    group.name = "cross-section-clip-group";
+    return group;
+  })();
+
+  private readonly qualityMode: MistVolumeQualityMode;
+
   public constructor(private readonly kernel: AppKernel, options: SceneControllerOptions = {}) {
     this.showDebugHelpers = options.showDebugHelpers ?? true;
     this.debugHelpersVisible = this.showDebugHelpers;
+    this.qualityMode = options.qualityMode ?? "interactive";
     const initialState = this.kernel.store.getState().state;
     const initialBackground = normalizeBackgroundColor(initialState.scene.backgroundColor);
     this.scene.background = new THREE.Color(initialBackground);
@@ -538,6 +800,11 @@ export class SceneController {
     light.position.set(8, 12, 6);
     this.scene.add(light);
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    (this.crossSectionClipGroup as unknown as { clippingPlanes: THREE.Plane[] }).clippingPlanes = this.crossSectionPlaneArray;
+    this.scene.add(this.crossSectionClipGroup);
+    if (typeof window !== "undefined" && (import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
+      (window as unknown as Record<string, unknown>).__SIMULARCA_SCENE_CONTROLLER__ = this;
+    }
     this.ktx2Loader.setTranscoderPath("/basis/");
     this.mistVolumeController = new MistVolumeController(this.kernel, {
       getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
@@ -547,12 +814,14 @@ export class SceneController {
     }, options.qualityMode ?? "interactive");
     this.pluginActorRuntimeController = new PluginActorRuntimeController({
       resolveDescriptor: (actor) => this.resolveActorDescriptor(actor),
+      isActorPluginEnabled: (actor) => this.isActorPluginEnabled(actor),
       setActorStatus: (actorId, status) => {
         this.kernel.store.getState().actions.setActorStatus(actorId, status);
       },
       addLog: (entry) => {
         this.kernel.store.getState().actions.addLog(entry);
-      }
+      },
+      profiler: this.kernel.profiler
     });
   }
 
@@ -570,10 +839,7 @@ export class SceneController {
       if (actor.actorType !== "curve") {
         continue;
       }
-      const object = this.actorObjects.get(actor.id);
-      if (object) {
-        object.visible = visible;
-      }
+      this.applyActorTransform(actor);
     }
   }
 
@@ -644,21 +910,24 @@ export class SceneController {
     this.applySceneHelperVisibility();
   }
 
-  private shouldLogPerformanceDiagnostics(): boolean {
-    return this.kernel.store.getState().state.runtimeDebug.slowFrameDiagnosticsEnabled;
-  }
-
-  private warnPerformance(...args: unknown[]): void {
-    if (!this.shouldLogPerformanceDiagnostics()) {
-      return;
-    }
-    console.warn(...args);
-  }
-
   public async syncFromState(): Promise<void> {
-    const t0 = performance.now();
+    const profileFrameChunk = async <T,>(label: string, run: () => T | Promise<T>): Promise<T> => {
+      if (!this.kernel.profiler.isCaptureActive()) {
+        return await run();
+      }
+      return await this.kernel.profiler.withFrameChunk(label, run);
+    };
+    const profileActorChunk = <T,>(label: string, run: () => T | Promise<T>): T | Promise<T> => {
+      if (!this.kernel.profiler.shouldProfileUpdates() || this.kernel.profiler.getDetailPreset() !== "standard") {
+        return run();
+      }
+      return this.kernel.profiler.withChunk(label, run);
+    };
+
     const state = this.kernel.store.getState().state;
-    this.syncSceneHelpers(state.scene.helpers);
+    await profileFrameChunk("Scene helpers", () => {
+      this.syncSceneHelpers(state.scene.helpers);
+    });
     const actorIds = new Set(Object.keys(state.actors));
     const orderedActorIds = collectActorRenderOrder(
       state.scene.actorIds,
@@ -672,157 +941,219 @@ export class SceneController {
     const dtSeconds = Math.max(0, simTimeSeconds - this.previousSimTimeSeconds);
     this.previousSimTimeSeconds = simTimeSeconds;
 
-    for (const existing of [...this.actorObjects.keys()]) {
-      if (!actorIds.has(existing)) {
-        const object = this.actorObjects.get(existing);
-        const removedActor = this.lastKnownActorById.get(existing) ?? null;
-        this.disposePluginSceneObject(removedActor, object, this.pluginDescriptorByActorId.get(existing) ?? undefined);
-        if (object) {
-          object.parent?.remove(object);
-        }
-        this.actorObjects.delete(existing);
-        this.gaussianAssetByActorId.delete(existing);
-        this.gaussianReloadTokenByActorId.delete(existing);
-        this.meshAssetByActorId.delete(existing);
-        this.meshReloadTokenByActorId.delete(existing);
-        this.dxfAssetByActorId.delete(existing);
-        this.dxfReloadTokenByActorId.delete(existing);
-        this.dxfDocumentByActorId.delete(existing);
-        this.dxfSceneByActorId.delete(existing);
-        this.dxfBuildSignatureByActorId.delete(existing);
-        this.dxfAppearanceSignatureByActorId.delete(existing);
-        this.dxfStatusSignatureByActorId.delete(existing);
-        this.meshLoadTokenByActorId.delete(existing);
-        const helper = this.gaussianBoundsHelpers.get(existing);
-        if (helper) {
-          helper.parent?.remove(helper);
-          this.gaussianBoundsHelpers.delete(existing);
-        }
-        this.gaussianGeometryByActorId.delete(existing);
-        this.gaussianVisualSignatureByActorId.delete(existing);
-        this.gaussianVisibleCountByActorId.delete(existing);
-        this.gaussianTriangleCountByActorId.delete(existing);
-        this.gaussianSortableBatchesByActorId.delete(existing);
-        this.curveSignatureByActorId.delete(existing);
+    await profileFrameChunk("Scene cleanup", () => {
+      for (const existing of [...this.actorObjects.keys()]) {
+        if (!actorIds.has(existing)) {
+          const object = this.actorObjects.get(existing);
+          const removedActor = this.lastKnownActorById.get(existing) ?? null;
+          this.disposePluginSceneObject(removedActor, object, this.pluginDescriptorByActorId.get(existing) ?? undefined);
+          if (object) {
+            object.parent?.remove(object);
+          }
+          this.actorObjects.delete(existing);
+          this.gaussianAssetByActorId.delete(existing);
+          this.gaussianReloadTokenByActorId.delete(existing);
+          this.meshAssetByActorId.delete(existing);
+          this.meshReloadTokenByActorId.delete(existing);
+          this.dxfAssetByActorId.delete(existing);
+          this.dxfReloadTokenByActorId.delete(existing);
+          this.dxfDocumentByActorId.delete(existing);
+          this.dxfSceneByActorId.delete(existing);
+          this.dxfBuildSignatureByActorId.delete(existing);
+          this.dxfAppearanceSignatureByActorId.delete(existing);
+          this.dxfStatusSignatureByActorId.delete(existing);
+          this.meshLoadTokenByActorId.delete(existing);
+          this.disposeMeshAnimationState(existing);
+          const helper = this.gaussianBoundsHelpers.get(existing);
+          if (helper) {
+            helper.parent?.remove(helper);
+            this.gaussianBoundsHelpers.delete(existing);
+          }
+          this.gaussianGeometryByActorId.delete(existing);
+          this.gaussianVisualSignatureByActorId.delete(existing);
+          this.gaussianVisibleCountByActorId.delete(existing);
+          this.gaussianTriangleCountByActorId.delete(existing);
+          this.gaussianSortableBatchesByActorId.delete(existing);
+          this.curveSignatureByActorId.delete(existing);
+          clearProjectedPolyline(existing);
           this.meshMaterialSigByActorId.delete(existing);
+          this.crossSectionAppliedSigByActorId.delete(existing);
           this.pluginDescriptorByActorId.delete(existing);
           this.environmentTextureByActorId.get(existing)?.dispose?.();
           this.environmentTextureByActorId.delete(existing);
           this.environmentAssetByActorId.delete(existing);
           this.environmentReloadTokenByActorId.delete(existing);
+          this.environmentProviderTextureByActorId.get(existing)?.dispose?.();
+          this.environmentProviderTextureByActorId.delete(existing);
+          this.disposeSkyIblForActor(existing);
           this.disposeEnvironmentProbe(existing);
           if (object instanceof THREE.Group) {
             const dxfRoot = object.getObjectByName(DXF_RENDER_ROOT_NAME);
             if (dxfRoot instanceof THREE.Group) {
-            disposeDxfObject(dxfRoot);
+              disposeDxfObject(dxfRoot);
+            }
           }
+          this.kernel.store.getState().actions.setActorStatus(existing, null);
+          this.actorUpdateTimingsMs.delete(existing);
+          this.primitiveSignatureByActorId.delete(existing);
+          this.lastKnownActorById.delete(existing);
         }
-        this.kernel.store.getState().actions.setActorStatus(existing, null);
-        this.primitiveSignatureByActorId.delete(existing);
-        this.lastKnownActorById.delete(existing);
       }
-      }
+    });
 
+    await profileFrameChunk("Plugin runtime sync", () => {
       this.pluginActorRuntimeController.sync(state, dtSeconds);
+    });
 
-      const tA = performance.now();
+    await profileFrameChunk("Actor update loop", async () => {
       for (const actor of orderedActors) {
-      const _ta0 = performance.now();
-      this.lastKnownActorById.set(actor.id, actor);
-      const _ta1 = performance.now();
-      await this.ensureActorObject(actor);
-      const _ta2 = performance.now();
-      this.refreshPluginSceneObjectIfNeeded(actor);
-      const _ta2b = performance.now();
-      this.syncActorParentAttachment(actor.id, actor.parentActorId);
-      const _ta3 = performance.now();
-      let _ta4 = _ta3, _ta5 = _ta3;
-      if (actor.actorType === "mesh") {
-        // Avoid an unconditional `await` every frame. `syncMeshAsset` early-exits
-        // synchronously, but `async` always yields to the microtask queue, which
-        // can allow queued macrotasks (e.g., XHR/DOMParser callbacks) to run and
-        // block the frame for seconds. Only await when an actual reload is needed.
-        const _tPrecheck = performance.now();
-        const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
-        const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
-        const needsReload = assetId !== (this.meshAssetByActorId.get(actor.id) ?? "")
-          || reloadToken !== (this.meshReloadTokenByActorId.get(actor.id) ?? 0);
-        const _precheckDt = performance.now() - _tPrecheck;
-        if (_precheckDt > 5) this.warnPerformance("[rehearse-engine] mesh precheck slow:", _precheckDt.toFixed(1), "ms");
-        if (needsReload) {
-          await this.syncMeshAsset(actor);
+        const syncActorWork = async () => {
+          profileActorChunk("Actor bookkeeping", () => {
+            this.lastKnownActorById.set(actor.id, actor);
+          });
+          await profileActorChunk("Ensure object", () => this.ensureActorObject(actor));
+          profileActorChunk("Refresh plugin object", () => {
+            this.refreshPluginSceneObjectIfNeeded(actor);
+          });
+          profileActorChunk("Parent attachment", () => {
+            this.syncActorParentAttachment(actor.id, actor.parentActorId);
+          });
+          if (actor.actorType === "mesh") {
+            const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+            const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+            const needsReload =
+              assetId !== (this.meshAssetByActorId.get(actor.id) ?? "") ||
+              reloadToken !== (this.meshReloadTokenByActorId.get(actor.id) ?? 0);
+            if (needsReload) {
+              await profileActorChunk("Mesh asset", () => this.syncMeshAsset(actor));
+            }
+            profileActorChunk("Mesh materials", () => {
+              this.syncMeshMaterials(actor, state);
+            });
+            profileActorChunk("Mesh animation", () => {
+              this.syncMeshAnimation(actor, simTimeSeconds);
+            });
+          }
+          if (actor.actorType === "dxf-reference") {
+            const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+            const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
+            const needsReload =
+              assetId !== (this.dxfAssetByActorId.get(actor.id) ?? "") ||
+              reloadToken !== (this.dxfReloadTokenByActorId.get(actor.id) ?? 0);
+            const needsInitialLoad =
+              assetId.length > 0 &&
+              !this.dxfDocumentByActorId.has(actor.id) &&
+              !this.dxfStatusSignatureByActorId.has(actor.id);
+            if (needsReload || needsInitialLoad) {
+              await profileActorChunk("DXF asset", () => this.syncDxfReferenceAsset(actor));
+            }
+            profileActorChunk("DXF visuals", () => {
+              this.syncDxfReferenceVisual(actor);
+            });
+          }
+          if (actor.actorType === "primitive") {
+            profileActorChunk("Primitive visuals", () => {
+              this.syncPrimitiveActor(actor);
+            });
+          }
+          if (actor.actorType === "curve") {
+            profileActorChunk("Curve visuals", () => {
+              this.syncCurveActor(actor);
+            });
+          }
+          if (actor.actorType === "cross-section") {
+            profileActorChunk("Cross-section visuals", () => {
+              this.syncCrossSectionActor(actor);
+            });
+          }
+          if (actor.actorType === "gaussian-splat-spark") {
+            await profileActorChunk("Gaussian asset", () => this.syncGaussianSplatAsset(actor));
+          }
+          profileActorChunk("Transform", () => {
+            this.applyActorTransform(actor);
+          });
+        };
+        if (this.kernel.profiler.shouldProfileUpdates()) {
+          await this.kernel.profiler.withActorPhase(buildActorProfileMeta(actor), "update", syncActorWork);
+        } else if (this.kernel.profiler.isMonitoringActive()) {
+          const t0 = performance.now();
+          await syncActorWork();
+          const elapsed = performance.now() - t0;
+          const prev = this.actorUpdateTimingsMs.get(actor.id) ?? elapsed;
+          this.actorUpdateTimingsMs.set(actor.id, prev * 0.8 + elapsed * 0.2);
+        } else {
+          await syncActorWork();
         }
-        _ta4 = performance.now();
-        this.syncMeshMaterials(actor, state);
-        _ta5 = performance.now();
       }
-      if (actor.actorType === "dxf-reference") {
-        const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
-        const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
-        const needsReload = assetId !== (this.dxfAssetByActorId.get(actor.id) ?? "")
-          || reloadToken !== (this.dxfReloadTokenByActorId.get(actor.id) ?? 0);
-        const needsInitialLoad = assetId.length > 0
-          && !this.dxfDocumentByActorId.has(actor.id)
-          && !this.dxfStatusSignatureByActorId.has(actor.id);
-        if (needsReload || needsInitialLoad) {
-          await this.syncDxfReferenceAsset(actor);
+      if (this.kernel.profiler.isMonitoringActive() && !this.kernel.profiler.isCaptureActive()) {
+        this.syncTimingFrameCount = (this.syncTimingFrameCount + 1) % 10;
+        if (this.syncTimingFrameCount === 0) {
+          const drawTimings = this.kernel.profiler.getMonitoringDrawTimings();
+          const combined: Record<string, number> = {};
+          for (const actor of orderedActors) {
+            const update = this.actorUpdateTimingsMs.get(actor.id) ?? 0;
+            const draw = drawTimings.get(actor.id) ?? 0;
+            combined[actor.id] = update + draw;
+          }
+          this.kernel.store.getState().actions.setActorFrameTimings(combined);
+          this.kernel.profiler.clearMonitoringDrawTimings();
         }
-        this.syncDxfReferenceVisual(actor);
       }
-      if (actor.actorType === "primitive") {
-        this.syncPrimitiveActor(actor);
-      }
-      if (actor.actorType === "curve") {
-        this.syncCurveActor(actor);
-      }
-      this.applyActorTransform(actor);
-      const _ta6 = performance.now();
-      if (_ta6 - _ta0 > 50) {
-        this.warnPerformance(
-          "[rehearse-engine] actor slow:", actor.actorType, actor.id,
-          "| clone:", (_ta1 - _ta0).toFixed(0), "ms",
-          "| ensure:", (_ta2 - _ta1).toFixed(0), "ms",
-          "| pluginRefresh:", (_ta2b - _ta2).toFixed(0), "ms",
-          "| parentAttach:", (_ta3 - _ta2b).toFixed(0), "ms",
-          "| meshAsset:", (_ta4 - _ta3).toFixed(0), "ms",
-          "| meshMat:", (_ta5 - _ta4).toFixed(0), "ms",
-          "| transform:", (_ta6 - _ta5).toFixed(0), "ms",
-          "| total:", (_ta6 - _ta0).toFixed(0), "ms"
-        );
-      }
-      }
-      const tB = performance.now();
+    });
+
+    await profileFrameChunk("Parent attachment sync", () => {
       for (const actor of orderedActors) {
         this.syncActorParentAttachment(actor.id, actor.parentActorId);
       }
-      const tC = performance.now();
+    });
+
+    await profileFrameChunk("Cross-section resolve", () => {
+      this.resolveActiveCrossSection(state);
+    });
+
+    await profileFrameChunk("Sibling/order sync", () => {
       this.syncActorSiblingOrder(state);
       this.applyActorRenderOrder(state);
-      const tC2 = performance.now();
+    });
+
+    // Run cross-section apply LAST so the reparenting sticks: syncActorSiblingOrder above
+    // re-parents top-level actor objects under `this.scene`, which would undo our
+    // ClippingGroup placement if we ran before it.
+    await profileFrameChunk("Cross-section apply", () => {
+      this.crossSectionAppliedActorCount = 0;
+      this.crossSectionMaterialPatchCount = 0;
+      this.crossSectionTopLevelAllowedCount = 0;
+      this.crossSectionLineCount = 0;
+      this.crossSectionPointsCount = 0;
+      this.crossSectionSpriteCount = 0;
+      this.crossSectionGizmoMisparented = false;
+      this.crossSectionGizmoParentName = null;
+      this.crossSectionUnsupportedTypes.clear();
+      for (const actor of orderedActors) {
+        this.applyCrossSectionToActor(actor);
+      }
+      this.publishCrossSectionStatus(state);
+    });
+
+    await profileFrameChunk("Mist volume sync", () => {
       this.mistVolumeController.syncFromState(state, simTimeSeconds, dtSeconds);
-      const tC3 = performance.now();
+    });
+
+    await profileFrameChunk("Plugin scene hooks", () => {
       for (const actor of orderedActors) {
         this.syncPluginSceneActor(actor, state, simTimeSeconds, dtSeconds);
       }
-      const tD = performance.now();
+    });
 
-      await this.syncEnvironmentTextures(state, orderedActorIds);
+    await profileFrameChunk("Environment textures", () => this.syncEnvironmentTextures(state, orderedActorIds));
+    await profileFrameChunk("Scene background", () => {
       this.applySceneBackgroundColor();
-      await this.syncEnvironmentProbes(state, orderedActors);
+    });
+    await profileFrameChunk("Environment probes", () => this.syncEnvironmentProbes(state, orderedActors));
+    await profileFrameChunk("Scene graph prune", () => {
       pruneInvalidSceneGraph(this.scene);
-      const dt = performance.now() - t0;
-      if (dt > 100) {
-        this.warnPerformance(
-          "[rehearse-engine] syncFromState slow:", dt.toFixed(0), "ms |",
-          "actorLoop:", (tB - tA).toFixed(0), "ms |",
-          "parentSync:", (tC - tB).toFixed(0), "ms |",
-          "orderSync:", (tC2 - tC).toFixed(0), "ms |",
-          "mistSync:", (tC3 - tC2).toFixed(0), "ms |",
-          "pluginLoop:", (tD - tC3).toFixed(0), "ms |",
-          "envProbe:", (performance.now() - tD).toFixed(0), "ms"
-        );
-      }
-    }
+    });
+  }
 
   public setRenderer(renderer: SupportedRenderer | null): void {
     this.renderer = renderer;
@@ -839,6 +1170,16 @@ export class SceneController {
     return this.actorObjects.get(actorId) ?? null;
   }
 
+  public listActorObjectsForProfiling(): Array<{ actorId: string; object: THREE.Object3D }> {
+    const entries: Array<{ actorId: string; object: THREE.Object3D }> = [];
+    for (const [actorId, object] of this.actorObjects.entries()) {
+      if (object instanceof THREE.Object3D) {
+        entries.push({ actorId, object });
+      }
+    }
+    return entries;
+  }
+
   public getMistVolumeResource(actorId: string) {
     return this.mistVolumeController.getResource(actorId);
   }
@@ -848,6 +1189,17 @@ export class SceneController {
       texture.dispose?.();
     }
     this.environmentTextureByActorId.clear();
+    for (const texture of this.environmentProviderTextureByActorId.values()) {
+      texture.dispose?.();
+    }
+    this.environmentProviderTextureByActorId.clear();
+    for (const actorId of [...this.skyIblScenesByActorId.keys()]) {
+      this.disposeSkyIblForActor(actorId);
+    }
+    if (this.defaultIblTexture) {
+      this.defaultIblTexture.dispose?.();
+      this.defaultIblTexture = null;
+    }
     for (const actorId of [...this.environmentProbeStateByActorId.keys()]) {
       this.disposeEnvironmentProbe(actorId);
     }
@@ -1249,6 +1601,10 @@ export class SceneController {
       return group;
     }
 
+    if (actor.actorType === "cross-section") {
+      return this.buildCrossSectionGizmo();
+    }
+
     if (actor.actorType === "plugin") {
       return new THREE.Mesh(
         new THREE.BoxGeometry(0.25, 0.25, 0.25),
@@ -1350,7 +1706,7 @@ export class SceneController {
         const probeState = this.environmentProbeStateByActorId.get(entry.id);
         return Boolean(probeState?.pmremTarget?.texture);
       }
-      return false;
+      return this.environmentProviderTextureByActorId.has(entry.id);
     });
     if (candidateActors.length === 0) {
       return { actorId: null, actorType: null, texture: null, name: "Default" };
@@ -1393,6 +1749,15 @@ export class SceneController {
         actorId: actor.id,
         actorType: "environment-probe",
         texture: this.environmentProbeStateByActorId.get(actor.id)?.pmremTarget?.texture ?? null,
+        name: actor.name
+      };
+    }
+    const providerTexture = this.environmentProviderTextureByActorId.get(actor.id);
+    if (providerTexture) {
+      return {
+        actorId: actor.id,
+        actorType: actor.actorType,
+        texture: providerTexture,
         name: actor.name
       };
     }
@@ -1446,16 +1811,106 @@ export class SceneController {
       this.environmentReloadTokenByActorId.set(actor.id, reloadToken);
     }
 
-    const primary = environmentActors.find((entry) => this.environmentTextureByActorId.has(entry.id));
-    if (primary) {
-      this.currentEnvironmentAssetId = this.environmentAssetByActorId.get(primary.id) ?? null;
-      const texture = this.environmentTextureByActorId.get(primary.id) ?? null;
+    this.applySceneEnvironment(state);
+  }
+
+  /**
+   * Selects the active scene environment and applies scene.environment / scene.background
+   * according to scene settings (override, useEnvironmentBackground, defaultIblEnabled).
+   */
+  private applySceneEnvironment(state: AppState): void {
+    const overrideId =
+      typeof state.scene.environmentOverrideActorId === "string" && state.scene.environmentOverrideActorId.length > 0
+        ? state.scene.environmentOverrideActorId
+        : null;
+
+    let resolution: EnvironmentSourceResolution;
+    if (overrideId) {
+      resolution = this.resolveEnvironmentSourceByActorId(overrideId);
+      if (!resolution.texture) {
+        resolution = this.pickClosestToOriginEnvironment(state);
+      }
+    } else {
+      resolution = this.pickClosestToOriginEnvironment(state);
+    }
+
+    const texture = resolution.texture;
+    if (texture) {
       this.scene.environment = texture;
-      this.scene.background = texture;
+      if (state.scene.useEnvironmentBackground) {
+        this.scene.background = texture;
+      } else {
+        const sceneColor = normalizeBackgroundColor(state.scene.backgroundColor);
+        if (this.scene.background instanceof THREE.Color) {
+          this.scene.background.set(sceneColor);
+        } else {
+          this.scene.background = new THREE.Color(sceneColor);
+        }
+      }
       return;
     }
-    this.currentEnvironmentAssetId = null;
-    this.scene.environment = null;
+
+    if (state.scene.defaultIblEnabled) {
+      const defaultIbl = this.ensureDefaultIbl();
+      this.scene.environment = defaultIbl;
+    } else {
+      this.scene.environment = null;
+    }
+  }
+
+  private pickClosestToOriginEnvironment(state: AppState): EnvironmentSourceResolution {
+    const candidates = Object.values(state.actors).filter((entry) => {
+      if (!entry.enabled) {
+        return false;
+      }
+      if (entry.actorType === "environment") {
+        return this.environmentTextureByActorId.has(entry.id);
+      }
+      if (entry.actorType === "environment-probe") {
+        return Boolean(this.environmentProbeStateByActorId.get(entry.id)?.pmremTarget?.texture);
+      }
+      return this.environmentProviderTextureByActorId.has(entry.id);
+    });
+    if (candidates.length === 0) {
+      return { actorId: null, actorType: null, texture: null, name: "Default" };
+    }
+    let closest: ActorNode | null = null;
+    let minDistanceSq = Number.POSITIVE_INFINITY;
+    for (const entry of candidates) {
+      const pos = entry.transform.position;
+      const distSq = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
+      if (distSq < minDistanceSq) {
+        minDistanceSq = distSq;
+        closest = entry;
+      }
+    }
+    return closest ? this.resolveEnvironmentSourceByActorId(closest.id) : { actorId: null, actorType: null, texture: null, name: "Default" };
+  }
+
+  private ensureDefaultIbl(): THREE.Texture | null {
+    if (this.defaultIblTexture) {
+      return this.defaultIblTexture;
+    }
+    const generator = this.ensurePmremGenerator();
+    if (!generator || !this.renderer) {
+      return null;
+    }
+    try {
+      const room = new RoomEnvironment();
+      // Both WebGL and WebGPU PMREMGenerator implementations expose fromScene; the union type
+      // here only knows about the WebGL variant, so widen for the call.
+      const gen = generator as unknown as { fromScene: (scene: THREE.Scene, sigma?: number) => THREE.WebGLRenderTarget };
+      const target = gen.fromScene(room as unknown as THREE.Scene, 0.04);
+      this.defaultIblTexture = target.texture;
+      return this.defaultIblTexture;
+    } catch (error) {
+      this.kernel.store.getState().actions.addLog({
+        level: "warn",
+        message: "Failed to build default IBL environment",
+        details: formatLoadError(error)
+      });
+      return null;
+    }
   }
 
   private async loadEnvironmentTexture(
@@ -1472,8 +1927,11 @@ export class SceneController {
       });
       return null;
     }
+    if (!state.activeProject) {
+      return null;
+    }
     const url = await this.kernel.storage.resolveAssetPath({
-      projectName: state.activeProjectName,
+      projectUuid: state.activeProject.uuid,
       relativePath: asset.relativePath
     });
     const extension = asset.relativePath.split(".").pop()?.toLowerCase();
@@ -1895,6 +2353,97 @@ export class SceneController {
     probeState.cubeRenderTarget.texture.needsPMREMUpdate = true;
   }
 
+  private setPluginEnvironmentTexture(actorId: string, texture: THREE.Texture | null): void {
+    const previous = this.environmentProviderTextureByActorId.get(actorId);
+    if (previous && previous !== texture) {
+      previous.dispose?.();
+    }
+    if (texture) {
+      this.environmentProviderTextureByActorId.set(actorId, texture);
+    } else {
+      this.environmentProviderTextureByActorId.delete(actorId);
+    }
+  }
+
+  /**
+   * Build a procedural sky IBL texture for the given plugin actor. The sky scene + render target
+   * are cached per actor and disposed when the actor is destroyed. This lives in the host (not
+   * in plugins) because the SkyMesh/Sky/PMREM pipeline must use the same THREE module instance
+   * as the renderer — plugins import via dynamic ESM and would otherwise pull in a duplicate
+   * THREE that breaks NodeMaterial type checks.
+   */
+  public generateSkyIblForActor(actorId: string, params: SkyIblParams): THREE.Texture | null {
+    const generator = this.ensurePmremGenerator();
+    if (!generator || !this.renderer) {
+      return null;
+    }
+    const isWebGPU = (this.renderer as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+    let entry = this.skyIblScenesByActorId.get(actorId);
+    if (!entry) {
+      const scene = new THREE.Scene();
+      let sky: SkyShaderMesh | SkyNodeMesh;
+      if (isWebGPU) {
+        sky = new SkyNodeMesh();
+      } else {
+        sky = new SkyShaderMesh();
+      }
+      (sky as unknown as THREE.Object3D).scale.setScalar(1000);
+      scene.add(sky as unknown as THREE.Object3D);
+      entry = { scene, sky, isNode: isWebGPU, target: null };
+      this.skyIblScenesByActorId.set(actorId, entry);
+    }
+    applySkyUniforms(entry.sky, entry.isNode, params);
+    if (entry.target) {
+      try {
+        entry.target.dispose();
+      } catch {
+        // best-effort
+      }
+      entry.target = null;
+    }
+    try {
+      const gen = generator as unknown as {
+        fromScene: (
+          scene: THREE.Scene,
+          sigma?: number,
+          near?: number,
+          far?: number
+        ) => { texture: THREE.Texture; dispose: () => void };
+      };
+      const target = gen.fromScene(entry.scene, Math.max(0, params.sigma ?? 0), 1, 1_000_000);
+      entry.target = target;
+      return target.texture;
+    } catch (error) {
+      this.kernel.store.getState().actions.addLog({
+        level: "warn",
+        message: "Failed to build procedural sky IBL",
+        details: formatLoadError(error)
+      });
+      return null;
+    }
+  }
+
+  private disposeSkyIblForActor(actorId: string): void {
+    const entry = this.skyIblScenesByActorId.get(actorId);
+    if (!entry) return;
+    if (entry.target) {
+      try {
+        entry.target.dispose();
+      } catch {
+        // best-effort
+      }
+    }
+    const skyMesh = entry.sky as unknown as THREE.Mesh;
+    skyMesh.geometry?.dispose?.();
+    const material = skyMesh.material;
+    if (Array.isArray(material)) {
+      for (const m of material) m.dispose?.();
+    } else {
+      (material as THREE.Material | undefined)?.dispose?.();
+    }
+    this.skyIblScenesByActorId.delete(actorId);
+  }
+
   private ensurePmremGenerator(): SupportedPmremGenerator | null {
     if (this.pmremGenerator) {
       return this.pmremGenerator;
@@ -2022,8 +2571,8 @@ export class SceneController {
     return canvas.toDataURL("image/png");
   }
 
-  private buildAssetUrl(projectName: string, relativePath: string): string {
-    return `rehearse-engine-asset://${encodeURIComponent(projectName)}/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
+  private buildAssetUrl(projectUuid: string, relativePath: string): string {
+    return `simularca-asset://${encodeURIComponent(projectUuid)}/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
   }
 
   private loadCachedTexture(url: string, colorSpace: THREE.ColorSpace = THREE.LinearSRGBColorSpace): THREE.Texture {
@@ -2061,7 +2610,7 @@ export class SceneController {
     } else if (mat.albedo.mode === "image") {
       const asset = state.assets.find((a) => a.id === (mat.albedo as any).assetId && a.kind === "image");
       if (asset) {
-        material.map = this.loadCachedTexture(this.buildAssetUrl(state.activeProjectName, asset.relativePath), THREE.SRGBColorSpace);
+        material.map = this.loadCachedTexture(this.buildAssetUrl(state.activeProject?.uuid ?? "", asset.relativePath), THREE.SRGBColorSpace);
         material.color.set(0xffffff);
       }
     }
@@ -2073,7 +2622,7 @@ export class SceneController {
     } else if (mat.roughness.mode === "image") {
       const asset = state.assets.find((a) => a.id === (mat.roughness as any).assetId && a.kind === "image");
       if (asset) {
-        material.roughnessMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProjectName, asset.relativePath));
+        material.roughnessMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProject?.uuid ?? "", asset.relativePath));
         material.roughness = 1;
       }
     }
@@ -2085,7 +2634,7 @@ export class SceneController {
     } else if (mat.metalness.mode === "image") {
       const asset = state.assets.find((a) => a.id === (mat.metalness as any).assetId && a.kind === "image");
       if (asset) {
-        material.metalnessMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProjectName, asset.relativePath));
+        material.metalnessMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProject?.uuid ?? "", asset.relativePath));
         material.metalness = 1;
       }
     }
@@ -2094,7 +2643,7 @@ export class SceneController {
     if (mat.normalMap) {
       const asset = state.assets.find((a) => a.id === (mat.normalMap as any).assetId && a.kind === "image");
       if (asset) {
-        material.normalMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProjectName, asset.relativePath));
+        material.normalMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProject?.uuid ?? "", asset.relativePath));
         material.normalMapType = THREE.TangentSpaceNormalMap;
       }
     } else {
@@ -2108,7 +2657,7 @@ export class SceneController {
     } else if (mat.emissive.mode === "image") {
       const asset = state.assets.find((a) => a.id === (mat.emissive as any).assetId && a.kind === "image");
       if (asset) {
-        material.emissiveMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProjectName, asset.relativePath), THREE.SRGBColorSpace);
+        material.emissiveMap = this.loadCachedTexture(this.buildAssetUrl(state.activeProject?.uuid ?? "", asset.relativePath), THREE.SRGBColorSpace);
       }
     }
     material.emissiveIntensity = mat.emissiveIntensity;
@@ -2207,7 +2756,6 @@ export class SceneController {
     if (!(renderRoot instanceof THREE.Group) || renderRoot.children.length === 0) return;
 
     // Build a signature from material-relevant params and referenced material data
-    const _tsm0 = performance.now();
     const materialSlots = actor.params.materialSlots;
     const materialId = actor.params.materialId;
     const referencedMaterialIds = new Set<string>();
@@ -2224,15 +2772,165 @@ export class SceneController {
       .map((id) => JSON.stringify(localMaterials?.[id] ?? state.materials[id]))
       .join("|");
     const sig = JSON.stringify({ slots: materialSlots, override: materialId, mats: materialHash, environment: env.actorId });
-    const _tsm1 = performance.now();
-    if (_tsm1 - _tsm0 > 10) this.warnPerformance("[rehearse-engine] syncMeshMaterials sig slow:", (_tsm1 - _tsm0).toFixed(0), "ms | slots:", Object.keys(materialSlots as object ?? {}).length);
 
     if (sig === this.meshMaterialSigByActorId.get(actor.id)) return;
     this.meshMaterialSigByActorId.set(actor.id, sig);
-    const _tsm2 = performance.now();
     this.reapplyMeshMaterials(actor);
-    const _tsm3 = performance.now();
-    if (_tsm3 - _tsm2 > 5) this.warnPerformance("[rehearse-engine] reapplyMeshMaterials slow:", (_tsm3 - _tsm2).toFixed(0), "ms");
+  }
+
+  private disposeMeshAnimationState(actorId: string): void {
+    const animationState = this.meshAnimationStateByActorId.get(actorId);
+    if (animationState?.mixer && animationState.rootObject) {
+      animationState.mixer.stopAllAction();
+      animationState.mixer.uncacheRoot(animationState.rootObject);
+    }
+    this.meshAnimationStateByActorId.delete(actorId);
+    const object = this.actorObjects.get(actorId);
+    if (object instanceof THREE.Object3D) {
+      delete (object.userData as Record<string, unknown>).meshAnimationInfo;
+    }
+  }
+
+  private updateMeshAnimationObjectInfo(actorId: string, state: MeshAnimationState | null): void {
+    const object = this.actorObjects.get(actorId);
+    if (!(object instanceof THREE.Object3D)) {
+      return;
+    }
+    const userData = object.userData as Record<string, unknown>;
+    if (!state) {
+      delete userData.meshAnimationInfo;
+      return;
+    }
+    userData.meshAnimationInfo = {
+      enabled: state.enabled,
+      animated: state.enabled && state.activeClipName !== null,
+      clipCount: state.clips.length,
+      activeClipName: state.activeClipName,
+      clipDurationSeconds: state.activeClipDurationSeconds,
+      clipTimeSeconds: state.clipTimeSeconds,
+      poseRevision: state.poseRevision,
+      skinnedMeshCount: state.skinnedMeshCount,
+      morphTargetMeshCount: state.morphTargetMeshCount
+    };
+  }
+
+  private updateMeshAnimationStatus(actorId: string, animationState: MeshAnimationState): void {
+    const runtimeStatus = this.kernel.store.getState().state.actorStatusByActorId[actorId];
+    const animationStateLabel =
+      animationState.clips.length <= 0
+        ? "no-clips"
+        : animationState.enabled
+          ? "playing"
+          : "disabled";
+    const animationTimeSeconds =
+      animationState.clips.length > 0
+        ? Number(animationState.clipTimeSeconds.toFixed(3))
+        : 0;
+    const signature = JSON.stringify({
+      animationStateLabel,
+      activeClipName: animationState.activeClipName,
+      clipCount: animationState.clips.length,
+      clipDurationSeconds: Number(animationState.activeClipDurationSeconds.toFixed(3)),
+      animationTimeSeconds: Number(animationTimeSeconds.toFixed(1)),
+      skinnedMeshCount: animationState.skinnedMeshCount,
+      morphTargetMeshCount: animationState.morphTargetMeshCount
+    });
+    if (signature === animationState.lastStatusSignature) {
+      return;
+    }
+    animationState.lastStatusSignature = signature;
+    this.kernel.store.getState().actions.setActorStatus(actorId, {
+      values: {
+        ...(runtimeStatus?.values ?? {}),
+        animationState: animationStateLabel,
+        animationClip: animationState.activeClipName ?? "n/a",
+        animationClipCount: animationState.clips.length,
+        animationDurationSeconds: Number(animationState.activeClipDurationSeconds.toFixed(3)),
+        animationTimeSeconds,
+        skinnedMeshCount: animationState.skinnedMeshCount,
+        morphTargetMeshCount: animationState.morphTargetMeshCount
+      },
+      error: runtimeStatus?.error,
+      updatedAtIso: new Date().toISOString()
+    });
+  }
+
+  private syncMeshAnimation(actor: ActorNode, simTimeSeconds: number): void {
+    const animationState = this.meshAnimationStateByActorId.get(actor.id);
+    if (!animationState) {
+      return;
+    }
+
+    const enabled = Boolean(actor.params.animationEnabled) && animationState.clips.length > 0;
+    const requestedClipName =
+      typeof actor.params.animationClipName === "string" && actor.params.animationClipName.trim().length > 0
+        ? actor.params.animationClipName.trim()
+        : null;
+    const speed = sanitizeMeshAnimationSpeed(actor.params.animationSpeed);
+    const loop = actor.params.animationLoop !== false;
+    const startOffsetSeconds = sanitizeMeshAnimationStartOffset(actor.params.animationStartOffsetSeconds);
+    const nextClip =
+      animationState.clips.find((clip) => clip.name === requestedClipName) ??
+      animationState.clips[0] ??
+      null;
+
+    if (!nextClip || !animationState.mixer) {
+      animationState.enabled = false;
+      animationState.action = null;
+      animationState.activeClipName = nextClip?.name ?? null;
+      animationState.activeClipDurationSeconds = nextClip?.duration ?? 0;
+      animationState.clipTimeSeconds = 0;
+      this.updateMeshAnimationObjectInfo(actor.id, animationState);
+      this.updateMeshAnimationStatus(actor.id, animationState);
+      return;
+    }
+
+    const previousClipName = animationState.activeClipName;
+    if (animationState.activeClipName !== nextClip.name || animationState.action === null) {
+      animationState.mixer.stopAllAction();
+      const action = animationState.mixer.clipAction(nextClip, animationState.rootObject);
+      action.enabled = true;
+      action.clampWhenFinished = !loop;
+      action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+      action.play();
+      animationState.action = action;
+      animationState.activeClipName = nextClip.name;
+      animationState.activeClipDurationSeconds = nextClip.duration;
+    }
+
+    const previousEnabled = animationState.enabled;
+    const previousTimeSeconds = animationState.clipTimeSeconds;
+    const nextTimeSeconds = enabled
+      ? computeAnimationClipTimeSeconds(
+          simTimeSeconds,
+          speed,
+          startOffsetSeconds,
+          animationState.activeClipDurationSeconds,
+          loop
+        )
+      : 0;
+
+    const action = animationState.action;
+    action.clampWhenFinished = !loop;
+    action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+    animationState.enabled = enabled;
+    animationState.mixer.setTime(nextTimeSeconds);
+    animationState.rootObject.updateMatrixWorld(true);
+    animationState.rootObject.traverse((node) => {
+      if (node instanceof THREE.SkinnedMesh) {
+        node.skeleton?.update?.();
+      }
+    });
+    if (
+      Math.abs(previousTimeSeconds - nextTimeSeconds) > 1e-6 ||
+      previousEnabled !== enabled ||
+      previousClipName !== animationState.activeClipName
+    ) {
+      animationState.poseRevision += 1;
+    }
+    animationState.clipTimeSeconds = nextTimeSeconds;
+    this.updateMeshAnimationObjectInfo(actor.id, animationState);
+    this.updateMeshAnimationStatus(actor.id, animationState);
   }
 
   private createPrimitiveMesh(actor: ActorNode): any {
@@ -2251,6 +2949,7 @@ export class SceneController {
     );
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    enableAOMeshLayer(mesh);
     return mesh;
   }
 
@@ -2301,20 +3000,599 @@ export class SceneController {
     });
   }
 
+  // === Cross-Section ===
+
+  private buildCrossSectionGizmo(): THREE.Group {
+    const group = new THREE.Group();
+    group.name = "cross-section-container";
+    const quad = new THREE.Mesh(
+      new THREE.PlaneGeometry(4, 4),
+      new THREE.MeshBasicMaterial({
+        color: 0xff8800,
+        transparent: true,
+        opacity: 0.18,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    );
+    quad.name = "cross-section-gizmo";
+    quad.frustumCulled = false;
+    quad.renderOrder = 9999;
+    group.add(quad);
+    // Tiny axes helper to show plane normal direction (local +Z = plane normal).
+    const axes = new THREE.AxesHelper(0.5);
+    axes.name = "cross-section-axes";
+    axes.frustumCulled = false;
+    axes.renderOrder = 9999;
+    group.add(axes);
+    return group;
+  }
+
+  private syncCrossSectionActor(actor: ActorNode): void {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Group)) {
+      return;
+    }
+    const gizmo = object.getObjectByName("cross-section-gizmo");
+    if (!(gizmo instanceof THREE.Mesh)) {
+      return;
+    }
+    // Gizmo visibility: requires `showPlaneGizmo` AND the cross-section actor to be in the current
+    // selection. Translucent quad would otherwise blend over geometry while idle and read as
+    // "stray faces with alpha artefacts" especially when the camera grazes the plane.
+    const selection = this.kernel.store.getState().state.selection;
+    const isSelected = selection.some((entry) => entry.kind === "actor" && entry.id === actor.id);
+    const showGizmo = actor.params.showPlaneGizmo !== false && isSelected;
+    gizmo.visible = showGizmo;
+    const colorString = typeof actor.params.edgeHighlightColor === "string"
+      ? actor.params.edgeHighlightColor
+      : "#ff8800";
+    if (gizmo.material instanceof THREE.MeshBasicMaterial) {
+      gizmo.material.color.set(colorString);
+    }
+    const axes = object.getObjectByName("cross-section-axes");
+    if (axes instanceof THREE.Object3D) {
+      axes.visible = showGizmo;
+    }
+  }
+
+  private resolveActiveCrossSection(state: AppState): void {
+    const selectedActorIds = new Set(
+      state.selection
+        .filter((entry) => entry.kind === "actor")
+        .map((entry) => entry.id)
+    );
+    let chosenActor: ActorNode | null = null;
+    const ids = Object.keys(state.actors).sort();
+    for (const id of ids) {
+      const candidate = state.actors[id];
+      if (!candidate || candidate.actorType !== "cross-section") {
+        continue;
+      }
+      const isSelected = selectedActorIds.has(candidate.id);
+      if (computeActorObjectVisibility(candidate, isSelected, this.debugHelpersVisible)) {
+        chosenActor = candidate;
+        break;
+      }
+    }
+    this.crossSectionAffectedActorIds.clear();
+    if (!chosenActor) {
+      this.activeCrossSectionActorId = null;
+      this.crossSectionAffectAll = false;
+      this.crossSectionUniforms.uXSecEdgeEnabled.value = 0;
+      if (this.xsecTslUniforms) {
+        this.xsecTslUniforms.enabled.value = 0;
+      }
+      (this.crossSectionClipGroup as unknown as { enabled: boolean }).enabled = false;
+      return;
+    }
+    (this.crossSectionClipGroup as unknown as { enabled: boolean }).enabled = true;
+    const object = this.actorObjects.get(chosenActor.id);
+    const flipNormal = chosenActor.params.flipNormal === true;
+    const matrix = object instanceof THREE.Object3D
+      ? (object.updateMatrixWorld(true), object.matrixWorld.clone())
+      : new THREE.Matrix4().compose(
+          new THREE.Vector3(...chosenActor.transform.position),
+          new THREE.Quaternion().setFromEuler(new THREE.Euler(...chosenActor.transform.rotation)),
+          new THREE.Vector3(1, 1, 1)
+        );
+    const localNormal = new THREE.Vector3(0, 0, flipNormal ? -1 : 1);
+    const worldNormal = localNormal.transformDirection(matrix).normalize();
+    const worldOrigin = new THREE.Vector3().setFromMatrixPosition(matrix);
+    this.crossSectionPlane.setFromNormalAndCoplanarPoint(worldNormal, worldOrigin);
+
+    this.activeCrossSectionActorId = chosenActor.id;
+
+    const rawAffected = Array.isArray(chosenActor.params.affectedActorIds)
+      ? chosenActor.params.affectedActorIds.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    if (rawAffected.length === 0) {
+      this.crossSectionAffectAll = true;
+    } else {
+      this.crossSectionAffectAll = false;
+      for (const id of rawAffected) {
+        this.crossSectionAffectedActorIds.add(id);
+      }
+    }
+
+    const edgeEnabled = chosenActor.params.edgeHighlightEnabled !== false;
+    const edgeColor = typeof chosenActor.params.edgeHighlightColor === "string"
+      ? chosenActor.params.edgeHighlightColor
+      : "#ff8800";
+    const edgeWidth = typeof chosenActor.params.edgeWidthPx === "number" && Number.isFinite(chosenActor.params.edgeWidthPx)
+      ? chosenActor.params.edgeWidthPx
+      : 2;
+
+    const planeVec = this.crossSectionUniforms.uXSecPlane.value;
+    planeVec.set(worldNormal.x, worldNormal.y, worldNormal.z, -worldNormal.dot(worldOrigin));
+    this.crossSectionUniforms.uXSecEdgeColor.value.set(edgeColor);
+    this.crossSectionUniforms.uXSecEdgeWidthPx.value = Math.max(0, edgeWidth);
+    this.crossSectionUniforms.uXSecEdgeEnabled.value = edgeEnabled ? 1 : 0;
+
+    // Sync TSL uniforms (WebGPU pathway). Mutating the underlying value object propagates to
+    // the bound uniforms automatically because `uniform()` retains the reference internally.
+    if (this.xsecTslUniforms) {
+      this.xsecTslUniforms.planeValue.copy(planeVec);
+      this.xsecTslUniforms.colorValue.set(edgeColor);
+      // Three's TSL `uniform()` returns a node whose `.value` setter writes through to the bound
+      // value. Use the typed accessor when available; otherwise mutate the captured value object.
+      try {
+        if ((this.xsecTslUniforms.plane as { value?: unknown })?.value !== undefined) {
+          (this.xsecTslUniforms.plane as { value: THREE.Vector4 }).value = this.xsecTslUniforms.planeValue;
+        }
+        if ((this.xsecTslUniforms.color as { value?: unknown })?.value !== undefined) {
+          (this.xsecTslUniforms.color as { value: THREE.Color }).value = this.xsecTslUniforms.colorValue;
+        }
+        if ((this.xsecTslUniforms.widthPx as { value?: unknown })?.value !== undefined) {
+          (this.xsecTslUniforms.widthPx as { value: number }).value = Math.max(0, edgeWidth);
+        }
+        if ((this.xsecTslUniforms.enabled as { value?: unknown })?.value !== undefined) {
+          (this.xsecTslUniforms.enabled as { value: number }).value = edgeEnabled ? 1 : 0;
+        }
+      } catch {
+        // No-op on unexpected TSL shape — prevents a hot-path frame failure.
+      }
+    }
+  }
+
+  private publishCrossSectionStatus(state: AppState): void {
+    if (!this.activeCrossSectionActorId) {
+      return;
+    }
+    // Status is purely diagnostic; the inner clip-group traverse below walks
+    // every node parented under the ClippingGroup (the entire Stadium mesh on
+    // SSG Stadium, ~thousands of Object3Ds). Doing this every 10 frames was
+    // causing periodic 50-100ms slow-frame spikes during camera rotation.
+    // Update once per ~1s instead — fast enough for status display.
+    this.crossSectionStatusFrame = (this.crossSectionStatusFrame + 1) % 60;
+    if (this.crossSectionStatusFrame !== 0) {
+      return;
+    }
+    const clipGroup = this.crossSectionClipGroup as unknown as {
+      enabled?: boolean;
+      clippingPlanes?: THREE.Plane[];
+      children: THREE.Object3D[];
+      isClippingGroup?: boolean;
+    };
+    const planeNormal = this.crossSectionPlane.normal;
+    const planeOrigin = new THREE.Vector3()
+      .copy(planeNormal)
+      .multiplyScalar(-this.crossSectionPlane.constant);
+    const clipGroupAttachedToScene = clipGroup.children.length === 0
+      ? false
+      : (clipGroup as unknown as THREE.Object3D).parent === this.scene;
+    const sceneHasClipGroup = this.scene.children.includes(this.crossSectionClipGroup);
+
+    // Walk down from the clip group and count actual mesh leaves that should be clipped.
+    let clipDescendantMeshCount = 0;
+    const materialTypeCounts: Record<string, number> = {};
+    let materialsWithClippingPlanes = 0;
+    let materialsWithoutClipping = 0;
+    let materialsTransparent = 0;
+    let materialsAlphaTest = 0;
+    let materialsDoubleSide = 0;
+    let materialsBackSide = 0;
+    let materialsDepthWriteFalse = 0;
+    let materialsAlphaToCoverage = 0;
+    let sampleMeshNames: string[] = [];
+    this.crossSectionClipGroup.traverse((node) => {
+      if ((node as THREE.Mesh).isMesh) {
+        clipDescendantMeshCount += 1;
+        if (sampleMeshNames.length < 3) {
+          sampleMeshNames.push(node.name || "(unnamed)");
+        }
+        const mesh = node as THREE.Mesh;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) {
+          if (!m) continue;
+          const matAny = m as THREE.Material & {
+            transparent?: boolean;
+            alphaTest?: number;
+            depthWrite?: boolean;
+            alphaToCoverage?: boolean;
+            side?: number;
+          };
+          const tname = matAny.type || "?";
+          materialTypeCounts[tname] = (materialTypeCounts[tname] ?? 0) + 1;
+          const planes = matAny.clippingPlanes;
+          if (Array.isArray(planes) && planes.length > 0) {
+            materialsWithClippingPlanes += 1;
+          } else {
+            materialsWithoutClipping += 1;
+          }
+          if (matAny.transparent === true) materialsTransparent += 1;
+          if (typeof matAny.alphaTest === "number" && matAny.alphaTest > 0) materialsAlphaTest += 1;
+          if (matAny.alphaToCoverage === true) materialsAlphaToCoverage += 1;
+          if (matAny.side === THREE.DoubleSide) materialsDoubleSide += 1;
+          if (matAny.side === THREE.BackSide) materialsBackSide += 1;
+          if (matAny.depthWrite === false) materialsDepthWriteFalse += 1;
+        }
+      }
+    });
+
+    // Pull the plane equation in the form Three's ClippingContext expects (Vector4 storage).
+    const planeArrayInGroup = (clipGroup.clippingPlanes ?? []).map((p) => ({
+      n: [p.normal.x, p.normal.y, p.normal.z],
+      c: p.constant
+    }));
+
+    // F1: Read the active union-plane data Three.js committed to the GPU last frame.
+    let activeUnionPlane: [number, number, number, number] | null = null;
+    const ctxAny = (this.crossSectionClipGroup as unknown as {
+      clippingGroupContext?: { unionPlanes?: Array<{ x: number; y: number; z: number; w: number } | undefined> };
+    }).clippingGroupContext;
+    const planes = ctxAny?.unionPlanes;
+    if (planes && planes.length > 0) {
+      const p = planes[0];
+      if (p) {
+        activeUnionPlane = [p.x, p.y, p.z, p.w];
+      }
+    }
+
+    // F1: gizmo parent verification — confirm gizmo's THREE object reflects the actor transform.
+    const gizmoActor = this.activeCrossSectionActorId
+      ? state.actors[this.activeCrossSectionActorId] ?? null
+      : null;
+    const gizmoObject = this.activeCrossSectionActorId
+      ? this.actorObjects.get(this.activeCrossSectionActorId)
+      : null;
+    let gizmoLocalPos: [number, number, number] | null = null;
+    let gizmoActorPos: [number, number, number] | null = null;
+    let gizmoParentName: string | null = null;
+    if (gizmoObject instanceof THREE.Object3D) {
+      gizmoLocalPos = [gizmoObject.position.x, gizmoObject.position.y, gizmoObject.position.z];
+      gizmoParentName = (gizmoObject.parent as THREE.Object3D | null)?.name || (gizmoObject.parent as THREE.Object3D | null)?.type || null;
+    }
+    if (gizmoActor) {
+      gizmoActorPos = [...gizmoActor.transform.position] as [number, number, number];
+    }
+    const gizmoPositionMismatch = gizmoLocalPos && gizmoActorPos
+      ? Math.abs(gizmoLocalPos[0] - gizmoActorPos[0]) > 1e-5 ||
+        Math.abs(gizmoLocalPos[1] - gizmoActorPos[1]) > 1e-5 ||
+        Math.abs(gizmoLocalPos[2] - gizmoActorPos[2]) > 1e-5
+      : false;
+
+    const unsupportedTypes: Record<string, number> = {};
+    for (const [type, count] of this.crossSectionUnsupportedTypes) {
+      unsupportedTypes[type] = count;
+    }
+
+    this.kernel.store.getState().actions.setActorStatus(this.activeCrossSectionActorId, {
+      values: {
+        active: true,
+        worldOrigin: [planeOrigin.x, planeOrigin.y, planeOrigin.z],
+        worldNormal: [planeNormal.x, planeNormal.y, planeNormal.z],
+        clipGroupIsClippingGroup: clipGroup.isClippingGroup === true,
+        clipGroupEnabled: clipGroup.enabled === true,
+        clipGroupPlaneCount: clipGroup.clippingPlanes?.length ?? 0,
+        clipGroupAttachedToScene,
+        sceneHasClipGroup,
+        clipGroupParentName: ((clipGroup as unknown as THREE.Object3D).parent as THREE.Object3D | null)?.name ?? null,
+        clipGroupChildCount: clipGroup.children.length,
+        clipGroupChildNames: clipGroup.children.map((c) => c.name || c.type),
+        clipDescendantMeshCount,
+        clipDescendantMaterialTypes: materialTypeCounts,
+        clipDescendantMaterialsWithPlanes: materialsWithClippingPlanes,
+        clipDescendantMaterialsWithoutPlanes: materialsWithoutClipping,
+        clipDescendantMaterialsTransparent: materialsTransparent,
+        clipDescendantMaterialsAlphaTest: materialsAlphaTest,
+        clipDescendantMaterialsAlphaToCoverage: materialsAlphaToCoverage,
+        clipDescendantMaterialsDoubleSide: materialsDoubleSide,
+        clipDescendantMaterialsBackSide: materialsBackSide,
+        clipDescendantMaterialsDepthWriteFalse: materialsDepthWriteFalse,
+        clipDescendantSampleMeshNames: sampleMeshNames,
+        clipPlaneSpec: planeArrayInGroup,
+        clipDescendantLineCount: this.crossSectionLineCount,
+        clipDescendantPointsCount: this.crossSectionPointsCount,
+        clipDescendantSpriteCount: this.crossSectionSpriteCount,
+        unsupportedMaterialTypes: unsupportedTypes,
+        activeUnionPlaneViewSpace: activeUnionPlane,
+        gizmoLocalPos,
+        gizmoActorPos,
+        gizmoParentName: this.crossSectionGizmoParentName ?? gizmoParentName,
+        gizmoPositionMismatch,
+        gizmoMisparented: this.crossSectionGizmoMisparented,
+        appliedActorCount: this.crossSectionAppliedActorCount,
+        materialPatchCount: this.crossSectionMaterialPatchCount,
+        topLevelAllowedCount: this.crossSectionTopLevelAllowedCount,
+        reparentToClipTotal: this.crossSectionReparentToClipCount,
+        reparentToSceneTotal: this.crossSectionReparentToSceneCount,
+        affectMode: this.crossSectionAffectAll ? "all" : `list:${this.crossSectionAffectedActorIds.size}`,
+        renderEngine: state.scene.renderEngine
+      },
+      error: this.crossSectionLastError ?? undefined,
+      updatedAtIso: new Date().toISOString()
+    });
+  }
+
+  private ensureXsecTslUniforms(): typeof this.xsecTslUniforms {
+    if (this.xsecTslUniforms) {
+      return this.xsecTslUniforms;
+    }
+    const planeValue = new THREE.Vector4(0, 0, 1, 0);
+    const colorValue = new THREE.Color(0xff8800);
+    const uniform = (TSL as Record<string, unknown>).uniform as ((value: unknown) => unknown) | undefined;
+    if (typeof uniform !== "function") {
+      this.xsecTslUniforms = {
+        plane: { value: planeValue },
+        color: { value: colorValue },
+        widthPx: { value: 2 },
+        enabled: { value: 0 },
+        planeValue,
+        colorValue
+      };
+      return this.xsecTslUniforms;
+    }
+    this.xsecTslUniforms = {
+      plane: uniform(planeValue),
+      color: uniform(colorValue),
+      widthPx: uniform(2),
+      enabled: uniform(0),
+      planeValue,
+      colorValue
+    };
+    return this.xsecTslUniforms;
+  }
+
+  private patchMaterialForCrossSectionWebGpu(material: THREE.Material): void {
+    if (this.patchedMaterialsWebGpu.has(material)) {
+      return;
+    }
+    const m = material as unknown as {
+      emissiveNode?: unknown;
+      userData?: Record<string, unknown>;
+      needsUpdate?: boolean;
+      isNodeMaterial?: boolean;
+    };
+    const TSLAny = TSL as Record<string, unknown>;
+    const Fn = TSLAny.Fn as ((cb: () => unknown) => () => unknown) | undefined;
+    const positionWorld = TSLAny.positionWorld as { dot: (v: unknown) => { add: (w: unknown) => unknown } } | undefined;
+    const vec3 = TSLAny.vec3 as ((...args: unknown[]) => unknown) | undefined;
+    const step = TSLAny.step as ((edge: unknown, x: unknown) => unknown) | undefined;
+    const fwidth = TSLAny.fwidth as ((x: unknown) => unknown) | undefined;
+    const materialEmissive = TSLAny.materialEmissive as unknown;
+    if (!Fn || !positionWorld || !vec3 || !step || !fwidth) {
+      return;
+    }
+    const u = this.ensureXsecTslUniforms();
+    if (!u) {
+      return;
+    }
+    const prevEmissiveNode = m.emissiveNode;
+    // Emissive injection: additive bright color over lit fragments. Bypasses lighting so the
+    // band is always crisp regardless of shadow / surface normal orientation.
+    const wrapped = (Fn as any)(() => {
+      const p = u.plane;
+      const planeXYZ = (p as any).xyz;
+      const planeW = (p as any).w;
+      // distRaw is signed distance to the cut plane in world units (negative = visible side).
+      const distRaw = (positionWorld as any).dot(planeXYZ).add(planeW);
+      // fwidth gives world-units per pixel, so distRaw / fwidth = screen-pixel distance.
+      const fw = (fwidth as any)(distRaw);
+      const fwSafe = (fw as any).max(0.0001);
+      const screenDist = (distRaw as any).div(fwSafe).abs();
+      // 1 when within widthPx pixels of the cut, 0 otherwise. step(edge, x) = 1 if x >= edge.
+      const inBand = (step as any)(screenDist, u.widthPx);
+      // Restrict to the visible side so the band only paints fragments that survive clipping.
+      const visibleSide = (step as any)(distRaw, 0.0); // 1 when distRaw <= 0
+      const mask = (inBand as any).mul(visibleSide).mul(u.enabled);
+      // Bright additive band — multiplied by intensity to dominate over base lit color and
+      // remain visible even in dimly-lit areas.
+      const intensity = 4.0;
+      const edgeGlow = (vec3 as any)(u.color).mul(mask).mul(intensity);
+      const baseEmissive = prevEmissiveNode ?? (materialEmissive as unknown);
+      if (baseEmissive != null) {
+        return (baseEmissive as { add: (x: unknown) => unknown }).add(edgeGlow);
+      }
+      return edgeGlow;
+    })();
+    m.emissiveNode = wrapped;
+    if (!m.userData) m.userData = {};
+    (m.userData as Record<string, unknown>).xsecPatchedV1 = true;
+    m.needsUpdate = true;
+    this.patchedMaterialsWebGpu.add(material);
+  }
+
+  private patchMaterialForCrossSection(material: THREE.Material): void {
+    if (this.patchedMaterials.has(material)) {
+      return;
+    }
+    this.patchedMaterials.add(material);
+    const uniforms = this.crossSectionUniforms;
+    const previous = material.onBeforeCompile;
+    material.onBeforeCompile = (shader, renderer) => {
+      if (typeof previous === "function") {
+        previous.call(material, shader, renderer);
+      }
+      shader.uniforms.uXSecPlane = uniforms.uXSecPlane;
+      shader.uniforms.uXSecEdgeColor = uniforms.uXSecEdgeColor;
+      shader.uniforms.uXSecEdgeWidthPx = uniforms.uXSecEdgeWidthPx;
+      shader.uniforms.uXSecEdgeEnabled = uniforms.uXSecEdgeEnabled;
+
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vXSecWorldPos;`
+      ).replace(
+        "#include <worldpos_vertex>",
+        `#include <worldpos_vertex>\n#ifdef USE_INSTANCING\n  vXSecWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;\n#else\n  vXSecWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n#endif`
+      );
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vXSecWorldPos;\nuniform vec4 uXSecPlane;\nuniform vec3 uXSecEdgeColor;\nuniform float uXSecEdgeWidthPx;\nuniform float uXSecEdgeEnabled;`
+      ).replace(
+        "#include <dithering_fragment>",
+        `#include <dithering_fragment>\nif (uXSecEdgeEnabled > 0.5) {\n  float xsecDist = dot(vXSecWorldPos, uXSecPlane.xyz) + uXSecPlane.w;\n  float xsecPx = max(fwidth(xsecDist), 1e-6);\n  float xsecMask = 1.0 - smoothstep(uXSecEdgeWidthPx - 1.0, uXSecEdgeWidthPx + 1.0, -xsecDist / xsecPx);\n  xsecMask *= step(xsecDist, 0.0);\n  gl_FragColor.rgb = mix(gl_FragColor.rgb, uXSecEdgeColor, xsecMask);\n}`
+      );
+    };
+    material.customProgramCacheKey = () => "xsec-v1";
+  }
+
+  private applyCrossSectionToMaterial(material: THREE.Material, allowed: boolean): void {
+    const wantPlanes = allowed && this.activeCrossSectionActorId !== null;
+    const desiredArray = wantPlanes ? this.crossSectionPlaneArray : this.crossSectionEmptyArray;
+    const previousCount = this.materialPlaneCount.get(material) ?? -1;
+    const desiredCount = desiredArray.length;
+    material.clippingPlanes = desiredArray;
+    material.clipShadows = true;
+    if (previousCount !== desiredCount) {
+      material.needsUpdate = true;
+      this.materialPlaneCount.set(material, desiredCount);
+    }
+    if (wantPlanes) {
+      this.patchMaterialForCrossSection(material);
+      // For WebGPU, we additionally inject an edge-band node into material.colorNode.
+      // This is gated to materials that look like NodeMaterial-compatible (any non-RawShader).
+      const renderEngine = this.kernel.store.getState().state.scene.renderEngine;
+      const isRawShader = (material as { isRawShaderMaterial?: boolean }).isRawShaderMaterial === true;
+      if (renderEngine === "webgpu" && !isRawShader) {
+        this.patchMaterialForCrossSectionWebGpu(material);
+      }
+    }
+  }
+
+  private applyCrossSectionToActor(actor: ActorNode): void {
+    const object = this.actorObjects.get(actor.id);
+    if (!(object instanceof THREE.Object3D)) {
+      return;
+    }
+
+    // F4 hardening: cross-section gizmo must NEVER be a child of the ClippingGroup, or it would
+    // be self-clipped and possibly contribute its world transform to plane derivation.
+    if (actor.actorType === "cross-section") {
+      if (object.parent === this.crossSectionClipGroup) {
+        object.parent.remove(object);
+        this.scene.add(object);
+        this.crossSectionGizmoMisparented = true;
+      }
+      this.crossSectionGizmoParentName = (object.parent as THREE.Object3D | null)?.name ?? null;
+      return;
+    }
+
+    const isMesh = actor.actorType === "mesh";
+    const isPrimitive = actor.actorType === "primitive";
+    if (!isMesh && !isPrimitive) {
+      return;
+    }
+    const allowed = this.activeCrossSectionActorId !== null
+      && (this.crossSectionAffectAll || this.crossSectionAffectedActorIds.has(actor.id));
+
+    // Skip the expensive material traverse when nothing has changed for this
+    // actor since the last call. The traverse is O(scene-tree-of-actor) — on
+    // the SSG Stadium mesh that dominated slow-frame cost during camera
+    // rotation. We still run the parent-reparenting block below because
+    // syncActorSiblingOrder above re-parents top-level actor objects under
+    // the scene every frame.
+    //
+    // The signature must also invalidate when the actor's renderable
+    // materials change (mesh material reassignment, primitive rebuild, etc.)
+    // — otherwise a freshly-assigned material instance would never get
+    // clippingPlanes set and the cross-section silently stops affecting it.
+    const matSig = this.meshMaterialSigByActorId.get(actor.id)
+      ?? this.primitiveSignatureByActorId.get(actor.id)
+      ?? "";
+    const traverseSig = `${this.activeCrossSectionActorId ?? ""}|${allowed ? 1 : 0}|${matSig}`;
+    const objectSeen = this.crossSectionAppliedObjectByActorId.has(object);
+    const canSkipTraverse = objectSeen && this.crossSectionAppliedSigByActorId.get(actor.id) === traverseSig;
+    if (!canSkipTraverse) {
+      this.crossSectionAppliedSigByActorId.set(actor.id, traverseSig);
+      this.crossSectionAppliedObjectByActorId.set(object, true);
+    }
+
+    if (!canSkipTraverse) {
+    // F2: walk all renderable child types (Mesh, Line, LineSegments, Points, Sprite, InstancedMesh).
+    // Lines, points, and sprites in particular were silently escaping clipping in v1.
+    object.traverse((node: any) => {
+      const isRenderable = node.isMesh === true || node.isLine === true || node.isPoints === true || node.isSprite === true;
+      if (!isRenderable) {
+        return;
+      }
+      if (node.isLine === true) this.crossSectionLineCount += 1;
+      else if (node.isPoints === true) this.crossSectionPointsCount += 1;
+      else if (node.isSprite === true) this.crossSectionSpriteCount += 1;
+
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const mat of mats) {
+        if (mat instanceof THREE.Material) {
+          this.applyCrossSectionToMaterial(mat, allowed);
+          if (allowed) {
+            this.crossSectionMaterialPatchCount += 1;
+          }
+          // Track materials that don't natively respect clippingPlanes so we can surface them.
+          if (allowed && (mat as { isShaderMaterial?: boolean; isRawShaderMaterial?: boolean }).isShaderMaterial === true
+              && !(mat as { isMeshStandardMaterial?: boolean; isMeshBasicMaterial?: boolean; isMeshLambertMaterial?: boolean; isMeshPhongMaterial?: boolean; isMeshPhysicalMaterial?: boolean; isLineBasicMaterial?: boolean; isPointsMaterial?: boolean; isSpriteMaterial?: boolean }).isMeshStandardMaterial) {
+            const tname = mat.type || "?";
+            this.crossSectionUnsupportedTypes.set(tname, (this.crossSectionUnsupportedTypes.get(tname) ?? 0) + 1);
+          }
+        }
+      }
+    });
+    } // end if (!canSkipTraverse)
+
+    // WebGPU pathway: reparent top-level actor objects under the ClippingGroup.
+    // Nested actors (parentActorId !== null) inherit clipping naturally if their ancestor is clipped.
+    if (actor.parentActorId === null) {
+      if (allowed) {
+        this.crossSectionTopLevelAllowedCount += 1;
+      }
+      const desiredParent: THREE.Object3D = allowed ? this.crossSectionClipGroup : this.scene;
+      if (object.parent !== desiredParent) {
+        object.parent?.remove(object);
+        desiredParent.add(object);
+        if (desiredParent === this.crossSectionClipGroup) {
+          this.crossSectionReparentToClipCount += 1;
+        } else {
+          this.crossSectionReparentToSceneCount += 1;
+        }
+      }
+    }
+
+    if (allowed) {
+      this.crossSectionAppliedActorCount += 1;
+    }
+  }
+
   private syncCurveActor(actor: ActorNode): void {
     const object = this.actorObjects.get(actor.id);
     if (!(object instanceof THREE.Group)) {
       return;
     }
-    const line = object.getObjectByName(CURVE_RENDER_LINE_NAME);
-    if (!(line instanceof THREE.Line)) {
+
+    const curveType = getCurveTypeFromActor(actor);
+    const samplesPerSegment = getCurveSamplesPerSegmentFromActor(actor);
+
+    if (curveType === "mesh-projection") {
+      this.syncMeshProjectionCurveActor(actor, object);
+      return;
+    }
+
+    const lineChild = this.ensureCurveLineChild(object, "line");
+    if (!(lineChild instanceof THREE.Line) || lineChild instanceof THREE.LineSegments) {
       return;
     }
 
     const curveData = curveDataWithOverrides(actor);
-    const curveType = curveData.kind === "circle" ? "circle" : "spline";
     const activePoints = curveData.points.filter((point) => point.enabled !== false);
-    const samplesPerSegment = getCurveSamplesPerSegmentFromActor(actor);
     const pointCount = activePoints.length;
     const skippedPointCount = Math.max(0, curveData.points.length - activePoints.length);
     const segmentCount = curveType === "circle" ? 1 : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
@@ -2374,7 +3652,8 @@ export class SceneController {
       sampled.push(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.001, 0, 0));
     }
 
-    line.geometry = new THREE.BufferGeometry().setFromPoints(sampled);
+    lineChild.geometry.dispose?.();
+    lineChild.geometry = new THREE.BufferGeometry().setFromPoints(sampled);
     const length = estimateCurveLength(curveData, samplesPerSegment);
     const bounds = new THREE.Box3().setFromPoints(sampled);
 
@@ -2391,6 +3670,261 @@ export class SceneController {
         boundsMin: [bounds.min.x, bounds.min.y, bounds.min.z],
         boundsMax: [bounds.max.x, bounds.max.y, bounds.max.z]
       },
+      updatedAtIso: new Date().toISOString()
+    });
+  }
+
+  private ensureCurveLineChild(group: THREE.Group, mode: "line" | "segments"): THREE.Line | THREE.LineSegments {
+    const existing = group.getObjectByName(CURVE_RENDER_LINE_NAME);
+    const wantsSegments = mode === "segments";
+    const existingIsSegments = existing instanceof THREE.LineSegments;
+    const existingIsLine = existing instanceof THREE.Line && !existingIsSegments;
+
+    if (existing && wantsSegments === existingIsSegments && (wantsSegments || existingIsLine)) {
+      return existing as THREE.Line | THREE.LineSegments;
+    }
+
+    let preservedMaterial: THREE.LineBasicMaterial | null = null;
+    if (existing instanceof THREE.Line) {
+      if (existing.material instanceof THREE.LineBasicMaterial) {
+        preservedMaterial = existing.material;
+      }
+      existing.geometry?.dispose?.();
+      existing.parent?.remove(existing);
+    }
+
+    const material = preservedMaterial ?? new THREE.LineBasicMaterial({
+      color: 0x78ffcb,
+      transparent: true,
+      opacity: 0.95
+    });
+
+    const next = wantsSegments
+      ? new THREE.LineSegments(new THREE.BufferGeometry(), material)
+      : new THREE.Line(new THREE.BufferGeometry(), material);
+    next.name = CURVE_RENDER_LINE_NAME;
+    next.frustumCulled = false;
+    group.add(next);
+    return next;
+  }
+
+  private syncMeshProjectionCurveActor(actor: ActorNode, object: THREE.Group): void {
+    const segmentsChild = this.ensureCurveLineChild(object, "segments");
+    if (!(segmentsChild instanceof THREE.LineSegments)) {
+      return;
+    }
+
+    const state = this.kernel.store.getState().state;
+
+    const targetActorIds = Array.isArray(actor.params.targetActorIds)
+      ? (actor.params.targetActorIds as unknown[]).filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const projectionPlane = actor.params.projectionPlane === "XZ" || actor.params.projectionPlane === "YZ"
+      ? (actor.params.projectionPlane as "XZ" | "YZ")
+      : "XY";
+    const resolution = Math.max(3, Math.min(4096, Math.floor(Number(actor.params.resolution ?? 64))));
+    const maxDistanceParam = Number(actor.params.maxDistance ?? 100);
+    const effectiveMaxDistance = !Number.isFinite(maxDistanceParam) || maxDistanceParam <= 0
+      ? 1e6
+      : maxDistanceParam;
+
+    // Stable signature: derived only from project state, so a value written in one session
+    // can be matched against the current state in the next session (cross-session cache).
+    const stableSignature = buildMeshProjectionSignature(actor, state);
+    const cachedSignature = getProjectedPolylineSignature(actor.id);
+    const cachedPolyline = getProjectedPolyline(actor.id);
+    const signatureMatches = cachedSignature !== null && cachedSignature === stableSignature && cachedPolyline !== null;
+
+    object.updateMatrixWorld(true);
+    const targets: THREE.Object3D[] = [];
+    for (const targetId of targetActorIds) {
+      const targetObject = this.actorObjects.get(targetId);
+      if (targetObject instanceof THREE.Object3D && targetObject !== object) {
+        targetObject.updateMatrixWorld(true);
+        targets.push(targetObject);
+      }
+    }
+    const meshes: THREE.Mesh[] = [];
+    for (const target of targets) {
+      target.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.visible) {
+          meshes.push(child);
+        }
+      });
+    }
+    const meshesReady = meshes.length > 0;
+
+    // Decide whether to recompute. Skip when:
+    //   - signature matches a cached polyline (cache is up to date), OR
+    //   - target meshes haven't loaded yet (don't trash the cached polyline; show it as-is).
+    const skipRecompute = signatureMatches || !meshesReady;
+
+    let polyline: ProjectedPolyline | null = null;
+    let cacheState: "fresh" | "stale" | "recomputed" | "no-cache";
+    let error: string | null = null;
+    let computedBounds: THREE.Box3 | null = null;
+
+    if (skipRecompute) {
+      if (cachedPolyline) {
+        polyline = cachedPolyline;
+        if (signatureMatches) {
+          cacheState = "fresh";
+        } else {
+          cacheState = "stale";
+          error = meshesReady
+            ? "Inputs changed — awaiting recompute."
+            : "Target meshes not loaded — showing cached polyline from last session.";
+        }
+      } else {
+        cacheState = "no-cache";
+        if (targetActorIds.length === 0) {
+          error = "No target meshes selected.";
+        } else if (targets.length === 0) {
+          error = "Target actor(s) missing or not yet ready.";
+        } else {
+          error = "Target actor(s) contain no visible meshes.";
+        }
+      }
+    } else {
+      // Recompute path. Build BVHs on demand; idempotent across calls.
+      for (const mesh of meshes) {
+        const geom = mesh.geometry as THREE.BufferGeometry & {
+          boundsTree?: unknown;
+          computeBoundsTree?: () => void;
+        };
+        if (geom && !geom.boundsTree && typeof geom.computeBoundsTree === "function") {
+          geom.computeBoundsTree();
+        }
+      }
+
+      const origin = new THREE.Vector3();
+      object.getWorldPosition(origin);
+      const worldQuat = new THREE.Quaternion();
+      object.getWorldQuaternion(worldQuat);
+
+      const localPoints: ([number, number, number] | null)[] = [];
+      const bounds = new THREE.Box3();
+      let hitCount = 0;
+
+      const raycaster = this.meshProjectionRaycaster;
+      const localDir = this.meshProjectionLocalDir;
+      const worldDir = this.meshProjectionWorldDir;
+      const tmpVec = this.meshProjectionTmpVec;
+      raycaster.far = effectiveMaxDistance;
+      (raycaster as unknown as { firstHitOnly: boolean }).firstHitOnly = true;
+
+      for (let i = 0; i < resolution; i += 1) {
+        const angle = (i / resolution) * Math.PI * 2;
+        const c = Math.cos(angle);
+        const s = Math.sin(angle);
+        if (projectionPlane === "XY") {
+          localDir.set(c, s, 0);
+        } else if (projectionPlane === "XZ") {
+          localDir.set(c, 0, s);
+        } else {
+          localDir.set(0, c, s);
+        }
+        worldDir.copy(localDir).applyQuaternion(worldQuat).normalize();
+        raycaster.set(origin, worldDir);
+
+        const hits = raycaster.intersectObjects(meshes, false);
+        const hit = hits[0];
+        if (!hit) {
+          localPoints.push(null);
+          continue;
+        }
+        tmpVec.copy(hit.point);
+        object.worldToLocal(tmpVec);
+        localPoints.push([tmpVec.x, tmpVec.y, tmpVec.z]);
+        bounds.expandByPoint(tmpVec);
+        hitCount += 1;
+      }
+
+      polyline = {
+        points: localPoints,
+        hitCount,
+        resolution,
+        targetCount: targets.length
+      };
+      setProjectedPolyline(actor.id, polyline);
+      setProjectedPolylineSignature(actor.id, stableSignature);
+      cacheState = "recomputed";
+      computedBounds = bounds;
+      if (hitCount === 0) {
+        error = "No intersections found within max distance.";
+      }
+    }
+
+    // Frame-skip guard: if the rendered geometry already reflects the polyline + cacheState
+    // for this actor, don't rebuild the BufferGeometry.
+    const renderSignature = JSON.stringify({
+      stableSignature,
+      cacheState,
+      hitCount: polyline?.hitCount ?? 0,
+      resolution: polyline?.resolution ?? resolution
+    });
+    if (this.curveSignatureByActorId.get(actor.id) === renderSignature) {
+      return;
+    }
+    this.curveSignatureByActorId.set(actor.id, renderSignature);
+
+    const points = polyline?.points ?? [];
+    const N = points.length;
+    const segmentVerts: THREE.Vector3[] = [];
+    for (let i = 0; i < N; i += 1) {
+      const a = points[i];
+      const b = points[(i + 1) % N];
+      if (!a || !b) continue;
+      segmentVerts.push(new THREE.Vector3(a[0], a[1], a[2]));
+      segmentVerts.push(new THREE.Vector3(b[0], b[1], b[2]));
+    }
+    if (segmentVerts.length < 2) {
+      segmentVerts.push(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.001, 0, 0));
+    }
+
+    segmentsChild.geometry.dispose?.();
+    segmentsChild.geometry = new THREE.BufferGeometry().setFromPoints(segmentVerts);
+
+    const length = estimateCurveLength({ kind: "mesh-projection", closed: true, points: [], projectedPoints: points });
+    const hitCount = polyline?.hitCount ?? 0;
+    const polylineResolution = polyline?.resolution ?? resolution;
+    const targetCount = polyline?.targetCount ?? targets.length;
+
+    let boundsMin: [number, number, number] | "n/a" = "n/a";
+    let boundsMax: [number, number, number] | "n/a" = "n/a";
+    if (computedBounds && hitCount > 0 && Number.isFinite(computedBounds.min.x)) {
+      boundsMin = [computedBounds.min.x, computedBounds.min.y, computedBounds.min.z];
+      boundsMax = [computedBounds.max.x, computedBounds.max.y, computedBounds.max.z];
+    } else if (cacheState !== "no-cache" && hitCount > 0) {
+      // Compute bounds from the cached points so the inspector still has values when we
+      // reuse a cached polyline without recomputing.
+      const fromCache = new THREE.Box3();
+      for (const p of points) {
+        if (!p) continue;
+        fromCache.expandByPoint(this.meshProjectionTmpVec.set(p[0], p[1], p[2]));
+      }
+      if (Number.isFinite(fromCache.min.x)) {
+        boundsMin = [fromCache.min.x, fromCache.min.y, fromCache.min.z];
+        boundsMax = [fromCache.max.x, fromCache.max.y, fromCache.max.z];
+      }
+    }
+
+    this.kernel.store.getState().actions.setActorStatus(actor.id, {
+      values: {
+        pointCount: hitCount,
+        curveType: "mesh-projection",
+        closed: true,
+        resolution: polylineResolution,
+        projectedHitCount: hitCount,
+        projectedMissCount: Math.max(0, polylineResolution - hitCount),
+        targetCount,
+        projectionPlane,
+        length,
+        cacheState,
+        boundsMin,
+        boundsMax
+      },
+      error: error ?? undefined,
       updatedAtIso: new Date().toISOString()
     });
   }
@@ -2468,7 +4002,7 @@ export class SceneController {
 
     try {
       const bytes = await this.kernel.storage.readAssetBytes({
-        projectName: state.activeProjectName,
+        projectPath: state.activeProject?.path ?? "",
         relativePath: asset.relativePath
       });
       const text = new TextDecoder("utf-8").decode(bytes);
@@ -2609,9 +4143,9 @@ export class SceneController {
     }
     const selection = this.kernel.store.getState().state.selection;
     const isSelected = selection.some((entry) => entry.kind === "actor" && entry.id === actor.id);
-    const visibilityMode = actor.visibilityMode ?? "visible";
-    const visibleByMode = visibilityMode === "visible" || (visibilityMode === "selected" && isSelected);
-    object.visible = actor.enabled && visibleByMode;
+    object.visible =
+      computeActorObjectVisibility(actor, isSelected, this.debugHelpersVisible) &&
+      this.isActorPluginEnabled(actor);
     object.position.set(...actor.transform.position);
     object.rotation.set(...actor.transform.rotation);
     object.scale.set(...actor.transform.scale);
@@ -2694,7 +4228,7 @@ export class SceneController {
     });
     try {
       const rawBytes = await this.kernel.storage.readAssetBytes({
-        projectName: state.activeProjectName,
+        projectPath: state.activeProject?.path ?? "",
         relativePath: asset.relativePath
       });
       const parsed = tryParseSplatBinary(rawBytes);
@@ -2863,7 +4397,8 @@ export class SceneController {
       return;
     }
 
-    const assetId = typeof actor.params.assetId === "string" ? actor.params.assetId : "";
+    const stateForResolution = this.kernel.store.getState().state;
+    const assetId = resolveMeshAssetId(actor, this.qualityMode, stateForResolution.assets) ?? "";
     const reloadToken = typeof actor.params.assetIdReloadToken === "number" ? actor.params.assetIdReloadToken : 0;
     const previousAssetId = this.meshAssetByActorId.get(actor.id) ?? "";
     const previousReloadToken = this.meshReloadTokenByActorId.get(actor.id) ?? 0;
@@ -2872,6 +4407,7 @@ export class SceneController {
     }
     this.meshAssetByActorId.set(actor.id, assetId);
     this.meshReloadTokenByActorId.set(actor.id, reloadToken);
+    this.disposeMeshAnimationState(actor.id);
 
     renderRoot.clear();
 
@@ -2894,13 +4430,13 @@ export class SceneController {
 
     const extension = asset.relativePath.split(".").pop()?.toLowerCase() ?? "";
     // Build the asset URL locally Ã¢â‚¬â€ no IPC round-trip needed.
-    const encodedProject = encodeURIComponent(state.activeProjectName);
+    const encodedProject = encodeURIComponent(state.activeProject?.uuid ?? "");
     const encodedPath = asset.relativePath
       .split("/")
       .filter((part) => part.length > 0)
       .map((part) => encodeURIComponent(part))
       .join("/");
-    const url = `rehearse-engine-asset://${encodedProject}/${encodedPath}`;
+    const url = `simularca-asset://${encodedProject}/${encodedPath}`;
     // Defer "loading" status to a macrotask so the React re-render (useSyncExternalStore) does
     // not queue a microtask that runs before syncFromState's continuation microtask.
     const actorIdForLoading = actor.id;
@@ -2918,17 +4454,30 @@ export class SceneController {
     const loadToken = (this.meshLoadTokenByActorId.get(actor.id) ?? 0) + 1;
     this.meshLoadTokenByActorId.set(actor.id, loadToken);
 
-    const attachLoaded = (loadedObject: any) => {
+    const attachLoaded = (loadedObject: any, animations?: THREE.AnimationClip[]) => {
       if (this.meshLoadTokenByActorId.get(actor.id) !== loadToken) {
         return;
       }
+      // Auto-detect source units and write back to scaleFactor before we measure bounds.
+      // Gate on scaleFactor still being at its default (1) so we never overwrite a user value.
+      let autoDetectedScale: number | null = null;
+      const currentScaleFactor = Number(actor.params.scaleFactor ?? 1);
+      if (currentScaleFactor === 1) {
+        const detected = detectMeshImportScale(extension, loadedObject);
+        if (detected !== null && Number.isFinite(detected) && detected > 0) {
+          autoDetectedScale = detected;
+          this.kernel.store.getState().actions.updateActorParamsNoHistory(actor.id, {
+            scaleFactor: detected
+          });
+          // Apply immediately so the bounds we measure below are in meters. The next
+          // applyActorTransform pass will set this same value idempotently.
+          renderRoot.scale.setScalar(detected);
+        }
+      }
       renderRoot.clear();
       renderRoot.add(loadedObject);
-
-      const _tAL0 = performance.now();
+      enableAOMeshLayer(loadedObject);
       this.applyMeshMaterials(actor, loadedObject, extension);
-      const _tAL1 = performance.now();
-      if (_tAL1 - _tAL0 > 5) this.warnPerformance("[rehearse-engine] applyMeshMaterials slow:", (_tAL1 - _tAL0).toFixed(0), "ms");
       const bounds = new THREE.Box3().setFromObject(loadedObject);
       const size = new THREE.Vector3();
       bounds.getSize(size);
@@ -2950,6 +4499,34 @@ export class SceneController {
           triangleCount += Math.floor(positionCount / 3);
         }
       });
+      const clips = Array.isArray(animations)
+        ? animations
+        : Array.isArray((loadedObject as { animations?: unknown }).animations)
+          ? ((loadedObject as { animations?: THREE.AnimationClip[] }).animations ?? [])
+          : [];
+      const { skinnedMeshCount, morphTargetMeshCount } = countAnimatedMeshFeatures(loadedObject);
+      const animationState: MeshAnimationState = {
+        rootObject: loadedObject,
+        clips,
+        mixer: clips.length > 0 ? new THREE.AnimationMixer(loadedObject) : null,
+        action: null,
+        activeClipName: clips[0]?.name ?? null,
+        activeClipDurationSeconds: clips[0]?.duration ?? 0,
+        enabled: false,
+        clipTimeSeconds: 0,
+        poseRevision: 0,
+        skinnedMeshCount,
+        morphTargetMeshCount,
+        lastStatusSignature: ""
+      };
+      this.meshAnimationStateByActorId.set(actor.id, animationState);
+      this.syncMeshAnimation(
+        actor,
+        Number.isFinite(state.time.elapsedSimSeconds) ? state.time.elapsedSimSeconds : 0
+      );
+      const meshAnimationInfo = (this.actorObjects.get(actor.id)?.userData as Record<string, unknown> | undefined)?.meshAnimationInfo as
+        | Record<string, unknown>
+        | undefined;
       const slotNames = this.getMeshSlotNames(loadedObject);
       const env = this.resolveEnvironment(actor.id);
       // Defer Zustand status dispatches to a macrotask (setTimeout). Without this, Zustand's
@@ -2960,7 +4537,9 @@ export class SceneController {
       const boundsMax: [number, number, number] = [bounds.max.x, bounds.max.y, bounds.max.z];
       const sizeArr: [number, number, number] = [size.x, size.y, size.z];
       const actorId = actor.id;
-      const statusMsg = `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size (m): ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}`;
+      const autoScaleSuffix =
+        autoDetectedScale !== null ? ` | auto import scale: ${autoDetectedScale.toFixed(4)}` : "";
+      const statusMsg = `Mesh loaded: ${asset.sourceFileName} (${extension || "unknown"}) | size (m): ${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)}${autoScaleSuffix}`;
       setTimeout(() => {
         this.kernel.store.getState().actions.setActorStatus(actorId, {
           values: {
@@ -2969,6 +4548,13 @@ export class SceneController {
             loadState: "loaded",
             meshCount,
             triangleCount,
+            animationState: meshAnimationInfo?.enabled ? "playing" : clips.length > 0 ? "disabled" : "no-clips",
+            animationClip: meshAnimationInfo?.activeClipName ?? clips[0]?.name ?? "n/a",
+            animationClipCount: clips.length,
+            animationDurationSeconds: Number((clips[0]?.duration ?? 0).toFixed(3)),
+            animationTimeSeconds: Number((Number(meshAnimationInfo?.clipTimeSeconds ?? 0)).toFixed(3)),
+            skinnedMeshCount,
+            morphTargetMeshCount,
             boundsMin,
             boundsMax,
             size: sizeArr,
@@ -2982,7 +4568,7 @@ export class SceneController {
     };
 
     const onError = (error: unknown) => {
-      console.error("[rehearse-engine] ColladaLoader error for", url, error);
+      console.error("[simularca] ColladaLoader error for", url, error);
       const message = formatLoadError(error);
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {
@@ -3001,7 +4587,7 @@ export class SceneController {
         this.gltfLoader.load(
           url,
           (result: any) => {
-            attachLoaded(result.scene);
+            attachLoaded(result.scene, Array.isArray(result.animations) ? result.animations : []);
           },
           undefined,
           onError
@@ -3012,7 +4598,7 @@ export class SceneController {
         this.fbxLoader.load(
           url,
           (fbx: any) => {
-            attachLoaded(fbx);
+            attachLoaded(fbx, Array.isArray(fbx?.animations) ? fbx.animations : []);
           },
           undefined,
           onError
@@ -3220,6 +4806,18 @@ export class SceneController {
     return worldMatrix;
   }
 
+  private isActorPluginEnabled(actor: ActorNode): boolean {
+    if (actor.actorType !== "plugin") {
+      return true;
+    }
+    const plugin = resolveActorPlugin(actor, this.kernel.pluginApi.listPlugins());
+    if (!plugin) {
+      return true;
+    }
+    const state = this.kernel.store.getState().state;
+    return isPluginEnabled(state.pluginsEnabled, plugin.definition.id);
+  }
+
   private resolveActorDescriptor(actor: ActorNode): ReloadableDescriptor | null {
     const descriptors = this.kernel.descriptorRegistry.listByKind("actor");
     for (const descriptor of descriptors) {
@@ -3354,33 +4952,47 @@ export class SceneController {
       return;
     }
     try {
-      descriptor.sceneHooks.syncObject({
-        actor,
-        state,
-        object,
-        runtime: this.pluginActorRuntimeController.getRuntime(actor.id),
-        simTimeSeconds,
-        dtSeconds,
-        getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
-        getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
-        getActorRuntime: (actorId) => this.pluginActorRuntimeController.getRuntime(actorId),
-        sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t),
-        getMistVolumeResource: (actorId) => this.mistVolumeController.getResource(actorId),
-        getVolumetricRayResource: (actorId) => this.pluginActorRuntimeController.getVolumetricResource(actorId),
-        setActorStatus: (status: ActorRuntimeStatus | null) => {
-          this.kernel.store.getState().actions.setActorStatus(actor.id, status);
-        },
-        readAssetBytes: (assetId: string): Promise<Uint8Array> => {
-          const asset = state.assets.find(a => a.id === assetId);
-          if (!asset) {
-            return Promise.reject(new Error(`Asset not found: ${assetId}`));
-          }
-          return this.kernel.storage.readAssetBytes({
-            projectName: state.activeProjectName,
-            relativePath: asset.relativePath
-          });
-        }
-      });
+      const syncPluginObject = () =>
+        descriptor.sceneHooks!.syncObject!({
+          actor,
+          state,
+          object,
+          runtime: this.pluginActorRuntimeController.getRuntime(actor.id),
+          simTimeSeconds,
+          dtSeconds,
+          getActorById: (actorId) => this.kernel.store.getState().state.actors[actorId] ?? null,
+          getActorObject: (actorId) => this.actorObjects.get(actorId) ?? null,
+          getActorRuntime: (actorId) => this.pluginActorRuntimeController.getRuntime(actorId),
+          sampleCurveWorldPoint: (actorId, t) => this.sampleCurveWorldPoint(actorId, t),
+          getCurveSignature: (actorId) => getProjectedPolylineSignature(actorId),
+          getMistVolumeResource: (actorId) => this.mistVolumeController.getResource(actorId),
+          getVolumetricRayResource: (actorId) => this.pluginActorRuntimeController.getVolumetricResource(actorId),
+          profileChunk: <T,>(label: string, run: () => T): T => this.kernel.profiler.withChunk(label, run),
+          setActorStatus: (status: ActorRuntimeStatus | null) => {
+            this.kernel.store.getState().actions.setActorStatus(actor.id, status);
+          },
+          readAssetBytes: (assetId: string): Promise<Uint8Array> => {
+            const asset = state.assets.find(a => a.id === assetId);
+            if (!asset) {
+              return Promise.reject(new Error(`Asset not found: ${assetId}`));
+            }
+            return this.kernel.storage.readAssetBytes({
+              projectPath: state.activeProject?.path ?? "",
+              relativePath: asset.relativePath
+            });
+          },
+          setEnvironmentTexture: (texture: unknown | null) => {
+            this.setPluginEnvironmentTexture(actor.id, texture as THREE.Texture | null);
+          },
+          getRenderer: () => this.renderer,
+          getPmremGenerator: () => this.ensurePmremGenerator(),
+          generateSkyIbl: (params: unknown) => this.generateSkyIblForActor(actor.id, params as SkyIblParams)
+        });
+      if (this.kernel.profiler.shouldProfileUpdates()) {
+        this.kernel.profiler.withActorPhase(buildActorProfileMeta(actor), "update", syncPluginObject);
+      } else {
+        syncPluginObject();
+      }
     } catch (error) {
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
         values: {},
@@ -3402,7 +5014,7 @@ export class SceneController {
     if (!actor || actor.actorType !== "curve") {
       return null;
     }
-    const sampled = sampleCurvePositionAndTangent(curveDataWithOverrides(actor), t);
+    const sampled = sampleCurvePositionAndTangent(buildSampleableCurveData(actor), t);
     const worldMatrix = this.resolveActorWorldMatrix(actor.id, state.actors);
     const worldPosition = new THREE.Vector3(...sampled.position).applyMatrix4(worldMatrix);
     const normalMatrix = new THREE.Matrix3().setFromMatrix4(worldMatrix);
@@ -3772,9 +5384,46 @@ export class SceneController {
   private applySceneBackgroundColor(): void {
     const state = this.kernel.store.getState().state;
     const sceneColor = normalizeBackgroundColor(state.scene.backgroundColor);
-    if (this.currentEnvironmentAssetId) {
+    if (state.scene.useEnvironmentBackground && this.scene.environment) {
       return;
     }
-    this.scene.background = new THREE.Color(sceneColor);
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.set(sceneColor);
+    } else {
+      this.scene.background = new THREE.Color(sceneColor);
+    }
+  }
+}
+
+function applySkyUniforms(
+  sky: SkyShaderMesh | SkyNodeMesh,
+  isNode: boolean,
+  params: SkyIblParams
+): void {
+  const [sx, sy, sz] = params.sunDirection;
+  if (isNode) {
+    const node = sky as SkyNodeMesh;
+    (node.turbidity as { value: number }).value = params.turbidity;
+    (node.rayleigh as { value: number }).value = params.rayleigh;
+    (node.mieCoefficient as { value: number }).value = params.mieCoefficient;
+    (node.mieDirectionalG as { value: number }).value = params.mieDirectionalG;
+    const sun = (node.sunPosition as { value: THREE.Vector3 }).value;
+    sun.set(sx, sy, sz);
+    return;
+  }
+  const classic = sky as SkyShaderMesh;
+  const uniforms = (classic.material as THREE.ShaderMaterial).uniforms as Record<string, { value: unknown } | undefined>;
+  if (uniforms.turbidity) uniforms.turbidity.value = params.turbidity;
+  if (uniforms.rayleigh) uniforms.rayleigh.value = params.rayleigh;
+  if (uniforms.mieCoefficient) uniforms.mieCoefficient.value = params.mieCoefficient;
+  if (uniforms.mieDirectionalG) uniforms.mieDirectionalG.value = params.mieDirectionalG;
+  const sunUniform = uniforms.sunPosition;
+  if (sunUniform) {
+    const sunValue = sunUniform.value;
+    if (sunValue && typeof (sunValue as THREE.Vector3).set === "function") {
+      (sunValue as THREE.Vector3).set(sx, sy, sz);
+    } else {
+      sunUniform.value = new THREE.Vector3(sx, sy, sz);
+    }
   }
 }

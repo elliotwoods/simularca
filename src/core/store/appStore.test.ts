@@ -3,7 +3,7 @@ import { createAppStore } from "@/core/store/appStore";
 
 describe("appStore undo/redo", () => {
   it("undoes and redoes actor creation", () => {
-    const store = createAppStore("web-ro");
+    const store = createAppStore("electron-rw");
     const initialCount = Object.keys(store.getState().state.actors).length;
 
     store.getState().actions.createActor({
@@ -47,7 +47,7 @@ describe("appStore undo/redo", () => {
   });
 
   it("updates actor params without adding history entries when using no-history path", () => {
-    const store = createAppStore("web-ro");
+    const store = createAppStore("electron-rw");
     const actorId = store.getState().actions.createActor({
       actorType: "empty",
       name: "Curve Carrier"
@@ -80,7 +80,7 @@ describe("appStore undo/redo", () => {
   });
 
   it("updates actor transform without adding history entries when using no-history path", () => {
-    const store = createAppStore("web-ro");
+    const store = createAppStore("electron-rw");
     const actorId = store.getState().actions.createActor({
       actorType: "empty",
       name: "Transform Target"
@@ -107,7 +107,8 @@ describe("appStore undo/redo", () => {
     expect(store.getState().state.dirty).toBe(dirtyBefore);
     expect(store.getState().state.runtimeDebug).toEqual({
       slowFrameDiagnosticsEnabled: true,
-      slowFrameDiagnosticsThresholdMs: 160
+      slowFrameDiagnosticsThresholdMs: 160,
+      heartbeatLoggingEnabled: false
     });
   });
 
@@ -160,6 +161,21 @@ describe("appStore undo/redo", () => {
     expect(store.getState().state.scene.framePacing).toEqual({
       mode: "fixed",
       targetFps: 120
+    });
+  });
+
+  it("updates scene color buffer precision independently", () => {
+    const store = createAppStore("electron-rw");
+
+    store.getState().actions.setSceneRenderSettings({
+      colorBufferPrecision: "float16"
+    });
+
+    expect(store.getState().state.scene.colorBufferPrecision).toBe("float16");
+    expect(store.getState().state.scene.renderEngine).toBe("webgpu");
+    expect(store.getState().state.scene.tonemapping).toEqual({
+      mode: "aces",
+      dither: true
     });
   });
 
@@ -261,6 +277,138 @@ describe("appStore undo/redo", () => {
     expect(store.getState().state.camera.position).toEqual([2, 3, 4]);
     expect(store.getState().state.camera.fov).toBe(120);
     expect(store.getState().state.lastPerspectiveCamera).toEqual(rememberedBefore);
+  });
+});
+
+describe("appStore viewer permissions", () => {
+  function setPermissions(
+    store: ReturnType<typeof createAppStore>,
+    permissions: Partial<{
+      canEditParameters: boolean;
+      canToggleVisibility: boolean;
+      canCreateActors: boolean;
+      canDeleteActors: boolean;
+      canTransformActors: boolean;
+    }>
+  ): void {
+    store.setState((s) => ({
+      ...s,
+      state: {
+        ...s.state,
+        viewerPermissions: {
+          canEditParameters: false,
+          canToggleVisibility: false,
+          canCreateActors: false,
+          canDeleteActors: false,
+          canTransformActors: false,
+          ...permissions
+        }
+      }
+    }));
+  }
+
+  it("blocks createActor in web-ro mode when canCreateActors is false", () => {
+    const store = createAppStore("web-ro");
+    setPermissions(store, {});
+    const before = Object.keys(store.getState().state.actors).length;
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    expect(id).toBe("");
+    expect(Object.keys(store.getState().state.actors).length).toBe(before);
+  });
+
+  it("allows createActor in web-ro mode when canCreateActors is true", () => {
+    const store = createAppStore("web-ro");
+    setPermissions(store, { canCreateActors: true });
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    expect(id).not.toBe("");
+    expect(store.getState().state.actors[id]).toBeTruthy();
+  });
+
+  it("blocks updateActorParams in web-ro mode without canEditParameters", () => {
+    // Seed an actor in editor mode, then flip the store into web-ro.
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.updateActorParams(id, { foo: 1 });
+    expect(store.getState().state.actors[id]?.params.foo).toBe(1);
+
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, {});
+    store.getState().actions.updateActorParams(id, { foo: 2 });
+    expect(store.getState().state.actors[id]?.params.foo).toBe(1);
+  });
+
+  it("allows updateActorParams in web-ro mode with canEditParameters", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, { canEditParameters: true });
+    store.getState().actions.updateActorParams(id, { foo: 5 });
+    expect(store.getState().state.actors[id]?.params.foo).toBe(5);
+  });
+
+  it("blocks setActorVisibilityMode in web-ro mode without canToggleVisibility", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, {});
+    store.getState().actions.setActorVisibilityMode(id, "hidden");
+    expect(store.getState().state.actors[id]?.visibilityMode).toBe("visible");
+  });
+
+  it("allows setActorVisibilityMode in web-ro mode with canToggleVisibility", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, { canToggleVisibility: true });
+    store.getState().actions.setActorVisibilityMode(id, "hidden");
+    expect(store.getState().state.actors[id]?.visibilityMode).toBe("hidden");
+  });
+
+  it("blocks setActorTransform in web-ro mode without canTransformActors", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, {});
+    store.getState().actions.setActorTransform(id, "position", [9, 9, 9]);
+    expect(store.getState().state.actors[id]?.transform.position).toEqual([0, 0, 0]);
+  });
+
+  it("allows setActorTransform in web-ro mode with canTransformActors", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, { canTransformActors: true });
+    store.getState().actions.setActorTransform(id, "position", [9, 9, 9]);
+    expect(store.getState().state.actors[id]?.transform.position).toEqual([9, 9, 9]);
+  });
+
+  it("blocks deleteSelection in web-ro mode without canDeleteActors", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.select([{ kind: "actor", id }]);
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, {});
+    store.getState().actions.deleteSelection();
+    expect(store.getState().state.actors[id]).toBeTruthy();
+  });
+
+  it("allows deleteSelection in web-ro mode with canDeleteActors", () => {
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    store.getState().actions.select([{ kind: "actor", id }]);
+    store.getState().actions.setMode("web-ro");
+    setPermissions(store, { canDeleteActors: true });
+    store.getState().actions.deleteSelection();
+    expect(store.getState().state.actors[id]).toBeUndefined();
+  });
+
+  it("permission flags are ignored in editor mode", () => {
+    // No viewerPermissions set + mode is electron-rw → mutations succeed.
+    const store = createAppStore("electron-rw");
+    const id = store.getState().actions.createActor({ actorType: "empty" });
+    expect(id).not.toBe("");
+    store.getState().actions.updateActorParams(id, { foo: 1 });
+    expect(store.getState().state.actors[id]?.params.foo).toBe(1);
   });
 });
 

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { AppKernel } from "@/app/kernel";
 import type { ActorNode, AppState, MistVolumeResource, VolumetricRayFieldResource } from "@/core/types";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
+import { getProjectedPolyline } from "@/features/curves/projectionCache";
 
 export type MistVolumeQualityMode = "interactive" | "export";
 type MistPreviewMode = "volume" | "bounds" | "slice-x" | "slice-y" | "slice-z" | "off";
@@ -1569,7 +1570,20 @@ export class MistVolumeController {
       }
     }
     for (const actor of actors) {
-      this.syncActor(actor, state, simTimeSeconds, dtSeconds);
+      if (this.kernel.profiler.shouldProfileUpdates()) {
+        this.kernel.profiler.withActorPhase(
+          {
+            actorId: actor.id,
+            actorName: actor.name,
+            actorType: actor.actorType,
+            pluginType: actor.pluginType
+          },
+          "update",
+          () => this.syncActor(actor, state, simTimeSeconds, dtSeconds)
+        );
+      } else {
+        this.syncActor(actor, state, simTimeSeconds, dtSeconds);
+      }
     }
   }
 
@@ -1612,12 +1626,18 @@ export class MistVolumeController {
     }
     const quality = pickMistVolumeQuality(actor, this.qualityMode);
     const entry = this.ensureEntry(actor.id, quality.resolution);
+    const profileChunk = <T,>(label: string, run: () => T): T => {
+      if (this.kernel.profiler.shouldProfileUpdates() && this.kernel.profiler.getDetailPreset() === "standard") {
+        return this.kernel.profiler.withChunk(label, run);
+      }
+      return run();
+    };
     if (entry.previewGroup.parent !== actorObject) {
       actorObject.add(entry.previewGroup);
     }
     const updateStart = performance.now();
     const previewMode = readPreviewMode(actor.params.previewMode);
-    const binding = this.resolveVolumeBinding(actor);
+    const binding = profileChunk("Volume binding", () => this.resolveVolumeBinding(actor));
     const boundarySettings = readBoundarySettings(actor);
     if (!binding) {
       this.setPreviewVisibility(entry, false, previewMode);
@@ -1668,36 +1688,42 @@ export class MistVolumeController {
     }
 
     const sourceCollectStart = performance.now();
-    const sources = this.collectSources(actor, binding);
+    const sources = profileChunk("Source collection", () => this.collectSources(actor, binding));
     const sourceCollectMs = performance.now() - sourceCollectStart;
     const clampedDt = Math.max(0, Math.min(dtSeconds, 1 / 15));
     const simulationStart = performance.now();
     let cpuDiagnostics: MistCpuSimulationDiagnostics = { postInjectRange: "n/a", postTransportRange: "n/a", postFadeRange: "n/a" };
     if (clampedDt > 0) {
-      cpuDiagnostics = this.simulate(entry, actor, sources, simTimeSeconds, clampedDt, quality);
+      cpuDiagnostics = profileChunk("Simulation", () =>
+        this.simulate(entry, actor, sources, simTimeSeconds, clampedDt, quality)
+      );
     }
     const simulationMs = performance.now() - simulationStart;
     const uploadStart = performance.now();
     let uploadByteRange: [number, number] | "n/a" = "n/a";
     if (clampedDt > 0 || shouldReset) {
-      uploadByteRange = this.uploadDensity(entry);
+      uploadByteRange = profileChunk("Density upload", () => this.uploadDensity(entry));
     }
     const uploadMs = performance.now() - uploadStart;
     entry.lastSimTimeSeconds = simTimeSeconds;
 
     const densityRange = this.computeDensityRange(entry.density);
-    const previewVisible = this.setPreviewVisibility(entry, actorObject.visible === true, previewMode);
+    const previewVisible = profileChunk("Preview update", () =>
+      this.setPreviewVisibility(entry, actorObject.visible === true, previewMode)
+    );
     const debugSettings = readDebugSettings(actor);
     const diagnosticSampleRange = this.computeDiagnosticSampleRange(entry, actor, simTimeSeconds);
-    const debugState = this.updateDebugOverlay(
-      entry,
-      actor,
-      binding,
-      previewMode,
-      readNumber(actor.params.slicePosition, 0.5, 0, 1),
-      sources,
-      simTimeSeconds,
-      previewVisible
+    const debugState = profileChunk("Debug overlay", () =>
+      this.updateDebugOverlay(
+        entry,
+        actor,
+        binding,
+        previewMode,
+        readNumber(actor.params.slicePosition, 0.5, 0, 1),
+        sources,
+        simTimeSeconds,
+        previewVisible
+      )
     );
     const noiseSeed = Math.floor(readNumber(actor.params.noiseSeed, 1));
     const emissionNoiseStrength = readNumber(actor.params.emissionNoiseStrength, 0, 0);
@@ -2416,9 +2442,15 @@ export class MistVolumeController {
         continue;
       }
       const curveData = curveDataWithOverrides(sourceActor);
-      const pointCount = curveData.kind === "circle" ? 1 : curveData.points.filter((point) => point.enabled !== false).length;
-      const segmentCount = curveData.kind === "circle" ? 1 : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
-      const sampleCount = Math.max(2, getCurveSamplesPerSegmentFromActor(sourceActor) * Math.max(1, segmentCount));
+      const pointCount = curveData.kind === "circle" ? 1
+        : curveData.kind === "mesh-projection" ? (getProjectedPolyline(sourceActor.id)?.hitCount ?? 0)
+        : curveData.points.filter((point) => point.enabled !== false).length;
+      const segmentCount = curveData.kind === "circle" ? 1
+        : curveData.kind === "mesh-projection" ? 1
+        : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
+      const sampleCount = curveData.kind === "mesh-projection"
+        ? Math.max(2, getProjectedPolyline(sourceActor.id)?.resolution ?? 0)
+        : Math.max(2, getCurveSamplesPerSegmentFromActor(sourceActor) * Math.max(1, segmentCount));
       for (let index = 0; index < sampleCount; index += 1) {
         const t = sampleCount <= 1 ? 0 : index / Math.max(1, sampleCount - 1);
         const sampled = this.helpers.sampleCurveWorldPoint(sourceActor.id, curveData.closed ? t : Math.min(t, 0.999999));

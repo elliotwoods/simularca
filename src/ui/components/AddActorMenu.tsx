@@ -68,6 +68,7 @@ export function AddActorMenu(props: AddActorMenuProps) {
   const kernel = useKernel();
   const pluginRegistryRevision = usePluginRegistryRevision();
   const mode = useAppStore((store) => store.state.mode);
+  const canCreateActors = useAppStore((store) => store.state.viewerPermissions?.canCreateActors ?? false);
   const pluginCount = kernel.pluginApi.listPlugins().length;
   const actorDescriptorCount = kernel.descriptorRegistry.listByKind("actor").length;
   const options = useMemo(
@@ -79,7 +80,7 @@ export function AddActorMenu(props: AddActorMenuProps) {
   const [activeDescriptorId, setActiveDescriptorId] = useState<string | null>(options[0]?.descriptorId ?? null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const optionRefs = useRef(new Map<string, HTMLButtonElement>());
-  const readOnly = mode === "web-ro";
+  const readOnly = mode === "web-ro" && !canCreateActors;
 
   const filteredOptions = useMemo(() => {
     const query = normalizeSearchValue(searchQuery);

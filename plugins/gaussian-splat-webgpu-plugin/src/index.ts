@@ -33,6 +33,7 @@ export interface ReloadableDescriptor {
       getActorById(actorId: string): unknown | null;
       getActorObject(actorId: string): unknown | null;
       sampleCurveWorldPoint(actorId: string, t: number): { position: [number, number, number]; tangent: [number, number, number] } | null;
+      profileChunk?<T>(label: string, run: () => T): T;
       setActorStatus(status: unknown): void;
       readAssetBytes(assetId: string): Promise<Uint8Array>;
     }): void;

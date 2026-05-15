@@ -22,13 +22,14 @@ Scene can choose which environment is the 'backgruond plate'
 
 Let's also look into ambient occlusion, shadows, global illumination, etc
 
-# Rendering
+# Video Rendering
 
 * Speed up file handling
     * Async download (e.g. max buffer size)
     * Just faster
 * Anti-aliasing
 * Preview before render (just show in realtime)
+* There seems there might be a big that after rendering ends that we get stuck at the end of the camera path sometimes?
 
 # Deploying
 
@@ -47,7 +48,7 @@ Test deploying scenes to Vercel.
 
 # Ray-tracing
 
-e.g. Cycles/Octane/that open source optically accurate one
+e.g. Cycles/Octane/LuxCore
 
 This would be amazing if possible
 
@@ -88,26 +89,11 @@ X,Y,Z widget in the corner of the screen
 * If 'Render Debug Views' is disabled, then we shouldn't render curves
 * Smarten up this dialog box
 
-# Timings
-
-* If an actor takes > 1/framerate for draw or update, then show that time in the scene graph
-
 # Time
 
 Better transport controls
 Consider showing time at the bottom of the viewport (e.g. with keyframes, and skipping affects total time)
 Option of 'timeline mode' and 'continous mode'
-
-# Filesystem
-
-Use local filesystem default location in AppData, etc for:
-
-* Window layout
-* Recent projects
-
-Projects should live in their own folders. Also allow for filetype association
-
-Export/import packages for projects
 
 # Camera Path
 
@@ -123,3 +109,12 @@ Export/import packages for projects
 * When quitting / exiting a file without saving, notify the user and suggest that they save
 * Check filesystem for changing the notion of projects to something else
 * Be able to type in the project dialogue and have it search through recent projects and/or snapshots
+
+# Refactoring
+
+* Try to identify any software patterns which are only used once and could be rolled into other existing patterns
+* Try to create (and keep up to date) a markdown file with a list of design patterns for teh software
+
+# Status
+
+* We recently implemented grouping in status panels. Review each actor's status system and apply grouping appropriately

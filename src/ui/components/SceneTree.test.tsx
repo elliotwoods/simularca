@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { AppKernel } from "@/app/kernel";
 import { KernelProvider } from "@/app/KernelContext";
 import { createAppStore } from "@/core/store/appStore";
+import { ActorProfilingService } from "@/render/profiling";
 import { SceneTree } from "@/ui/components/SceneTree";
 
 class DataTransferStub {
@@ -38,7 +39,8 @@ function createKernelStub(): AppKernel {
     pluginApi: {
       listPlugins: () => []
     } as unknown as AppKernel["pluginApi"],
-    clock: {} as AppKernel["clock"]
+    clock: {} as AppKernel["clock"],
+    profiler: new ActorProfilingService()
   };
 }
 

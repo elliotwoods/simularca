@@ -1,93 +1,238 @@
-import type { ProjectAssetRef, ProjectSnapshotListEntry } from "@/types/ipc";
 import type { StorageAdapter } from "./storageAdapter";
+import type {
+  OpenProjectResult,
+  ProjectIdentity,
+  ProjectSnapshotListEntry
+} from "@/types/ipc";
+import {
+  buildAssetKey,
+  type PublishManifest
+} from "@/features/publish/publishManifestSchema";
 
-const DEFAULTS_PATH = "/sessions/defaults.json";
+const READ_ONLY_MESSAGE = "Read-only mode: this operation is not supported.";
 
-async function fetchText(path: string): Promise<string> {
-  const response = await fetch(path);
-  if (!response.ok) {
-    throw new Error(`Unable to fetch ${path}.`);
-  }
-  return response.text();
+/**
+ * Identity-bridging contract (asserted by `createViewerKernel`):
+ *   `activeProject.path === manifest.project.uuid`
+ *
+ * `StorageAdapter.resolveAssetPath` is keyed by `projectUuid`, while
+ * `readAssetBytes` is keyed by `projectPath`. In Electron, a server-side
+ * lookup table bridges them. The viewer has no filesystem, so we simply set
+ * `path = uuid` and both code paths converge.
+ *
+ * If the kernel is bootstrapped any other way, asset resolution will fail
+ * with a "key not found" error. The invariant is asserted at boot to crash
+ * loudly rather than producing 404s deep in the render pipeline.
+ */
+export interface WebStorageAdapterOptions {
+  manifest: PublishManifest;
+  /** No trailing slash. e.g. `https://my-bucket.r2.dev` or a custom domain. */
+  bucketBaseUrl: string;
 }
 
-export function createWebStorageAdapter(): StorageAdapter {
+function trimTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function buildAbsoluteUrl(base: string, bucketRelative: string): string {
+  const normalisedBase = trimTrailingSlash(base);
+  const normalisedRelative = bucketRelative.startsWith("/")
+    ? bucketRelative.slice(1)
+    : bucketRelative;
+  return `${normalisedBase}/${normalisedRelative}`;
+}
+
+function manifestToProjectIdentity(manifest: PublishManifest): ProjectIdentity {
+  // `path = uuid` is the identity-bridging contract documented above.
+  return {
+    uuid: manifest.project.uuid,
+    path: manifest.project.uuid,
+    name: manifest.project.name
+  };
+}
+
+function manifestToSnapshotList(manifest: PublishManifest): ProjectSnapshotListEntry[] {
+  return manifest.snapshots.map((entry) => ({
+    name: entry.name,
+    updatedAtIso: manifest.publishedAtIso
+  }));
+}
+
+function pickDefaultSnapshotName(manifest: PublishManifest): string {
+  const explicit = manifest.snapshots.find((entry) => entry.default === true);
+  return explicit?.name ?? manifest.snapshots[0]?.name ?? "main";
+}
+
+export function createWebStorageAdapter(
+  options: WebStorageAdapterOptions
+): StorageAdapter {
+  const { manifest, bucketBaseUrl } = options;
+  const baseUrl = trimTrailingSlash(bucketBaseUrl);
+
+  function readOnly(): never {
+    throw new Error(READ_ONLY_MESSAGE);
+  }
+
+  function snapshotEntryByName(name: string): { url: string; schemaVersion: number } | null {
+    const entry = manifest.snapshots.find((candidate) => candidate.name === name);
+    return entry ? { url: entry.url, schemaVersion: entry.schemaVersion } : null;
+  }
+
+  function assetUrlOrThrow(projectUuid: string, relativePath: string): string {
+    const key = buildAssetKey(projectUuid, relativePath);
+    const bucketRelative = manifest.assets[key];
+    if (!bucketRelative) {
+      throw new Error(
+        `Asset not found in publish manifest: ${key}. The publish manifest may be missing this asset, or the projectUuid does not match (identity-bridging invariant).`
+      );
+    }
+    return buildAbsoluteUrl(baseUrl, bucketRelative);
+  }
+
   return {
     mode: "web-ro",
     isReadOnly: true,
-    async listProjects() {
-      const defaults = await this.loadDefaults();
-      return [defaults.defaultProjectName];
+
+    // Recents/defaults: silent no-ops in viewer (no editor UI calls them, and
+    // ProjectService.openProject pipes through promoteAndSetDefault on success).
+    async loadRecents() {
+      return [];
     },
-    async listSnapshots(_projectName) {
-      const defaults = await this.loadDefaults();
-      return [{ name: defaults.defaultSnapshotName, updatedAtIso: null }] satisfies ProjectSnapshotListEntry[];
+    async saveRecents() {
+      // no-op in viewer; the call comes from ProjectService.promoteAndSetDefault.
+    },
+    async removeRecent() {
+      readOnly();
+    },
+    async locateRecent() {
+      return null;
     },
     async loadDefaults() {
-      const raw = await fetchText(DEFAULTS_PATH);
-      const parsed = JSON.parse(raw) as { defaultProjectName?: string; defaultSnapshotName?: string; defaultSessionName?: string };
-      return {
-        defaultProjectName: parsed.defaultProjectName ?? parsed.defaultSessionName ?? "demo",
-        defaultSnapshotName: parsed.defaultSnapshotName ?? "main"
-      };
+      return null;
     },
     async saveDefaults() {
-      throw new Error("Read-only mode: defaults cannot be saved.");
+      // no-op in viewer; same reason as saveRecents above.
     },
-    async loadProjectSnapshot(projectName, snapshotName) {
-      if (snapshotName !== "main") {
-        try {
-          return await fetchText(`/sessions/${projectName}/snapshots/${snapshotName}.json`);
-        } catch {
-          // Fall back to legacy single-snapshot layout.
-        }
+
+    async selectSimularcaFile() {
+      return null;
+    },
+    async selectFolder() {
+      return null;
+    },
+    async getDefaultProjectsRoot() {
+      return "";
+    },
+
+    async createNewProject() {
+      readOnly();
+    },
+    async openProject(simularcaPath: string): Promise<OpenProjectResult> {
+      // The "path" here is the projectUuid by the identity-bridging contract.
+      if (simularcaPath !== manifest.project.uuid) {
+        throw new Error(
+          `Web viewer can only open the published project (${manifest.project.uuid}); requested ${simularcaPath}.`
+        );
       }
-      return await fetchText(`/sessions/${projectName}/session.json`);
+      return {
+        identity: manifestToProjectIdentity(manifest),
+        snapshots: manifestToSnapshotList(manifest),
+        lastSnapshotName: pickDefaultSnapshotName(manifest)
+      };
     },
-    async saveProjectSnapshot() {
-      throw new Error("Read-only mode: project cannot be saved.");
+    async saveProjectAs() {
+      readOnly();
     },
-    async cloneProject() {
-      throw new Error("Read-only mode: projects cannot be cloned.");
-    },
-    async deleteProject() {
-      throw new Error("Read-only mode: projects cannot be deleted.");
+    async moveProject() {
+      readOnly();
     },
     async renameProject() {
-      throw new Error("Read-only mode: projects cannot be renamed.");
+      readOnly();
+    },
+    async deleteProject() {
+      readOnly();
+    },
+    async repairPointer() {
+      readOnly();
+    },
+
+    async listSnapshots() {
+      return manifestToSnapshotList(manifest);
+    },
+    async loadSnapshot(_projectPath: string, snapshotName: string): Promise<string> {
+      const entry = snapshotEntryByName(snapshotName);
+      if (!entry) {
+        throw new Error(`Snapshot "${snapshotName}" is not in the publish manifest.`);
+      }
+      const url = buildAbsoluteUrl(baseUrl, entry.url);
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch snapshot ${snapshotName}: ${String(response.status)} ${response.statusText}`);
+      }
+      return await response.text();
+    },
+    async saveSnapshot() {
+      readOnly();
     },
     async duplicateSnapshot() {
-      throw new Error("Read-only mode: snapshots cannot be duplicated.");
+      readOnly();
     },
     async renameSnapshot() {
-      throw new Error("Read-only mode: snapshots cannot be renamed.");
+      readOnly();
     },
     async deleteSnapshot() {
-      throw new Error("Read-only mode: snapshots cannot be deleted.");
+      readOnly();
     },
-    async importAsset(_args: {
-      projectName: string;
-      sourcePath: string;
-      kind: ProjectAssetRef["kind"];
-    }) {
-      throw new Error("Read-only mode: assets cannot be imported.");
+
+    async detectLegacyProjects() {
+      return [];
+    },
+    async migrateLegacyProject() {
+      readOnly();
+    },
+    async writeMigrationReadme() {
+      readOnly();
+    },
+    async deleteLegacyProject() {
+      readOnly();
+    },
+
+    async importAsset() {
+      readOnly();
+    },
+    async writeGeneratedAsset() {
+      readOnly();
     },
     async importDae() {
-      throw new Error("Read-only mode: DAE assets cannot be imported.");
+      readOnly();
     },
     async transcodeHdriToKtx2() {
-      throw new Error("Read-only mode: HDRI transcoding is disabled.");
+      readOnly();
     },
     async deleteAsset() {
-      throw new Error("Read-only mode: assets cannot be deleted.");
+      readOnly();
     },
-    resolveAssetPath: async ({ projectName, relativePath }) => `/sessions/${projectName}/${relativePath}`,
-    async readAssetBytes({ projectName, relativePath }) {
-      const response = await fetch(`/sessions/${projectName}/${relativePath}`);
+    async resolveAssetPath({ projectUuid, relativePath }) {
+      return assetUrlOrThrow(projectUuid, relativePath);
+    },
+    async readAssetBytes({ projectPath, relativePath }) {
+      // `projectPath === projectUuid` per the identity-bridging contract above.
+      const url = assetUrlOrThrow(projectPath, relativePath);
+      const response = await fetch(url);
       if (!response.ok) {
-        throw new Error(`Unable to fetch asset bytes: ${relativePath}`);
+        throw new Error(
+          `Failed to fetch asset ${relativePath}: ${String(response.status)} ${response.statusText}`
+        );
       }
-      return new Uint8Array(await response.arrayBuffer());
+      const buffer = await response.arrayBuffer();
+      return new Uint8Array(buffer);
+    },
+
+    async readProjectionCache() {
+      return null;
+    },
+    async writeProjectionCache() {
+      // Web mode has no filesystem; silently no-op so the renderer code path stays uniform.
     }
   };
 }

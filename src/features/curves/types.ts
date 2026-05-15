@@ -1,4 +1,4 @@
-export type CurveKind = "spline" | "circle";
+export type CurveKind = "spline" | "circle" | "mesh-projection";
 export type CurveHandleMode = "normal" | "mirrored" | "auto" | "hard";
 export type CurveHandleWeightMode = "normal" | "hard";
 
@@ -17,6 +17,9 @@ export interface CurveData {
   closed: boolean;
   points: CurvePoint[];
   radius?: number;
+  // Runtime-only: populated for mesh-projection curves before sampling.
+  // Not persisted (sanitizeCurveData drops it).
+  projectedPoints?: ([number, number, number] | null)[];
 }
 
 function toFiniteNumber(value: unknown, fallback: number): number {
@@ -50,7 +53,9 @@ function sanitizeHandleWeightMode(value: unknown): CurveHandleWeightMode {
 }
 
 function sanitizeCurveKind(value: unknown): CurveKind {
-  return value === "circle" ? "circle" : "spline";
+  if (value === "circle") return "circle";
+  if (value === "mesh-projection") return "mesh-projection";
+  return "spline";
 }
 
 function sanitizePoint(value: unknown, fallback: CurvePoint): CurvePoint {
@@ -133,13 +138,17 @@ export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveDa
   const baseline = fallback ?? createDefaultCurveData();
   const baselineKind = sanitizeCurveKind(baseline.kind);
   if (!value || typeof value !== "object") {
-    return baselineKind === "circle"
-      ? createCircleCurveData(baseline.radius ?? 1)
-      : {
-        kind: "spline",
-        closed: baseline.closed,
-        points: baseline.points.map((point) => sanitizePoint(point, point))
-      };
+    if (baselineKind === "circle") {
+      return createCircleCurveData(baseline.radius ?? 1);
+    }
+    if (baselineKind === "mesh-projection") {
+      return { kind: "mesh-projection", closed: true, points: [] };
+    }
+    return {
+      kind: "spline",
+      closed: baseline.closed,
+      points: baseline.points.map((point) => sanitizePoint(point, point))
+    };
   }
 
   const source = value as { kind?: unknown; closed?: unknown; points?: unknown; radius?: unknown };
@@ -147,6 +156,9 @@ export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveDa
   if (kind === "circle") {
     const fallbackRadius = typeof baseline.radius === "number" ? baseline.radius : 1;
     return createCircleCurveData(toFiniteNumber(source.radius, fallbackRadius));
+  }
+  if (kind === "mesh-projection") {
+    return { kind: "mesh-projection", closed: true, points: [] };
   }
 
   const defaultPoints = createDefaultCurveData().points;

@@ -1,5 +1,5 @@
 {
-  "name": "@rehearse-engine/template-artwork-actor-plugin",
+  "name": "@simularca/template-artwork-actor-plugin",
   "version": "0.1.0",
   "private": true,
   "type": "module",

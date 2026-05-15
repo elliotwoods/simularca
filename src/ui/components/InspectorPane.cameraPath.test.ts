@@ -6,6 +6,7 @@ import type { AppKernel } from "@/app/kernel";
 import { createAppStore } from "@/core/store/appStore";
 import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraPathActor";
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
+import { ActorProfilingService } from "@/render/profiling";
 import { InspectorPane } from "@/ui/components/InspectorPane";
 
 class ResizeObserverMock {
@@ -29,7 +30,8 @@ function createKernelStub(): AppKernel {
     descriptorRegistry: {
       listByKind: () => [cameraPathActorDescriptor, curveActorDescriptor]
     } as unknown as AppKernel["descriptorRegistry"],
-    clock: {} as AppKernel["clock"]
+    clock: {} as AppKernel["clock"],
+    profiler: new ActorProfilingService()
   };
 }
 

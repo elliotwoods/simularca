@@ -8,6 +8,7 @@ import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import type { RegisteredPlugin } from "@/features/plugins/pluginApi";
 import { emptyActorDescriptor } from "@/features/actors/descriptors/emptyActor";
 import { AddActorMenu } from "@/ui/components/AddActorMenu";
+import { ActorProfilingService } from "@/render/profiling";
 
 function createPluginActorDescriptor(): ReloadableDescriptor {
   return {
@@ -50,7 +51,8 @@ function createKernelStub(
       subscribe: () => () => {},
       getRevision: () => 0
     } as unknown as AppKernel["pluginApi"],
-    clock: {} as AppKernel["clock"]
+    clock: {} as AppKernel["clock"],
+    profiler: new ActorProfilingService()
   };
 }
 

@@ -134,7 +134,12 @@ export class SparkSplatController {
       return;
     }
 
-    const activeProjectName = this.kernel.store.getState().state.activeProjectName;
+    const activeProject = this.kernel.store.getState().state.activeProject;
+    if (!activeProject) {
+      this.disposeActorEntry(actor.id);
+      this.kernel.store.getState().actions.setActorStatus(actor.id, null);
+      return;
+    }
     const asset = this.kernel.store.getState().state.assets.find((entry) => entry.id === assetId);
     if (!asset) {
       this.kernel.store.getState().actions.setActorStatus(actor.id, {
@@ -171,7 +176,7 @@ export class SparkSplatController {
 
     try {
       const bytes = await this.kernel.storage.readAssetBytes({
-        projectName: activeProjectName,
+        projectPath: activeProject.path,
         relativePath: asset.relativePath
       });
       if (this.loadingTokenByActorId.get(actor.id) !== loadToken) {

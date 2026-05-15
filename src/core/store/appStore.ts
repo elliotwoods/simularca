@@ -24,15 +24,17 @@ import type {
   PluginViewState,
   RenderEngine,
   RuntimeDebugState,
+  SceneColorBufferPrecision,
   SceneFramePacingSettings,
   SceneHelpersSettings,
   ScenePostProcessingSettings,
   SceneToneMappingMode,
   SceneStats,
   SelectionEntry,
-  TimeSpeedPreset
+  TimeSpeedPreset,
+  ViewerPermissions
 } from "@/core/types";
-import type { AppMode, ProjectAssetRef } from "@/types/ipc";
+import type { AppMode, ProjectAssetRef, ProjectIdentity } from "@/types/ipc";
 
 export interface HistoryEntry {
   label: string;
@@ -51,13 +53,14 @@ export interface AppActions {
   pushHistory(label: string): void;
   undo(): void;
   redo(): void;
-  setProjectName(name: string): void;
+  setActiveProject(identity: ProjectIdentity | null): void;
   setSnapshotName(name: string): void;
   setSceneBackgroundColor(color: string): void;
   setSceneRenderSettings(
       settings: Partial<{
         renderEngine: RenderEngine;
         antialiasing: boolean;
+        colorBufferPrecision: SceneColorBufferPrecision;
         framePacing: Partial<SceneFramePacingSettings>;
         tonemapping: Partial<{
           mode: SceneToneMappingMode;
@@ -72,11 +75,15 @@ export interface AppActions {
           vignette: Partial<ScenePostProcessingSettings["vignette"]>;
           chromaticAberration: Partial<ScenePostProcessingSettings["chromaticAberration"]>;
           grain: Partial<ScenePostProcessingSettings["grain"]>;
+          ambientOcclusion: Partial<ScenePostProcessingSettings["ambientOcclusion"]>;
         }>;
         cameraKeyboardNavigation: boolean;
         cameraNavigationSpeed: number;
         cameraFlyLookInvertYaw: boolean;
         cameraFlyLookSpeed: number;
+        useEnvironmentBackground: boolean;
+        environmentOverrideActorId: string | null;
+        defaultIblEnabled: boolean;
       }>
   ): void;
   createActor(input: {
@@ -98,6 +105,7 @@ export interface AppActions {
   setActorTransformNoHistory(actorId: string, key: "position" | "rotation" | "scale", value: [number, number, number]): void;
   setActorVisibilityMode(actorId: string, mode: ActorVisibilityMode): void;
   setNodeEnabled(node: SelectionEntry, enabled: boolean): void;
+  setPluginEnabled(pluginId: string, enabled: boolean): void;
   select(nodes: SelectionEntry[], additive?: boolean): void;
   clearSelection(): void;
   reorderActor(actorId: string, newParentId: string | null, index: number): void;
@@ -131,9 +139,11 @@ export interface AppActions {
   setRuntimeDebugSettings(settings: Partial<RuntimeDebugState>): void;
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
+  setActorFrameTimings(timings: Record<string, number>): void;
   createMaterial(input?: Partial<Material>): string;
   createMaterialFromDef(def: Omit<Material, "id">): string;
   addAssets(assets: ProjectAssetRef[]): void;
+  removeAsset(assetId: string): void;
   updateMaterial(materialId: string, partial: Partial<Omit<Material, "id">>): void;
   deleteMaterial(materialId: string): void;
 }
@@ -165,9 +175,14 @@ function appendConsoleLog(state: any, entry: { level: LogLevel; message: string;
   state.consoleEntries = [...state.consoleEntries, log].slice(-MAX_CONSOLE_ENTRIES);
 }
 
+const MAX_HISTORY_ENTRIES = 100;
+
 function withHistory(get: () => AppStore, set: (partial: Partial<AppStore>) => void, label: string): void {
   const snapshot = cloneState(get().state);
-  const nextPast = [...get().historyPast, { label, snapshot }];
+  const past = get().historyPast;
+  const nextPast = past.length >= MAX_HISTORY_ENTRIES
+    ? [...past.slice(past.length - MAX_HISTORY_ENTRIES + 1), { label, snapshot }]
+    : [...past, { label, snapshot }];
   set({
     historyPast: nextPast,
     historyFuture: []
@@ -235,6 +250,21 @@ function removeActorRecursive(state: AppState, actorId: string): void {
   state.selection = state.selection.filter((entry) => entry.id !== actorId);
 }
 
+/**
+ * Returns true if a mutating action is permitted under the current mode.
+ *
+ * In editor mode every mutation is allowed; in the published-viewer build
+ * (`mode === "web-ro"`) the publisher's `viewerPermissions` flags decide
+ * which individual mutations leak through. Legacy publishes have no
+ * permissions object → everything stays locked.
+ */
+function mutationAllowed(state: AppState, permission: keyof ViewerPermissions): boolean {
+  if (state.mode !== "web-ro") {
+    return true;
+  }
+  return Boolean(state.viewerPermissions?.[permission]);
+}
+
 function insertActor(state: AppState, input: {
   id: string;
   actorType: ActorNode["actorType"];
@@ -286,8 +316,17 @@ export function createAppStore(mode: AppMode): AppStoreApi {
     historyFuture: [],
     actions: {
       hydrate(nextState) {
+        // viewerPermissions is written once at viewer boot from publishConfig
+        // (see createViewerKernel) and is not part of the project snapshot.
+        // Project hydration must not clobber it or every mutation-permission
+        // gate (canToggleVisibility, canEditParameters, …) would silently
+        // reset to "deny" the moment openProject runs.
+        const previous = get().state;
         set({
-          state: nextState,
+          state: {
+            ...nextState,
+            viewerPermissions: nextState.viewerPermissions ?? previous.viewerPermissions
+          },
           historyPast: [],
           historyFuture: []
         });
@@ -401,11 +440,10 @@ export function createAppStore(mode: AppMode): AppStoreApi {
           state: cloneState(next.snapshot)
         });
       },
-      setProjectName(name) {
+      setActiveProject(identity) {
         set({
           state: produce(get().state, (draft) => {
-            draft.activeProjectName = name;
-            draft.dirty = true;
+            draft.activeProject = identity;
           })
         });
       },
@@ -435,6 +473,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             if (typeof settings.antialiasing === "boolean") {
               draft.scene.antialiasing = settings.antialiasing;
+            }
+            if (settings.colorBufferPrecision) {
+              draft.scene.colorBufferPrecision = settings.colorBufferPrecision;
             }
             if (settings.framePacing) {
               if (settings.framePacing.mode) {
@@ -501,6 +542,30 @@ export function createAppStore(mode: AppMode): AppStoreApi {
                   draft.scene.postProcessing.grain.intensity = Math.max(0, grain.intensity);
                 }
               }
+              if (settings.postProcessing.ambientOcclusion) {
+                const ao = settings.postProcessing.ambientOcclusion;
+                if (typeof ao.enabled === "boolean") {
+                  draft.scene.postProcessing.ambientOcclusion.enabled = ao.enabled;
+                }
+                if (typeof ao.radius === "number" && Number.isFinite(ao.radius)) {
+                  draft.scene.postProcessing.ambientOcclusion.radius = Math.max(0, ao.radius);
+                }
+                if (typeof ao.thickness === "number" && Number.isFinite(ao.thickness)) {
+                  draft.scene.postProcessing.ambientOcclusion.thickness = Math.max(1e-4, ao.thickness);
+                }
+                if (typeof ao.distanceExponent === "number" && Number.isFinite(ao.distanceExponent)) {
+                  draft.scene.postProcessing.ambientOcclusion.distanceExponent = Math.max(0.1, ao.distanceExponent);
+                }
+                if (typeof ao.scale === "number" && Number.isFinite(ao.scale)) {
+                  draft.scene.postProcessing.ambientOcclusion.scale = Math.max(0, ao.scale);
+                }
+                if (typeof ao.samples === "number" && Number.isFinite(ao.samples)) {
+                  draft.scene.postProcessing.ambientOcclusion.samples = Math.max(4, Math.round(ao.samples));
+                }
+                if (typeof ao.resolutionScale === "number" && Number.isFinite(ao.resolutionScale)) {
+                  draft.scene.postProcessing.ambientOcclusion.resolutionScale = Math.min(1, Math.max(0.25, ao.resolutionScale));
+                }
+              }
             }
             if (settings.helpers) {
               if (settings.helpers.grid) {
@@ -558,11 +623,24 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             if (typeof settings.cameraFlyLookSpeed === "number" && Number.isFinite(settings.cameraFlyLookSpeed)) {
               draft.scene.cameraFlyLookSpeed = Math.max(0, settings.cameraFlyLookSpeed);
             }
+            if (typeof settings.useEnvironmentBackground === "boolean") {
+              draft.scene.useEnvironmentBackground = settings.useEnvironmentBackground;
+            }
+            if ("environmentOverrideActorId" in settings) {
+              const id = settings.environmentOverrideActorId;
+              draft.scene.environmentOverrideActorId = typeof id === "string" && id.length > 0 ? id : null;
+            }
+            if (typeof settings.defaultIblEnabled === "boolean") {
+              draft.scene.defaultIblEnabled = settings.defaultIblEnabled;
+            }
             draft.dirty = true;
           })
         });
       },
       createActor({ actorType, name, parentActorId = null, pluginType }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return "";
+        }
         const id = createId("actor");
         withHistory(get, set, "Create actor");
         set({
@@ -573,6 +651,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         return id;
       },
       createActorNoHistory({ actorType, name, parentActorId = null, pluginType, select = false }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return "";
+        }
         const id = createId("actor");
         set({
           state: produce(get().state, (draft) => {
@@ -582,7 +663,7 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         return id;
       },
       deleteSelection() {
-        if (get().state.mode === "web-ro") {
+        if (!mutationAllowed(get().state, "canDeleteActors")) {
           return;
         }
         const target = get().state.selection;
@@ -621,6 +702,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       renameNode(node, name) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         withHistory(get, set, "Rename node");
         set({
           state: produce(get().state, (draft) => {
@@ -641,6 +725,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setActorTransform(actorId, key, value) {
+        if (!mutationAllowed(get().state, "canTransformActors")) {
+          return;
+        }
         withHistory(get, set, "Transform actor");
         set({
           state: produce(get().state, (draft) => {
@@ -653,6 +740,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setActorTransformNoHistory(actorId, key, value) {
+        if (!mutationAllowed(get().state, "canTransformActors")) {
+          return;
+        }
         set({
           state: produce(get().state, (draft) => {
             if (!draft.actors[actorId]) {
@@ -664,6 +754,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setActorVisibilityMode(actorId, mode) {
+        if (!mutationAllowed(get().state, "canToggleVisibility")) {
+          return;
+        }
         withHistory(get, set, "Set actor visibility");
         set({
           state: produce(get().state, (draft) => {
@@ -677,6 +770,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       setNodeEnabled(node, enabled) {
+        if (!mutationAllowed(get().state, "canToggleVisibility")) {
+          return;
+        }
         withHistory(get, set, "Toggle enabled");
         set({
           state: produce(get().state, (draft) => {
@@ -693,6 +789,15 @@ export function createAppStore(mode: AppMode): AppStoreApi {
                 component.enabled = enabled;
               }
             }
+            draft.dirty = true;
+          })
+        });
+      },
+      setPluginEnabled(pluginId, enabled) {
+        withHistory(get, set, "Toggle plugin enabled");
+        set({
+          state: produce(get().state, (draft) => {
+            draft.pluginsEnabled[pluginId] = enabled;
             draft.dirty = true;
           })
         });
@@ -719,6 +824,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       reorderActor(actorId, newParentId, index) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return;
+        }
         withHistory(get, set, "Reparent actor");
         set({
           state: produce(get().state, (draft) => {
@@ -764,6 +872,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       updateComponentParams(componentId, partial) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         withHistory(get, set, "Update component params");
         set({
           state: produce(get().state, (draft) => {
@@ -777,6 +888,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       updateActorParams(actorId, partial) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         withHistory(get, set, "Update actor params");
         set({
           state: produce(get().state, (draft) => {
@@ -790,6 +904,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
       },
       updateActorParamsNoHistory(actorId, partial) {
+        if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
         set({
           state: produce(get().state, (draft) => {
             const actor = draft.actors[actorId];
@@ -945,6 +1062,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             ) {
               draft.runtimeDebug.slowFrameDiagnosticsThresholdMs = Math.max(1, settings.slowFrameDiagnosticsThresholdMs);
             }
+            if (typeof settings.heartbeatLoggingEnabled === "boolean") {
+              draft.runtimeDebug.heartbeatLoggingEnabled = settings.heartbeatLoggingEnabled;
+            }
           })
         });
       },
@@ -963,6 +1083,13 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               return;
             }
             draft.actorStatusByActorId[actorId] = status;
+          })
+        });
+      },
+      setActorFrameTimings(timings) {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.actorFrameTimingsMs = timings;
           })
         });
       },
@@ -1024,6 +1151,16 @@ export function createAppStore(mode: AppMode): AppStoreApi {
                 draft.assets.push(asset);
               }
             }
+            draft.dirty = true;
+          })
+        });
+      },
+      removeAsset(assetId) {
+        set({
+          state: produce(get().state, (draft) => {
+            const idx = draft.assets.findIndex((a) => a.id === assetId);
+            if (idx === -1) return;
+            draft.assets.splice(idx, 1);
             draft.dirty = true;
           })
         });

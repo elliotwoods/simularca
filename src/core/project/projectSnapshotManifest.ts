@@ -2,13 +2,14 @@ import { PROJECT_SCHEMA_VERSION, type AppState, type ProjectSnapshotManifest } f
 
 export function buildProjectSnapshotManifest(
   state: AppState,
-  mode: ProjectSnapshotManifest["appMode"]
+  mode: ProjectSnapshotManifest["appMode"],
+  options: { projectName?: string } = {}
 ): ProjectSnapshotManifest {
   const nowIso = new Date().toISOString();
   return {
     schemaVersion: PROJECT_SCHEMA_VERSION,
     appMode: mode,
-    projectName: state.activeProjectName,
+    projectName: options.projectName ?? state.activeProject?.name ?? "untitled",
     snapshotName: state.activeSnapshotName,
     createdAtIso: nowIso,
     updatedAtIso: nowIso,
@@ -19,6 +20,7 @@ export function buildProjectSnapshotManifest(
     lastPerspectiveCamera: structuredClone(state.lastPerspectiveCamera),
     time: structuredClone(state.time),
     pluginViews: structuredClone(state.pluginViews),
+    pluginsEnabled: structuredClone(state.pluginsEnabled),
     materials: structuredClone(state.materials),
     assets: structuredClone(state.assets)
   };

@@ -133,6 +133,7 @@ export function createGaussianSplatDescriptor(): ReloadableDescriptor {
             actor,
             state: context.state,
             object: context.object,
+            profileChunk: context.profileChunk,
             setActorStatus: context.setActorStatus,
             readAssetBytes: context.readAssetBytes
           });

@@ -3,10 +3,12 @@ import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCamera,
+  faChartColumn,
   faCirclePause,
   faCirclePlay,
   faForwardStep,
   faFilm,
+  faGlobe,
   faKeyboard,
   faPalette,
   faRotateLeft,
@@ -16,7 +18,9 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
 import { formatFramePacingLabel } from "@/render/framePacing";
+import type { ProfilingPublicState } from "@/render/profiling";
 import { MaterialsModal } from "@/ui/components/MaterialsModal";
+import { PublishModal } from "@/ui/components/PublishModal";
 import { DigitScrubInput } from "@/ui/widgets";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
@@ -55,12 +59,32 @@ function clampInteger(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
+/**
+ * Per-section toolbar visibility. When `undefined` (editor default) every
+ * section is shown. When provided, each `false` flag hides that section. The
+ * `render`, `profile`, and `publish` buttons are also force-hidden when
+ * `state.mode === "web-ro"` regardless of these flags (they are editor-only
+ * affordances).
+ */
+export interface TopBarPanelVisibility {
+  camera?: boolean;
+  time?: boolean;
+  edit?: boolean;
+  render?: boolean;
+  profile?: boolean;
+  keyboard?: boolean;
+  materials?: boolean;
+  fps?: boolean;
+}
+
 interface TopBarPanelProps {
   onToggleKeyboardMap: () => void;
   onOpenRender: () => void;
   onCaptureViewportScreenshot: () => void;
   canCaptureViewportScreenshot: boolean;
   viewportScreenshotBusy: boolean;
+  onOpenProfiling: () => void;
+  profilingState: ProfilingPublicState;
   requestTextInput(args: {
     title: string;
     label: string;
@@ -68,6 +92,8 @@ interface TopBarPanelProps {
     placeholder?: string;
     confirmLabel?: string;
   }): Promise<string | null>;
+  /** Optional per-section visibility filter (viewer mode uses this). */
+  visibility?: TopBarPanelVisibility;
 }
 
 export function TopBarPanel(props: TopBarPanelProps) {
@@ -75,6 +101,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const state = useAppStore((store) => store.state);
   const [fpsHistory, setFpsHistory] = useState<number[]>([]);
   const [materialsModalOpen, setMaterialsModalOpen] = useState(false);
+  const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [fpsMenuOpen, setFpsMenuOpen] = useState(false);
   const [customTargetOpen, setCustomTargetOpen] = useState(false);
   const [customTargetDraft, setCustomTargetDraft] = useState("60");
@@ -90,6 +117,21 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const [fpsMenuPosition, setFpsMenuPosition] = useState({ top: 0, left: 0, minWidth: 210 });
 
   const isReadOnly = state.mode === "web-ro";
+  const visibility = props.visibility;
+  const showSection = (key: keyof TopBarPanelVisibility, defaultVisible = true): boolean => {
+    if (!visibility) return defaultVisible;
+    const value = visibility[key];
+    return value ?? false;
+  };
+  // Force-hide editor-only affordances when the viewer renders this toolbar.
+  const showCamera = showSection("camera");
+  const showTime = showSection("time");
+  const showEdit = showSection("edit") && !isReadOnly;
+  const showRender = showSection("render") && !isReadOnly;
+  const showProfile = showSection("profile") && !isReadOnly;
+  const showKeyboard = showSection("keyboard");
+  const showMaterials = showSection("materials");
+  const showFps = showSection("fps");
   const fpsValue = Number.isFinite(state.stats.fps) ? state.stats.fps : 0;
   const frameMsValue = Number.isFinite(state.stats.frameMs) ? state.stats.frameMs : 0;
   const framePacing = state.scene.framePacing;
@@ -106,6 +148,26 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const tcTotalMinutes = Math.floor(tcTotalSeconds / 60);
   const tcMinutes = tcTotalMinutes % 60;
   const tcHours = Math.floor(tcTotalMinutes / 60);
+  const profileCaptureProgress =
+    props.profilingState.requestedFrameCount > 0
+      ? Math.max(0, Math.min(1, props.profilingState.capturedFrameCount / props.profilingState.requestedFrameCount))
+      : 0;
+  const profileProgressLabel =
+    props.profilingState.phase === "capturing"
+      ? props.profilingState.pendingGpuFrames > 0
+        ? `GPU ${props.profilingState.capturedFrameCount}/${props.profilingState.requestedFrameCount}`
+        : `${props.profilingState.capturedFrameCount}/${props.profilingState.requestedFrameCount}`
+      : props.profilingState.result
+        ? `Ready (${props.profilingState.result.frames.length}f)`
+        : "Idle";
+  const profileProgressTitle =
+    props.profilingState.phase === "capturing"
+      ? props.profilingState.pendingGpuFrames > 0
+        ? `Profiling ${props.profilingState.capturedFrameCount}/${props.profilingState.requestedFrameCount} frames. Waiting for GPU timestamps.`
+        : `Profiling ${props.profilingState.capturedFrameCount}/${props.profilingState.requestedFrameCount} frames.`
+      : props.profilingState.result
+        ? `Latest profile captured ${props.profilingState.result.frames.length} frames.`
+        : "No active profile capture.";
 
   const setTimecodeParts = (next: { hours?: number; minutes?: number; seconds?: number; frames?: number }) => {
     const hours = clampInteger(next.hours ?? tcHours, 0, 9999);
@@ -292,7 +354,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
 
   useEffect(() => {
     scheduleToolbarMeasurementRef.current?.();
-  });
+  }, [toolbarLayoutMode]);
 
   return (
     <div
@@ -300,22 +362,25 @@ export function TopBarPanel(props: TopBarPanelProps) {
       className={`top-toolbar${toolbarLayoutMode === "compact" || toolbarLayoutMode === "wrapped" || toolbarLayoutMode === "scroll" ? " is-compact" : ""}${toolbarLayoutMode === "wrapped" ? " is-wrapped" : ""}${toolbarLayoutMode === "scroll" ? " is-scroll" : ""}`}
       data-layout-mode={toolbarLayoutMode}
     >
-      <div className="toolbar-group">
-        <label className="toolbar-group-label" title="Camera presets">Camera</label>
-        <select
-          onChange={(event) => {
-            kernel.store.getState().actions.applyCameraPreset(event.target.value as CameraPreset);
-          }}
-          defaultValue="perspective"
-        >
-          {CAMERA_PRESETS.map((preset) => (
-            <option key={preset} value={preset}>
-              {preset}
-            </option>
-          ))}
-        </select>
-      </div>
+      {showCamera ? (
+        <div className="toolbar-group">
+          <label className="toolbar-group-label" title="Camera presets">Camera</label>
+          <select
+            onChange={(event) => {
+              kernel.store.getState().actions.applyCameraPreset(event.target.value as CameraPreset);
+            }}
+            defaultValue="perspective"
+          >
+            {CAMERA_PRESETS.map((preset) => (
+              <option key={preset} value={preset}>
+                {preset}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
+      {showTime ? (
       <div className="toolbar-group">
         <label className="toolbar-group-label" title="Simulation controls">Time</label>
         <button
@@ -375,17 +440,21 @@ export function TopBarPanel(props: TopBarPanelProps) {
           <span>{fixedStepMs.toFixed(2)}ms step</span>
         </div>
       </div>
+      ) : null}
 
-      <div className="toolbar-group">
-        <label className="toolbar-group-label" title="History">Edit</label>
-        <button type="button" title="Undo" onClick={() => kernel.store.getState().actions.undo()}>
-          <FontAwesomeIcon icon={faRotateLeft} />
-        </button>
-        <button type="button" title="Redo" onClick={() => kernel.store.getState().actions.redo()}>
-          <FontAwesomeIcon icon={faRotateRight} />
-        </button>
-      </div>
+      {showEdit ? (
+        <div className="toolbar-group">
+          <label className="toolbar-group-label" title="History">Edit</label>
+          <button type="button" title="Undo" onClick={() => kernel.store.getState().actions.undo()}>
+            <FontAwesomeIcon icon={faRotateLeft} />
+          </button>
+          <button type="button" title="Redo" onClick={() => kernel.store.getState().actions.redo()}>
+            <FontAwesomeIcon icon={faRotateRight} />
+          </button>
+        </div>
+      ) : null}
 
+      {showRender ? (
       <div className="toolbar-group">
         <label className="toolbar-group-label" title="Render">Render</label>
         <button type="button" title="Render video" onClick={props.onOpenRender}>
@@ -406,27 +475,78 @@ export function TopBarPanel(props: TopBarPanelProps) {
         >
           <FontAwesomeIcon icon={faCamera} />
         </button>
-      </div>
-
-      <div className="toolbar-group">
-        <button type="button" title="Keyboard map" onClick={props.onToggleKeyboardMap}>
-          <FontAwesomeIcon icon={faKeyboard} />
-        </button>
-      </div>
-
-      <div className="toolbar-group">
-        <label className="toolbar-group-label" title="Materials">Materials</label>
         <button
           type="button"
-          title="Open material library"
-          onClick={() => {
-            setMaterialsModalOpen(true);
-          }}
+          title={
+            !state.activeProject
+              ? "Open a project first"
+              : isReadOnly
+                ? "Read-only mode"
+                : "Publish to web…"
+          }
+          aria-label="Publish to web"
+          onClick={() => setPublishModalOpen(true)}
+          disabled={!state.activeProject || isReadOnly}
         >
-          <FontAwesomeIcon icon={faPalette} />
+          <FontAwesomeIcon icon={faGlobe} />
         </button>
       </div>
+      ) : null}
 
+      {showProfile ? (
+      <div className="toolbar-group toolbar-profile-group">
+        <label className="toolbar-group-label" title="Performance Profile">Profile</label>
+        <button
+          type="button"
+          title={
+            props.profilingState.phase === "capturing"
+              ? "Performance profile capture in progress"
+              : "Open performance profile capture"
+          }
+          aria-label="Open performance profile"
+          onClick={props.profilingState.phase === "capturing" ? undefined : props.onOpenProfiling}
+          disabled={props.profilingState.phase === "capturing"}
+        >
+          <FontAwesomeIcon icon={faChartColumn} />
+        </button>
+        <div className={`toolbar-profile-progress${props.profilingState.phase === "capturing" ? " is-active" : ""}`} title={profileProgressTitle}>
+          <div className="toolbar-profile-progress-track">
+            <div
+              className="toolbar-profile-progress-fill"
+              style={{
+                width: `${profileCaptureProgress * 100}%`
+              }}
+            />
+          </div>
+          <span className="toolbar-profile-progress-label">{profileProgressLabel}</span>
+        </div>
+      </div>
+      ) : null}
+
+      {showKeyboard ? (
+        <div className="toolbar-group">
+          <button type="button" title="Keyboard map" onClick={props.onToggleKeyboardMap}>
+            <FontAwesomeIcon icon={faKeyboard} />
+          </button>
+        </div>
+      ) : null}
+
+      {showMaterials ? (
+        <div className="toolbar-group">
+          <label className="toolbar-group-label" title="Materials">Materials</label>
+          <button
+            type="button"
+            title="Open material library"
+            onClick={() => {
+              setMaterialsModalOpen(true);
+            }}
+          >
+            <FontAwesomeIcon icon={faPalette} />
+          </button>
+        </div>
+      ) : null}
+
+      {showFps ? (
       <div className="toolbar-group toolbar-fps-group" title="Viewport frame rate">
         <label className="toolbar-group-label">FPS</label>
         <div className="toolbar-fps-shell" ref={fpsMenuRef}>
@@ -530,7 +650,9 @@ export function TopBarPanel(props: TopBarPanelProps) {
             : null}
         </div>
       </div>
+      ) : null}
       <MaterialsModal open={materialsModalOpen} onClose={() => setMaterialsModalOpen(false)} />
+      <PublishModal open={publishModalOpen} onClose={() => setPublishModalOpen(false)} />
     </div>
   );
 }

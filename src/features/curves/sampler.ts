@@ -59,9 +59,59 @@ function isCircleCurve(curve: CurveData): boolean {
   return curve.kind === "circle";
 }
 
+function isMeshProjectionCurve(curve: CurveData): boolean {
+  return curve.kind === "mesh-projection";
+}
+
 function getCircleRadius(curve: CurveData): number {
   const parsed = Number(curve.radius);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 1;
+}
+
+interface PolylineSegment {
+  a: [number, number, number];
+  b: [number, number, number];
+  length: number;
+}
+
+function buildProjectionSegments(curve: CurveData): { segments: PolylineSegment[]; totalLength: number } {
+  const points = curve.projectedPoints ?? [];
+  const segments: PolylineSegment[] = [];
+  let totalLength = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    if (!a || !b) continue;
+    // Skip wrap-around segment if curve is open (we always treat mesh-projection as closed,
+    // but caller may pass closed=false). For mesh-projection we always close.
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const dz = b[2] - a[2];
+    const length = Math.hypot(dx, dy, dz);
+    if (length <= 0) continue;
+    segments.push({ a: [a[0], a[1], a[2]], b: [b[0], b[1], b[2]], length });
+    totalLength += length;
+  }
+  return { segments, totalLength };
+}
+
+function findProjectionSegmentAtT(
+  segments: PolylineSegment[],
+  totalLength: number,
+  t: number
+): { segment: PolylineSegment; segmentT: number } | null {
+  if (segments.length === 0 || totalLength <= 0) return null;
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+  let target = clamped * totalLength;
+  for (const segment of segments) {
+    if (target <= segment.length) {
+      const segmentT = segment.length > 0 ? target / segment.length : 0;
+      return { segment, segmentT };
+    }
+    target -= segment.length;
+  }
+  const last = segments[segments.length - 1];
+  return last ? { segment: last, segmentT: 1 } : null;
 }
 
 function enabledCurve(curve: CurveData): CurveData {
@@ -71,6 +121,14 @@ function enabledCurve(curve: CurveData): CurveData {
       closed: true,
       points: [],
       radius: getCircleRadius(curve)
+    };
+  }
+  if (isMeshProjectionCurve(curve)) {
+    return {
+      kind: "mesh-projection",
+      closed: true,
+      points: [],
+      projectedPoints: curve.projectedPoints ?? []
     };
   }
   return {
@@ -138,6 +196,17 @@ export function sampleCurvePosition(curve: CurveData, t: number): [number, numbe
     const radius = getCircleRadius(curve);
     return [Math.cos(angle) * radius, Math.sin(angle) * radius, 0];
   }
+  if (isMeshProjectionCurve(curve)) {
+    const { segments, totalLength } = buildProjectionSegments(curve);
+    const found = findProjectionSegmentAtT(segments, totalLength, t);
+    if (!found) return [0, 0, 0];
+    const { segment, segmentT } = found;
+    return [
+      segment.a[0] + (segment.b[0] - segment.a[0]) * segmentT,
+      segment.a[1] + (segment.b[1] - segment.a[1]) * segmentT,
+      segment.a[2] + (segment.b[2] - segment.a[2]) * segmentT
+    ];
+  }
   if (curve.points.length === 0) {
     return [0, 0, 0];
   }
@@ -156,6 +225,17 @@ export function sampleCurveTangent(curve: CurveData, t: number): [number, number
     const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
     const angle = clamped * Math.PI * 2;
     return normalize3([-Math.sin(angle), Math.cos(angle), 0]);
+  }
+  if (isMeshProjectionCurve(curve)) {
+    const { segments, totalLength } = buildProjectionSegments(curve);
+    const found = findProjectionSegmentAtT(segments, totalLength, t);
+    if (!found) return [1, 0, 0];
+    const { segment } = found;
+    return normalize3([
+      segment.b[0] - segment.a[0],
+      segment.b[1] - segment.a[1],
+      segment.b[2] - segment.a[2]
+    ]);
   }
   if (curve.points.length < 2) {
     return [1, 0, 0];
@@ -179,6 +259,9 @@ export function estimateCurveLength(curve: CurveData, samplesPerSegment = 24): n
   curve = enabledCurve(curve);
   if (isCircleCurve(curve)) {
     return Math.PI * 2 * getCircleRadius(curve);
+  }
+  if (isMeshProjectionCurve(curve)) {
+    return buildProjectionSegments(curve).totalLength;
   }
   const segCount = segmentCount(curve);
   if (segCount <= 0) {

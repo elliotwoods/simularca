@@ -6,6 +6,8 @@ export interface StatsRow {
   label: string;
   value: string;
   tone?: StatsTone;
+  groupKey?: string;
+  groupLabel?: string;
 }
 
 export interface StatsGroup {

@@ -9,7 +9,7 @@ const pluginRoot = process.cwd();
 const packageJsonPath = path.join(pluginRoot, "package.json");
 const baselinePath = path.join(pluginRoot, "version-baseline.json");
 const generatedModulePath = path.join(pluginRoot, "src", "pluginBuildInfo.generated.ts");
-const buildInfoJsonPath = path.join(pluginRoot, ".rehearse-engine-plugin-build-info.json");
+const buildInfoJsonPath = path.join(pluginRoot, ".simularca-plugin-build-info.json");
 const distPackageJsonPath = path.join(pluginRoot, "dist", "package.json");
 
 function resolveBuildKind(args) {

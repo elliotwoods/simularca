@@ -3,31 +3,112 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
+import { AO_MESH_LAYER } from "@/render/aoLayer";
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
-import type { CameraState, SceneFramePacingSettings } from "@/core/types";
+import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "@/render/actorTransformController";
 import { CurveEditController } from "@/render/curveEditController";
 import { CameraInteractionController } from "@/render/cameraInteractionController";
 import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "@/render/cameraSync";
 import { incompatibilityReason } from "@/render/engineCompatibility";
 import { FramePacer } from "@/render/framePacing";
+import {
+  getWebGlColorBufferSupport,
+  resolveSceneColorBufferPrecision,
+  type ResolvedSceneColorBufferPrecision
+} from "@/render/colorBufferPrecision";
 import { SceneController } from "@/render/sceneController";
 import { reportSlowFrame } from "@/render/slowFrameDiagnostics";
+import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
+
+// See note in webgpuRenderer.ts: force a full reload on HMR rather than leaving
+// stale Three.js viewport instances bound to dead arrow-method listeners.
+if (import.meta.hot) {
+  import.meta.hot.decline();
+}
 import type { MistVolumeQualityMode } from "@/render/mistVolumeController";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "@/render/stats";
 import { SceneOutputPass, threeToneMappingForMode } from "@/render/tonemapping";
 import { pruneInvalidSceneGraph } from "@/render/sceneGraphUtils";
-import { captureViewportScreenshotFromCanvas, type ViewportScreenshotResult } from "@/features/render/viewportScreenshot";
+import {
+  captureViewportScreenshotFromCanvas,
+  captureViewportThumbnail,
+  type ViewportScreenshotResult,
+  type ViewportThumbnailResult
+} from "@/features/render/viewportScreenshot";
+import type { ProfileFrameGpuInput } from "@/render/profiling";
 
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
+
+type WebGlTimerQueryExt = {
+  TIME_ELAPSED_EXT: number;
+  GPU_DISJOINT_EXT: number;
+};
+
+class WebGlGpuTimer {
+  private readonly ext: WebGlTimerQueryExt | null;
+
+  public constructor(private readonly gl: WebGL2RenderingContext) {
+    this.ext = this.gl.getExtension("EXT_disjoint_timer_query_webgl2") as WebGlTimerQueryExt | null;
+  }
+
+  public isAvailable(): boolean {
+    return this.ext !== null;
+  }
+
+  public begin(): WebGLQuery | null {
+    if (!this.ext) {
+      return null;
+    }
+    const query = this.gl.createQuery();
+    if (!query) {
+      return null;
+    }
+    this.gl.beginQuery(this.ext.TIME_ELAPSED_EXT, query);
+    return query;
+  }
+
+  public end(): void {
+    if (!this.ext) {
+      return;
+    }
+    this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);
+  }
+
+  public async resolve(query: WebGLQuery): Promise<number | null> {
+    if (!this.ext) {
+      return null;
+    }
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const available = this.gl.getQueryParameter(query, this.gl.QUERY_RESULT_AVAILABLE) as boolean;
+      const disjoint = this.gl.getParameter(this.ext.GPU_DISJOINT_EXT) as boolean;
+      if (disjoint) {
+        this.gl.deleteQuery(query);
+        return null;
+      }
+      if (available) {
+        const elapsedNanoseconds = this.gl.getQueryParameter(query, this.gl.QUERY_RESULT) as number;
+        this.gl.deleteQuery(query);
+        return Number.isFinite(elapsedNanoseconds) ? elapsedNanoseconds / 1_000_000 : null;
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    this.gl.deleteQuery(query);
+    return null;
+  }
+}
 
 export class WebGlViewport {
   private readonly renderer: any;
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
   private readonly bloomPass: UnrealBloomPass;
+  private readonly gtaoPass: GTAOPass;
+  private readonly aoPerspectiveCamera: THREE.PerspectiveCamera;
+  private readonly aoOrthographicCamera: THREE.OrthographicCamera;
   private readonly sceneOutputPass: SceneOutputPass;
   private readonly perspectiveCamera: any;
   private readonly orthographicCamera: any;
@@ -52,12 +133,19 @@ export class WebGlViewport {
   private activeRenderPromise: Promise<void> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
+  private resizeRafHandle = 0;
+  private lastAppliedSize: { width: number; height: number; pixelRatio: number } | null = null;
   private readonly maxRenderDimension = 4096;
   private readonly isExportViewport: boolean;
   private readonly manualFrameControl: boolean;
   private readonly fixedViewportSize: { width: number; height: number } | null;
   private previousMainRenderSample: RenderStatsSample | null = null;
   private readonly framePacer: FramePacer;
+  private readonly colorBufferPrecision: ResolvedSceneColorBufferPrecision;
+  private lastLoggedColorBufferWarning: string | null = null;
+  private gpuTimer: WebGlGpuTimer | null = null;
+  private slowFrameStreak = 0;
+  private fastFrameStreak = 0;
 
   public constructor(
     private readonly kernel: AppKernel,
@@ -69,6 +157,7 @@ export class WebGlViewport {
       editorOverlays?: boolean;
       viewportSize?: { width: number; height: number };
       manualFrameControl?: boolean;
+      colorBufferPrecision?: SceneColorBufferPrecision;
     }
   ) {
     this.isExportViewport = options.qualityMode === "export";
@@ -85,10 +174,19 @@ export class WebGlViewport {
     });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
     this.renderer = new THREE.WebGLRenderer({ antialias: options.antialias, alpha: false });
+    this.renderer.localClippingEnabled = true;
+    this.colorBufferPrecision = resolveSceneColorBufferPrecision(
+      options.colorBufferPrecision ?? kernel.store.getState().state.scene.colorBufferPrecision,
+      getWebGlColorBufferSupport(this.renderer),
+      "webgl2",
+      {
+        requestedAntialiasing: options.antialias
+      }
+    );
     this.sceneController.setWebGlRenderer(this.renderer);
     const initialWidth = this.fixedViewportSize?.width ?? Math.max(1, this.mountEl.clientWidth);
     const initialHeight = this.fixedViewportSize?.height ?? Math.max(1, this.mountEl.clientHeight);
-    this.applyRenderScale(initialWidth, initialHeight);
+    this.renderer.setPixelRatio(this.computeRenderScale(initialWidth, initialHeight));
     this.renderer.setSize(initialWidth, initialHeight);
     this.mountEl.appendChild(this.renderer.domElement);
 
@@ -113,8 +211,28 @@ export class WebGlViewport {
     this.orthographicCamera.position.set(8, 8, 8);
 
     this.activeCamera = this.perspectiveCamera;
-    this.composer = new EffectComposer(this.renderer);
+    this.composer = new EffectComposer(
+      this.renderer,
+      new THREE.WebGLRenderTarget(initialWidth, initialHeight, {
+        type: this.colorBufferPrecision.bufferType,
+        colorSpace: THREE.NoColorSpace,
+        depthBuffer: true,
+        stencilBuffer: false
+      })
+    );
     this.renderPass = new RenderPass(this.sceneController.scene, this.activeCamera);
+    this.aoPerspectiveCamera = this.perspectiveCamera.clone();
+    this.aoPerspectiveCamera.layers.set(AO_MESH_LAYER);
+    this.aoOrthographicCamera = this.orthographicCamera.clone();
+    this.aoOrthographicCamera.layers.set(AO_MESH_LAYER);
+    this.gtaoPass = new GTAOPass(
+      this.sceneController.scene,
+      this.aoPerspectiveCamera,
+      initialWidth,
+      initialHeight
+    );
+    this.gtaoPass.output = (GTAOPass as any).OUTPUT.Default;
+    this.gtaoPass.enabled = false;
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(initialWidth, initialHeight),
       0.6,
@@ -124,6 +242,7 @@ export class WebGlViewport {
     this.sceneOutputPass = new SceneOutputPass();
     this.sceneOutputPass.renderToScreen = true;
     this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.gtaoPass);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(this.sceneOutputPass);
     this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
@@ -172,10 +291,8 @@ export class WebGlViewport {
     this.disposed = false;
     this.onResize();
     if (!this.fixedViewportSize) {
-      window.addEventListener("resize", this.onResize);
-      this.resizeObserver = new ResizeObserver(() => {
-        this.onResize();
-      });
+      window.addEventListener("resize", this.handleResizeEvent);
+      this.resizeObserver = new ResizeObserver(this.handleResizeEvent);
       this.resizeObservedElements = this.collectResizeObservedElements();
       for (const element of this.resizeObservedElements) {
         this.resizeObserver.observe(element);
@@ -184,6 +301,22 @@ export class WebGlViewport {
     if (!this.manualFrameControl) {
       this.animate();
     }
+    setViewportStatsProvider(() => {
+      if (this.disposed) {
+        return null;
+      }
+      const memInfo = this.renderer.info?.memory;
+      const renderInfo = this.renderer.info?.render;
+      const programs = (this.renderer.info as unknown as { programs?: { length: number } }).programs;
+      return {
+        geometries: memInfo?.geometries ?? 0,
+        textures: memInfo?.textures ?? 0,
+        programs: programs?.length ?? 0,
+        triangles: renderInfo?.triangles ?? 0,
+        calls: renderInfo?.calls ?? 0,
+        frame: renderInfo?.frame ?? 0
+      };
+    });
   }
 
   public async stop(): Promise<void> {
@@ -191,10 +324,15 @@ export class WebGlViewport {
       return;
     }
     this.disposed = true;
-    window.removeEventListener("resize", this.onResize);
+    setViewportStatsProvider(null);
+    window.removeEventListener("resize", this.handleResizeEvent);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.resizeObservedElements = [];
+    if (this.resizeRafHandle) {
+      cancelAnimationFrame(this.resizeRafHandle);
+      this.resizeRafHandle = 0;
+    }
     if (this.frameHandle) {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
@@ -207,9 +345,11 @@ export class WebGlViewport {
     this.controls.dispose();
     this.actorTransformController?.dispose();
     this.curveEditController?.dispose();
+    this.kernel.profiler.clearDrawHooks();
     this.sceneController.setWebGlRenderer(null);
     this.sceneController.dispose();
     this.bloomPass.dispose();
+    this.gtaoPass.dispose();
     this.sceneOutputPass.dispose();
     this.clearNativeGaussianConflictStatus();
     this.renderer.dispose();
@@ -266,6 +406,26 @@ export class WebGlViewport {
     }
   }
 
+  public async captureViewportThumbnail(): Promise<ViewportThumbnailResult> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    while (this.renderInFlight) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    }
+    const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    try {
+      this.sceneController.setDebugHelpersVisible(false);
+      for (let passIndex = 0; passIndex < 2; passIndex += 1) {
+        await this.renderOnce();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      }
+      return await captureViewportThumbnail({ canvas: this.renderer.domElement });
+    } finally {
+      this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+    }
+  }
+
   private animate = (nowMs = performance.now()): void => {
     if (this.disposed) {
       return;
@@ -282,7 +442,7 @@ export class WebGlViewport {
     const renderPromise = this.renderFrame()
       .catch((error) => {
         if (!this.disposed) {
-          console.warn("[rehearse-engine] WebGL2 render frame failed:", error);
+          console.warn("[simularca] WebGL2 render frame failed:", error);
         }
       })
       .finally(() => {
@@ -292,27 +452,32 @@ export class WebGlViewport {
         }
       });
     this.activeRenderPromise = renderPromise;
+    bumpFrameCounter();
   };
 
   private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
     const collectStats = options?.collectStats ?? true;
     const _rf0 = performance.now();
-    await this.sceneController.syncFromState();
+    this.kernel.profiler.beginFrame();
+    await this.kernel.profiler.withFrameChunk("Scene sync", () => this.sceneController.syncFromState());
     if (this.disposed) {
+      this.kernel.profiler.clearDrawHooks();
       return;
     }
-    pruneInvalidSceneGraph(this.sceneController.scene);
+    // syncFromState's final phase already runs pruneInvalidSceneGraph.
     const _rf1 = performance.now();
     const _rf2 = _rf1;
     this.enforceActorCompatibility("webgl2");
-    this.syncCameraState();
-    this.cameraController.update(performance.now());
-    this.curveEditController?.setCamera(this.activeCamera);
-    this.actorTransformController?.setCamera(this.activeCamera);
-    this.curveEditController?.update();
-    this.actorTransformController?.update();
-    this.controls.update();
-    this.syncCameraToState();
+    await this.kernel.profiler.withFrameChunk("Viewport sync", () => {
+      this.syncCameraState();
+      this.cameraController.update(performance.now());
+      this.curveEditController?.setCamera(this.activeCamera);
+      this.actorTransformController?.setCamera(this.activeCamera);
+      this.curveEditController?.update();
+      this.actorTransformController?.update();
+      this.controls.update();
+      this.syncCameraToState();
+    });
     const _rf3 = performance.now();
     const tonemapping = this.kernel.store.getState().state.scene.tonemapping;
     const postProcessing = this.kernel.store.getState().state.scene.postProcessing;
@@ -322,11 +487,41 @@ export class WebGlViewport {
     this.bloomPass.strength = postProcessing.bloom.strength;
     this.bloomPass.radius = postProcessing.bloom.radius;
     this.bloomPass.threshold = postProcessing.bloom.threshold;
+    this.syncGtaoPass(postProcessing);
     this.sceneOutputPass.setDitherEnabled(tonemapping.dither);
     this.sceneOutputPass.setPostProcessingSettings(postProcessing);
-    this.composer.render();
-    this.sceneController.flushDeferredGpuDisposals();
+    const gpuQuery = this.kernel.profiler.shouldProfileGpuTimings() ? this.getOrCreateGpuTimer().begin() : null;
+    await this.kernel.profiler.withFrameChunk("Render submission", () => {
+      this.kernel.profiler.syncDrawHooks(
+        this.sceneController.listActorObjectsForProfiling().map(({ actorId, object }) => {
+          const actor = this.kernel.store.getState().state.actors[actorId];
+          return {
+            actor: {
+              actorId,
+              actorName: actor?.name ?? actorId,
+              actorType: actor?.actorType ?? "empty",
+              pluginType: actor?.pluginType
+            },
+            object
+          };
+        })
+      );
+      this.composer.render();
+    });
+    if (gpuQuery) {
+      this.getOrCreateGpuTimer().end();
+    }
+    await this.kernel.profiler.withFrameChunk("GPU resource cleanup", () => {
+      this.sceneController.flushDeferredGpuDisposals();
+    });
+    const gpu = this.kernel.profiler.shouldProfileGpuTimings()
+      ? await this.kernel.profiler.withFrameChunk("GPU readback", () => this.resolveGpuProfile(gpuQuery))
+      : undefined;
     const _rf4 = performance.now();
+    this.kernel.profiler.finishFrame({
+      cpuTotalDurationMs: _rf4 - _rf0,
+      gpu
+    });
     if (collectStats) {
       reportSlowFrame(this.kernel, {
         backend: "webgl2",
@@ -337,6 +532,28 @@ export class WebGlViewport {
         renderMs: _rf4 - _rf3
       });
       this.updateStats();
+    }
+    this.updateMonitoringHysteresis(_rf4 - _rf0);
+  }
+
+  private updateMonitoringHysteresis(frameDurationMs: number): void {
+    if (this.kernel.profiler.isCaptureActive()) {
+      return;
+    }
+    const targetFps = this.kernel.store.getState().state.scene.framePacing.targetFps;
+    const targetFrameMs = 1000 / Math.max(1, targetFps);
+    if (frameDurationMs > targetFrameMs) {
+      this.slowFrameStreak++;
+      this.fastFrameStreak = 0;
+    } else {
+      this.fastFrameStreak++;
+      this.slowFrameStreak = 0;
+    }
+    if (this.slowFrameStreak >= 10 && !this.kernel.profiler.isMonitoringActive()) {
+      this.kernel.profiler.setMonitoringMode(true);
+    } else if (this.fastFrameStreak >= 10 && this.kernel.profiler.isMonitoringActive()) {
+      this.kernel.profiler.setMonitoringMode(false);
+      this.kernel.store.getState().actions.setActorFrameTimings({});
     }
   }
 
@@ -435,14 +652,74 @@ export class WebGlViewport {
     this.lastAppliedCameraState = cloneCameraState(nextCameraState);
   }
 
+  private syncGtaoPass(postProcessing: import("@/core/types").ScenePostProcessingSettings): void {
+    const ao = postProcessing.ambientOcclusion;
+    this.gtaoPass.enabled = ao.enabled;
+    if (!ao.enabled) {
+      return;
+    }
+    const target =
+      this.activeCamera instanceof THREE.OrthographicCamera
+        ? this.aoOrthographicCamera
+        : this.aoPerspectiveCamera;
+    target.copy(this.activeCamera, false);
+    target.layers.set(AO_MESH_LAYER);
+    target.updateMatrixWorld(true);
+    this.gtaoPass.camera = target;
+    this.gtaoPass.updateGtaoMaterial({
+      radius: ao.radius,
+      thickness: ao.thickness,
+      distanceExponent: ao.distanceExponent,
+      scale: ao.scale,
+      samples: ao.samples
+    });
+  }
+
+  // See webgpuRenderer.ts handleResizeEvent — defensive wrapper guarding against
+  // listener-side `this.scheduleResize` going undefined under HMR.
+  private handleResizeEvent = (): void => {
+    if (this.disposed) {
+      return;
+    }
+    try {
+      this.scheduleResize();
+    } catch (error) {
+      console.warn("[simularca] resize listener failed; suppressing:", error);
+    }
+  };
+
+  private scheduleResize = (): void => {
+    if (this.disposed || this.resizeRafHandle) {
+      return;
+    }
+    this.resizeRafHandle = requestAnimationFrame(() => {
+      this.resizeRafHandle = 0;
+      if (this.disposed) {
+        return;
+      }
+      this.onResize();
+    });
+  };
+
   private onResize = (): void => {
     const { width, height } = this.getEffectiveViewportSize();
+    const pixelRatio = this.computeRenderScale(width, height);
+    if (
+      this.lastAppliedSize &&
+      this.lastAppliedSize.width === width &&
+      this.lastAppliedSize.height === height &&
+      this.lastAppliedSize.pixelRatio === pixelRatio
+    ) {
+      return;
+    }
+    this.lastAppliedSize = { width, height, pixelRatio };
     this.mountEl.style.width = `${width}px`;
     this.mountEl.style.height = `${height}px`;
-    this.applyRenderScale(width, height);
+    this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     this.bloomPass.setSize(width, height);
+    this.gtaoPass.setSize(width, height);
     this.perspectiveCamera.aspect = width / height;
     this.perspectiveCamera.updateProjectionMatrix();
 
@@ -497,20 +774,19 @@ export class WebGlViewport {
     return { width, height };
   }
 
-  private applyRenderScale(width: number, height: number): void {
+  private computeRenderScale(width: number, height: number): number {
     if (this.isExportViewport) {
-      this.renderer.setPixelRatio(1);
-      return;
+      return 1;
     }
     const safeWidth = Math.max(1, width);
     const safeHeight = Math.max(1, height);
     const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
     const dimensionLimit = Math.max(1, this.maxRenderDimension / Math.max(safeWidth, safeHeight));
-    const pixelRatio = Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
-    this.renderer.setPixelRatio(pixelRatio);
+    return Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
   }
 
   private updateStats(): void {
+    this.reportColorBufferWarning();
     const now = performance.now();
     const frameDelta = Math.max(0, now - this.frameLastAt);
     this.frameLastAt = now;
@@ -550,6 +826,12 @@ export class WebGlViewport {
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
         cameraZoomEnabled: this.isWheelZoomEnabled(),
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? "",
         projectFileBytes:
           currentStats.projectFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
             ? currentStats.projectFileBytesSaved
@@ -570,9 +852,30 @@ export class WebGlViewport {
         memoryMb: memory.memoryMb,
         heapMb: memory.heapMb,
         resourceMb: memory.resourceMb,
-        projectFileBytes: estimatedProjectBytes
+        projectFileBytes: estimatedProjectBytes,
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? ""
       });
     }
+  }
+
+  private reportColorBufferWarning(): void {
+    if (this.colorBufferPrecision.warningMessage === this.lastLoggedColorBufferWarning) {
+      return;
+    }
+    this.lastLoggedColorBufferWarning = this.colorBufferPrecision.warningMessage;
+    if (!this.colorBufferPrecision.warningMessage) {
+      return;
+    }
+    this.kernel.store.getState().actions.addLog({
+      level: "warn",
+      message: `WebGL2 render target policy adjusted: ${this.colorBufferPrecision.warningMessage}`,
+      details: `Active intermediate format: ${this.colorBufferPrecision.statusFormatLabel}; MSAA ${this.colorBufferPrecision.activeAntialiasing ? "enabled" : "disabled"}`
+    });
   }
 
   private isWheelZoomEnabled(): boolean {
@@ -714,5 +1017,31 @@ export class WebGlViewport {
     }
     this.textureByteCache.set(texture, bytes);
     return bytes;
+  }
+
+  private getOrCreateGpuTimer(): WebGlGpuTimer {
+    this.gpuTimer ??= new WebGlGpuTimer(this.renderer.getContext() as WebGL2RenderingContext);
+    return this.gpuTimer;
+  }
+
+  private async resolveGpuProfile(query: WebGLQuery | null): Promise<ProfileFrameGpuInput> {
+    if (!query) {
+      return { status: "unavailable" };
+    }
+    const gpuMs = await this.getOrCreateGpuTimer().resolve(query);
+    if (gpuMs === null) {
+      return { status: "unavailable" };
+    }
+    return {
+      status: "captured",
+      roots: [
+        {
+          id: "gpu:render",
+          label: "Render",
+          durationMs: gpuMs,
+          children: []
+        }
+      ]
+    };
   }
 }

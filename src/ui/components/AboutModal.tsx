@@ -38,8 +38,8 @@ export function AboutModal(props: AboutModalProps) {
         }
       }}
     >
-      <div className="about-modal" role="dialog" aria-modal="true" aria-label="About Rehearse Engine">
-        <h3>About Rehearse Engine</h3>
+      <div className="about-modal" role="dialog" aria-modal="true" aria-label="About Simularca">
+        <h3>About Simularca</h3>
         <dl className="about-modal-grid">
           <AboutRow label="Version" value={BUILD_INFO.version} />
           <AboutRow label="Base Version" value={BUILD_INFO.baseVersion} />

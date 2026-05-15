@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { AppKernel } from "@/app/kernel";
 import { KernelProvider } from "@/app/KernelContext";
 import { createAppStore } from "@/core/store/appStore";
+import { ActorProfilingService, type ProfilingPublicState } from "@/render/profiling";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 
 class ResizeObserverMock {
@@ -25,9 +26,19 @@ function createKernelStub(): AppKernel {
       subscribe: () => () => undefined,
       getRevision: () => 0
     } as unknown as AppKernel["pluginApi"],
-    clock: {} as AppKernel["clock"]
+    clock: {} as AppKernel["clock"],
+    profiler: new ActorProfilingService()
   };
 }
+
+const idleProfilingState: ProfilingPublicState = {
+  phase: "idle",
+  requestedFrameCount: 0,
+  capturedFrameCount: 0,
+  pendingGpuFrames: 0,
+  options: null,
+  result: null
+};
 
 describe("TopBarPanel screenshot button", () => {
   const originalResizeObserver = globalThis.ResizeObserver;
@@ -76,6 +87,8 @@ describe("TopBarPanel screenshot button", () => {
             React.createElement(TopBarPanel, {
               onToggleKeyboardMap: () => undefined,
               onOpenRender: () => undefined,
+              onOpenProfiling: () => undefined,
+              profilingState: idleProfilingState,
               onCaptureViewportScreenshot,
               canCaptureViewportScreenshot: props.canCaptureViewportScreenshot,
               viewportScreenshotBusy: props.viewportScreenshotBusy,
@@ -141,6 +154,8 @@ describe("TopBarPanel screenshot button", () => {
           React.createElement(TopBarPanel, {
             onToggleKeyboardMap: () => undefined,
             onOpenRender: () => undefined,
+            onOpenProfiling: () => undefined,
+            profilingState: idleProfilingState,
             onCaptureViewportScreenshot: () => undefined,
             canCaptureViewportScreenshot: true,
             viewportScreenshotBusy: false,
@@ -200,6 +215,49 @@ describe("TopBarPanel screenshot button", () => {
 
     await resizeToolbar(1400);
     expect(toolbarEl.dataset.layoutMode).toBe("full");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens performance profile capture from the toolbar button", async () => {
+    const kernel = createKernelStub();
+    const onOpenProfiling = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          KernelProvider as React.ComponentType<{ kernel: AppKernel; children?: React.ReactNode }>,
+          { kernel },
+          React.createElement(TopBarPanel, {
+            onToggleKeyboardMap: () => undefined,
+            onOpenRender: () => undefined,
+            onOpenProfiling,
+            profilingState: idleProfilingState,
+            onCaptureViewportScreenshot: () => undefined,
+            canCaptureViewportScreenshot: true,
+            viewportScreenshotBusy: false,
+            requestTextInput: async () => null
+          })
+        )
+      );
+    });
+
+    const profileButton = container.querySelector("button[aria-label='Open performance profile']") as
+      | HTMLButtonElement
+      | null;
+    expect(profileButton).not.toBeNull();
+
+    await act(async () => {
+      profileButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onOpenProfiling).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".toolbar-profile-progress")).not.toBeNull();
 
     await act(async () => {
       root.unmount();

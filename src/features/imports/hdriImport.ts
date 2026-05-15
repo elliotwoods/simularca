@@ -2,7 +2,7 @@ import type { AppKernel } from "@/app/kernel";
 import type { ProjectAssetRef } from "@/types/ipc";
 
 export interface HdriImportRequest {
-  projectName: string;
+  projectPath: string;
   sourcePath: string;
   options?: {
     uastc?: boolean;
@@ -13,7 +13,7 @@ export interface HdriImportRequest {
 
 export async function importHdriToKtx2(kernel: AppKernel, request: HdriImportRequest): Promise<ProjectAssetRef> {
   const asset = await kernel.storage.transcodeHdriToKtx2({
-    projectName: request.projectName,
+    projectPath: request.projectPath,
     sourcePath: request.sourcePath,
     options: request.options
   });
@@ -28,4 +28,3 @@ export async function importHdriToKtx2(kernel: AppKernel, request: HdriImportReq
   kernel.projectService.queueAutosave();
   return asset;
 }
-

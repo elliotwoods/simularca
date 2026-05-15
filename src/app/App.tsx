@@ -27,13 +27,19 @@ import {
   formatPluginDiscoverySummary,
   startExternalPluginAutoReload
 } from "@/features/plugins/discovery";
+import { PluginRuntimeHost } from "@/features/plugins/PluginRuntimeHost";
 import { FlexLayoutHost } from "@/ui/FlexLayoutHost";
 import { TopBarPanel } from "@/ui/panels/TopBarPanel";
 import { TitleBarPanel } from "@/ui/panels/TitleBarPanel";
+import { WelcomeScreen } from "@/ui/welcome/WelcomeScreen";
+import { MigrationModal } from "@/ui/migration/MigrationModal";
+import type { LegacyProjectInfo } from "@/types/ipc";
 import { FileImportModal } from "@/ui/components/FileImportModal";
 import { KeyboardMapModal } from "@/ui/components/KeyboardMapModal";
 import { TextInputModal } from "@/ui/components/TextInputModal";
 import { RenderSettingsModal } from "@/ui/components/RenderSettingsModal";
+import { ProfileCaptureModal } from "@/ui/components/ProfileCaptureModal";
+import { QuitConfirmModal } from "@/ui/components/QuitConfirmModal";
 import { RenderOverlay } from "@/ui/components/RenderOverlay";
 import type { CameraState, SelectionEntry } from "@/core/types";
 import type { RenderProgress, RenderSettings } from "@/features/render/types";
@@ -48,6 +54,7 @@ import { canvasToPngBytes, createRenderExporter } from "@/features/render/export
 import { createQueuedRenderExporter } from "@/features/render/queuedExporter";
 import { WebGlViewport } from "@/render/webglRenderer";
 import { WebGpuViewport } from "@/render/webgpuRenderer";
+import type { ProfileCaptureOptions, ProfileSessionResult, ProfilingPublicState } from "@/render/profiling";
 
 const RENDER_QUEUE_BUDGET_BYTES = 512 * 1024 * 1024;
 const RENDER_PROGRESS_UPDATE_INTERVAL_MS = 125;
@@ -88,8 +95,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
 
-const NAVIGATE_BACK_REQUEST_EVENT = "rehearse-engine:navigate-back-request";
-const NAVIGATE_FORWARD_REQUEST_EVENT = "rehearse-engine:navigate-forward-request";
+const NAVIGATE_BACK_REQUEST_EVENT = "simularca:navigate-back-request";
+const NAVIGATE_FORWARD_REQUEST_EVENT = "simularca:navigate-forward-request";
 
 function cloneSelection(selection: SelectionEntry[]): SelectionEntry[] {
   return selection.map((entry) => ({ ...entry }));
@@ -133,6 +140,7 @@ export function App() {
     resolve: (value: string | null) => void;
   } | null>(null);
   const [renderModalOpen, setRenderModalOpen] = useState(false);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [renderOverlayOpen, setRenderOverlayOpen] = useState(false);
   const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
   const [viewportScreenshotRequestId, setViewportScreenshotRequestId] = useState(0);
@@ -141,14 +149,22 @@ export function App() {
   const renderHostElRef = useRef<HTMLDivElement | null>(null);
   const renderPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mainViewportSuspended, setMainViewportSuspended] = useState(false);
+  const [profilingState, setProfilingState] = useState<ProfilingPublicState>(() => kernel.profiler.getState());
+  const [profileResults, setProfileResults] = useState<ProfileSessionResult | null>(null);
+  const [profileResultsOpen, setProfileResultsOpen] = useState(false);
   const renderCancelRequestedRef = useRef(false);
-  const activeProjectName = useAppStore((store) => store.state.activeProjectName);
+  const [quitConfirmOpen, setQuitConfirmOpen] = useState(false);
+  const activeProject = useAppStore((store) => store.state.activeProject);
   const activeSnapshotName = useAppStore((store) => store.state.activeSnapshotName);
+  const [legacyProjectsToMigrate, setLegacyProjectsToMigrate] = useState<LegacyProjectInfo[] | null>(null);
   const mode = useAppStore((store) => store.state.mode);
   const sceneRenderEngine = useAppStore((store) => store.state.scene.renderEngine);
   const sceneAntialiasing = useAppStore((store) => store.state.scene.antialiasing);
+  const sceneColorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
   const actors = useAppStore((store) => store.state.actors);
   const selection = useAppStore((store) => store.state.selection);
+  const dirty = useAppStore((store) => store.state.dirty);
+  const dirtyRef = useRef(dirty);
   const readOnly = mode === "web-ro";
   const macPlatform = useMemo(() => isMacPlatform(typeof navigator === "object" ? navigator.platform : ""), []);
   const selectionHistoryBackRef = useRef<SelectionEntry[][]>([]);
@@ -194,6 +210,32 @@ export function App() {
     },
     [syncRealViewportFullscreen]
   );
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onBeforeClose) return;
+    return window.electronAPI.onBeforeClose(() => {
+      if (!dirtyRef.current) {
+        void window.electronAPI?.confirmClose("quit");
+        return;
+      }
+      setQuitConfirmOpen(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    return kernel.profiler.subscribe(() => {
+      const nextState = kernel.profiler.getState();
+      setProfilingState(nextState);
+      if (nextState.phase === "completed" && nextState.result) {
+        setProfileResults(nextState.result);
+        setProfileResultsOpen(true);
+      }
+    });
+  }, [kernel]);
 
   useEffect(() => {
     if (window.electronAPI?.onWindowStateChange) {
@@ -301,19 +343,23 @@ export function App() {
           .actions.setStatus("Unable to import dropped file: local file path could not be resolved from Electron.");
         return;
       }
+      if (!activeProject) {
+        kernel.store.getState().actions.setStatus("Open a project before importing files.");
+        return;
+      }
       try {
         await importFileAsActor(kernel, {
           descriptorId: input.descriptorId,
           sourcePath: input.sourcePath,
           fileName: input.fileName,
-          projectName: activeProjectName
+          projectPath: activeProject.path
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown file import error";
         kernel.store.getState().actions.setStatus(`Unable to import ${input.fileName}: ${message}`);
       }
     },
-    [activeProjectName, kernel]
+    [activeProject, kernel]
   );
 
   const performReplacementImport = useCallback(
@@ -324,12 +370,16 @@ export function App() {
           .actions.setStatus("Unable to import dropped file: local file path could not be resolved from Electron.");
         return;
       }
+      if (!activeProject) {
+        kernel.store.getState().actions.setStatus("Open a project before importing files.");
+        return;
+      }
       try {
         const imported = await importFileIntoActor(kernel, {
           actorId: input.target.actorId,
           definition: input.target.fileDefinition,
           sourcePath: input.sourcePath,
-          projectName: activeProjectName
+          projectPath: activeProject.path
         });
         kernel.store
           .getState()
@@ -339,7 +389,7 @@ export function App() {
         kernel.store.getState().actions.setStatus(`Unable to replace ${input.target.actorName}: ${message}`);
       }
     },
-    [activeProjectName, kernel]
+    [activeProject, kernel]
   );
 
   const handleNewActorDrop = useCallback(
@@ -647,6 +697,7 @@ export function App() {
           sceneRenderEngine === "webgl2"
             ? new WebGlViewport(kernel, hostEl, {
                 antialias: sceneAntialiasing,
+                colorBufferPrecision: sceneColorBufferPrecision,
                 qualityMode: "export",
                 manualFrameControl: true,
                 showDebugHelpers: settings.showDebugViews,
@@ -658,6 +709,7 @@ export function App() {
               })
             : new WebGpuViewport(kernel, hostEl, {
                 antialias: sceneAntialiasing,
+                colorBufferPrecision: sceneColorBufferPrecision,
                 qualityMode: "export",
                 manualFrameControl: true,
                 showDebugHelpers: settings.showDebugViews,
@@ -672,7 +724,7 @@ export function App() {
         const startTime = settings.startTimeMode === "zero" ? 0 : previousTime.elapsedSimSeconds;
         const simulationStartTime = startTime + settings.preRunSeconds;
         const baseExporter = await createRenderExporter(settings, {
-          projectName: activeProjectName
+          projectName: activeProject?.name ?? "untitled"
         });
         const queuedExporter = createQueuedRenderExporter(baseExporter, {
           queueBudgetBytes: RENDER_QUEUE_BUDGET_BYTES,
@@ -785,7 +837,15 @@ export function App() {
         setRenderProgress(null);
       }
     },
-    [activeProjectName, cameraPathActors, drawRenderPreview, kernel, sceneAntialiasing, sceneRenderEngine]
+    [
+      activeProject,
+      cameraPathActors,
+      drawRenderPreview,
+      kernel,
+      sceneAntialiasing,
+      sceneColorBufferPrecision,
+      sceneRenderEngine
+    ]
   );
 
   useEffect(() => {
@@ -848,6 +908,19 @@ export function App() {
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unknown plugin discovery error";
           kernel.store.getState().actions.setStatus(`Plugin auto-load failed: ${message}`);
+        }
+        // Detect legacy savedata projects and surface the migration modal before
+        // proceeding with the normal startup. Re-runs on the next launch if anything
+        // is left over.
+        try {
+          const legacy = await kernel.storage.detectLegacyProjects();
+          if (legacy.length > 0) {
+            setLegacyProjectsToMigrate(legacy);
+            return;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown migration detect error";
+          kernel.store.getState().actions.setStatus(`Legacy project detection failed: ${message}`);
         }
       }
       await kernel.projectService.loadDefaultProject();
@@ -1142,6 +1215,7 @@ export function App() {
       <TopBarPanel
         onToggleKeyboardMap={() => setKeyboardMapOpen((value) => !value)}
         onOpenRender={() => setRenderModalOpen(true)}
+        onOpenProfiling={() => setProfileModalOpen(true)}
         onCaptureViewportScreenshot={() => {
           if (viewportScreenshotBusy) {
             return;
@@ -1151,10 +1225,11 @@ export function App() {
         }}
         canCaptureViewportScreenshot={Boolean(window.electronAPI?.writeClipboardImagePng)}
         viewportScreenshotBusy={viewportScreenshotBusy}
+        profilingState={profilingState}
         requestTextInput={requestTextInput}
       />
     ),
-    [requestTextInput, viewportScreenshotBusy]
+    [profilingState, requestTextInput, viewportScreenshotBusy]
   );
   const titleBar = useMemo(
     () => <TitleBarPanel requestTextInput={requestTextInput} />,
@@ -1169,15 +1244,38 @@ export function App() {
       onDragLeave={handleDragLeave}
       onDrop={handleRootDrop}
     >
-      <FlexLayoutHost
-        titleBar={titleBar}
-        topBar={topBar}
-        pendingDropFileName={dragImportState?.fileName ?? null}
-        viewportSuspended={mainViewportSuspended}
-        viewportFullscreen={viewportFullscreen}
-        viewportScreenshotRequestId={viewportScreenshotRequestId}
-        onViewportScreenshotBusyChange={setViewportScreenshotBusy}
-      />
+      {legacyProjectsToMigrate ? (
+        <MigrationModal
+          legacy={legacyProjectsToMigrate}
+          onComplete={() => {
+            setLegacyProjectsToMigrate(null);
+            void kernel.projectService.loadDefaultProject();
+          }}
+        />
+      ) : null}
+      {activeProject ? (
+        <FlexLayoutHost
+          titleBar={titleBar}
+          topBar={topBar}
+          pendingDropFileName={dragImportState?.fileName ?? null}
+          viewportSuspended={mainViewportSuspended}
+          viewportFullscreen={viewportFullscreen}
+          viewportScreenshotRequestId={viewportScreenshotRequestId}
+          onViewportScreenshotBusyChange={setViewportScreenshotBusy}
+          profileResults={profileResults}
+          profileResultsOpen={profileResultsOpen}
+          onCloseProfileResults={() => {
+            setProfileResultsOpen(false);
+            setProfileResults(null);
+            kernel.profiler.clearResult();
+          }}
+        />
+      ) : (
+        <>
+          {titleBar}
+          <WelcomeScreen requestTextInput={requestTextInput} />
+        </>
+      )}
       {dragImportState ? (
         <div className={`file-drop-overlay${dragImportState.hasResolvedFileMetadata ? "" : " is-pending"}`}>
           <div className="file-drop-overlay-head">
@@ -1295,6 +1393,17 @@ export function App() {
           void runRender(settings);
         }}
       />
+      <ProfileCaptureModal
+        open={profileModalOpen}
+        profilingState={profilingState}
+        onCancel={() => setProfileModalOpen(false)}
+        onConfirm={(options: ProfileCaptureOptions) => {
+          setProfileModalOpen(false);
+          if (!kernel.profiler.startCapture(options)) {
+            kernel.store.getState().actions.setStatus("Performance profile capture is already running.");
+          }
+        }}
+      />
       <RenderOverlay
         open={renderOverlayOpen}
         progress={renderProgress}
@@ -1304,6 +1413,30 @@ export function App() {
           renderCancelRequestedRef.current = true;
         }}
       />
+      <PluginRuntimeHost />
+      {window.electronAPI ? (
+        <QuitConfirmModal
+          open={quitConfirmOpen}
+          onSaveAndQuit={async () => {
+            setQuitConfirmOpen(false);
+            try {
+              await kernel.projectService.saveProject();
+              void window.electronAPI?.confirmClose("save-and-quit");
+            } catch (e) {
+              void window.electronAPI?.confirmClose("cancel");
+              kernel.store.getState().actions.setStatus(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }}
+          onQuitWithoutSaving={() => {
+            setQuitConfirmOpen(false);
+            void window.electronAPI?.confirmClose("quit");
+          }}
+          onCancel={() => {
+            setQuitConfirmOpen(false);
+            void window.electronAPI?.confirmClose("cancel");
+          }}
+        />
+      ) : null}
     </div>
   );
 }

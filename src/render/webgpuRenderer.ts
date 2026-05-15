@@ -1,23 +1,48 @@
 import * as THREE from "three";
 import { PostProcessing, WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import * as TSL from "three/tsl";
 import { pass } from "three/tsl";
+import { AO_MESH_LAYER } from "./aoLayer";
+const mrt = (TSL as any).mrt as (outputs: Record<string, any>) => any;
+const normalView = (TSL as any).normalView as any;
+const tslOutput = (TSL as any).output as any;
 import type { AppKernel } from "@/app/kernel";
 import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
-import type { CameraState, SceneFramePacingSettings } from "@/core/types";
+import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "./actorTransformController";
 import { CameraInteractionController } from "./cameraInteractionController";
 import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "./cameraSync";
 import { SceneController } from "./sceneController";
 import { incompatibilityReason } from "./engineCompatibility";
 import { FramePacer } from "./framePacing";
+import {
+  getWebGpuColorBufferSupport,
+  resolveSceneColorBufferPrecision,
+  type ResolvedSceneColorBufferPrecision
+} from "./colorBufferPrecision";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 import { CurveEditController } from "./curveEditController";
 import { reportSlowFrame } from "./slowFrameDiagnostics";
+import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
+
+// This module owns long-lived Three.js GPU resources and DOM event listeners.
+// In-place HMR leaves stale instances whose class-field arrows can be replaced
+// out from under live event listeners (observed: "this.scheduleResize is not
+// a function" firing every frame for hours). Force a full page reload instead.
+if (import.meta.hot) {
+  import.meta.hot.decline();
+}
 import type { MistVolumeQualityMode } from "./mistVolumeController";
 import { buildWebGpuToneMappedOutputNode, threeToneMappingForMode } from "./tonemapping";
 import { pruneInvalidSceneGraph } from "./sceneGraphUtils";
-import { captureViewportScreenshotFromCanvas, type ViewportScreenshotResult } from "@/features/render/viewportScreenshot";
+import {
+  captureViewportScreenshotFromCanvas,
+  captureViewportThumbnail,
+  type ViewportScreenshotResult,
+  type ViewportThumbnailResult
+} from "@/features/render/viewportScreenshot";
+import type { ProfileFrameGpuInput } from "./profiling";
 
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
@@ -26,6 +51,10 @@ export class WebGpuViewport {
   private readonly renderer: WebGPURenderer;
   private readonly postProcessing: PostProcessing;
   private readonly scenePass: any;
+  private readonly aoMeshPass: any;
+  private readonly aoPerspectiveCamera: THREE.PerspectiveCamera;
+  private readonly aoOrthographicCamera: THREE.OrthographicCamera;
+  private aoCamera: THREE.Camera;
   private readonly perspectiveCamera: any;
   private readonly orthographicCamera: any;
   private activeCamera: any;
@@ -50,6 +79,8 @@ export class WebGpuViewport {
   private activeRenderPromise: Promise<void> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private resizeObservedElements: HTMLElement[] = [];
+  private resizeRafHandle = 0;
+  private lastAppliedSize: { width: number; height: number; pixelRatio: number } | null = null;
   private readonly maxRenderDimension = 4096;
   private readonly isExportViewport: boolean;
   private readonly manualFrameControl: boolean;
@@ -57,6 +88,8 @@ export class WebGpuViewport {
   private previousMainRenderSample: RenderStatsSample | null = null;
   private lastOutputSignature = "";
   private readonly framePacer: FramePacer;
+  private readonly colorBufferPrecision: ResolvedSceneColorBufferPrecision;
+  private lastLoggedColorBufferWarning: string | null = null;
   public constructor(
     private readonly kernel: AppKernel,
     private readonly mountEl: HTMLElement,
@@ -67,6 +100,7 @@ export class WebGpuViewport {
       editorOverlays?: boolean;
       viewportSize?: { width: number; height: number };
       manualFrameControl?: boolean;
+      colorBufferPrecision?: SceneColorBufferPrecision;
     }
   ) {
     if (!("gpu" in navigator)) {
@@ -86,12 +120,29 @@ export class WebGpuViewport {
       showDebugHelpers: options.showDebugHelpers ?? true
     });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
-    this.renderer = new WebGPURenderer({ antialias: options.antialias, alpha: false });
+    this.colorBufferPrecision = resolveSceneColorBufferPrecision(
+      options.colorBufferPrecision ?? kernel.store.getState().state.scene.colorBufferPrecision,
+      getWebGpuColorBufferSupport(),
+      "webgpu",
+      {
+        requestedAntialiasing: options.antialias
+      }
+    );
+    this.renderer = new WebGPURenderer({
+      antialias: this.colorBufferPrecision.activeAntialiasing,
+      alpha: false,
+      colorBufferType: this.colorBufferPrecision.bufferType,
+      trackTimestamp: true
+    });
     this.sceneController.setRenderer(this.renderer as unknown as any);
     const initialWidth = this.fixedViewportSize?.width ?? Math.max(1, this.mountEl.clientWidth);
     const initialHeight = this.fixedViewportSize?.height ?? Math.max(1, this.mountEl.clientHeight);
-    this.applyRenderScale(initialWidth, initialHeight);
+    this.renderer.setPixelRatio(this.computeRenderScale(initialWidth, initialHeight));
     this.renderer.setSize(initialWidth, initialHeight);
+    // Prevent the browser from interpreting touch drags on the canvas as
+    // page scroll/zoom — otherwise pointermove events for orbit never fire
+    // on mobile.
+    this.renderer.domElement.style.touchAction = "none";
     this.mountEl.appendChild(this.renderer.domElement);
 
     this.perspectiveCamera = new THREE.PerspectiveCamera(
@@ -116,6 +167,15 @@ export class WebGpuViewport {
 
     this.activeCamera = this.perspectiveCamera;
     this.scenePass = pass(this.sceneController.scene, this.activeCamera);
+
+    this.aoPerspectiveCamera = this.perspectiveCamera.clone();
+    this.aoPerspectiveCamera.layers.set(AO_MESH_LAYER);
+    this.aoOrthographicCamera = this.orthographicCamera.clone();
+    this.aoOrthographicCamera.layers.set(AO_MESH_LAYER);
+    this.aoCamera = this.aoPerspectiveCamera;
+    this.aoMeshPass = pass(this.sceneController.scene, this.aoCamera);
+    this.aoMeshPass.setMRT(mrt({ output: tslOutput, normal: normalView }));
+
     this.postProcessing = new PostProcessing(this.renderer, this.scenePass);
     this.postProcessing.outputColorTransform = false;
     this.syncToneMappingOutput();
@@ -166,12 +226,11 @@ export class WebGpuViewport {
       await (this.renderer as any).init();
     }
     this.initialized = true;
+    this.setGpuTimestampTracking(false);
     this.onResize();
     if (!this.fixedViewportSize) {
-      window.addEventListener("resize", this.onResize);
-      this.resizeObserver = new ResizeObserver(() => {
-        this.onResize();
-      });
+      window.addEventListener("resize", this.handleResizeEvent);
+      this.resizeObserver = new ResizeObserver(this.handleResizeEvent);
       this.resizeObservedElements = this.collectResizeObservedElements();
       for (const element of this.resizeObservedElements) {
         this.resizeObserver.observe(element);
@@ -180,6 +239,20 @@ export class WebGpuViewport {
     if (!this.manualFrameControl) {
       this.animate();
     }
+    setViewportStatsProvider(() => {
+      if (this.disposed) {
+        return null;
+      }
+      const memInfo = this.renderer.info?.memory;
+      const renderInfo = this.renderer.info?.render;
+      return {
+        geometries: memInfo?.geometries ?? 0,
+        textures: memInfo?.textures ?? 0,
+        triangles: renderInfo?.triangles ?? 0,
+        calls: renderInfo?.calls ?? 0,
+        frame: renderInfo?.frame ?? 0
+      };
+    });
   }
 
   public async stop(): Promise<void> {
@@ -187,10 +260,15 @@ export class WebGpuViewport {
       return;
     }
     this.disposed = true;
-    window.removeEventListener("resize", this.onResize);
+    setViewportStatsProvider(null);
+    window.removeEventListener("resize", this.handleResizeEvent);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.resizeObservedElements = [];
+    if (this.resizeRafHandle) {
+      cancelAnimationFrame(this.resizeRafHandle);
+      this.resizeRafHandle = 0;
+    }
     if (this.frameHandle) {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
@@ -208,6 +286,7 @@ export class WebGpuViewport {
     this.controls.dispose();
     this.actorTransformController?.dispose();
     this.curveEditController?.dispose();
+    this.kernel.profiler.clearDrawHooks();
     this.sceneController.setRenderer(null);
     this.sceneController.dispose();
     this.clearCompatibilityStatus();
@@ -244,6 +323,7 @@ export class WebGpuViewport {
         await (this.renderer as any).init();
       }
       this.initialized = true;
+      this.setGpuTimestampTracking(false);
     }
     this.onResize();
     await this.renderFrame({ collectStats: false });
@@ -277,6 +357,26 @@ export class WebGpuViewport {
     }
   }
 
+  public async captureViewportThumbnail(): Promise<ViewportThumbnailResult> {
+    if (this.disposed) {
+      throw new Error("Viewport has been disposed.");
+    }
+    while (this.renderInFlight) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    }
+    const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    try {
+      this.sceneController.setDebugHelpersVisible(false);
+      for (let passIndex = 0; passIndex < 2; passIndex += 1) {
+        await this.renderOnce();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      }
+      return await captureViewportThumbnail({ canvas: this.renderer.domElement });
+    } finally {
+      this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+    }
+  }
+
   private animate = (nowMs = performance.now()): void => {
     if (this.disposed) {
       return;
@@ -293,7 +393,7 @@ export class WebGpuViewport {
     const renderPromise = this.renderFrame()
       .catch((error) => {
         if (!this.disposed) {
-          console.warn("[rehearse-engine] WebGPU render frame failed:", error);
+          console.warn("[simularca] WebGPU render frame failed:", error);
         }
       })
       .finally(() => {
@@ -303,27 +403,36 @@ export class WebGpuViewport {
         }
       });
     this.activeRenderPromise = renderPromise;
+    bumpFrameCounter();
   };
 
   private async renderFrame(options?: { collectStats?: boolean }): Promise<void> {
     const collectStats = options?.collectStats ?? true;
+    const wantsGpuTimings = this.kernel.profiler.shouldProfileGpuTimings();
+    this.setGpuTimestampTracking(wantsGpuTimings);
     const _rf0 = performance.now();
-    await this.sceneController.syncFromState();
+    this.kernel.profiler.beginFrame();
+    await this.kernel.profiler.withFrameChunk("Scene sync", () => this.sceneController.syncFromState());
     if (this.disposed) {
+      this.kernel.profiler.clearDrawHooks();
       return;
     }
-    pruneInvalidSceneGraph(this.sceneController.scene);
+    // Note: syncFromState already runs pruneInvalidSceneGraph as its last phase,
+    // so we don't repeat it here. The catch-path below still calls it
+    // defensively if a render error mentions a null child.
     const _rf1 = performance.now();
-    this.syncCameraState();
-    this.cameraController.update(performance.now());
-    this.curveEditController?.setCamera(this.activeCamera);
-    this.actorTransformController?.setCamera(this.activeCamera);
-    this.curveEditController?.update();
-    this.actorTransformController?.update();
-    this.controls.update();
-    this.enforceActorCompatibility("webgpu");
-    this.syncCameraToState();
-    this.syncToneMappingOutput();
+    await this.kernel.profiler.withFrameChunk("Viewport sync", () => {
+      this.syncCameraState();
+      this.cameraController.update(performance.now());
+      this.curveEditController?.setCamera(this.activeCamera);
+      this.actorTransformController?.setCamera(this.activeCamera);
+      this.curveEditController?.update();
+      this.actorTransformController?.update();
+      this.controls.update();
+      this.enforceActorCompatibility("webgpu");
+      this.syncCameraToState();
+      this.syncToneMappingOutput();
+    });
     const _rf2 = performance.now();
     const renderOnce = async (): Promise<void> => {
       const renderPromise =
@@ -332,23 +441,46 @@ export class WebGpuViewport {
           : Promise.resolve((this.postProcessing as any).render());
       await Promise.resolve(renderPromise);
     };
-    try {
-      await renderOnce();
-    } catch (error) {
-      if (this.disposed) {
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("Cannot read properties of null") && message.includes("visible")) {
-        pruneInvalidSceneGraph(this.sceneController.scene);
-        this.postProcessing.needsUpdate = true;
+    await this.kernel.profiler.withFrameChunk("Render submission", async () => {
+      this.kernel.profiler.syncDrawHooks(
+        this.sceneController.listActorObjectsForProfiling().map(({ actorId, object }) => {
+          const actor = this.kernel.store.getState().state.actors[actorId];
+          return {
+            actor: {
+              actorId,
+              actorName: actor?.name ?? actorId,
+              actorType: actor?.actorType ?? "empty",
+              pluginType: actor?.pluginType
+            },
+            object
+          };
+        })
+      );
+      try {
         await renderOnce();
-      } else {
-        throw error;
+      } catch (error) {
+        if (this.disposed) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("Cannot read properties of null") && message.includes("visible")) {
+          pruneInvalidSceneGraph(this.sceneController.scene);
+          this.postProcessing.needsUpdate = true;
+          await renderOnce();
+        } else {
+          throw error;
+        }
       }
-    }
-    await this.flushDeferredGpuDisposals();
+    });
+    await this.kernel.profiler.withFrameChunk("GPU resource cleanup", () => this.flushDeferredGpuDisposals());
+    const gpu = wantsGpuTimings
+      ? await this.kernel.profiler.withFrameChunk("GPU readback", () => this.resolveGpuProfile())
+      : undefined;
     const _rf3 = performance.now();
+    this.kernel.profiler.finishFrame({
+      cpuTotalDurationMs: _rf3 - _rf0,
+      gpu
+    });
     if (collectStats) {
       reportSlowFrame(this.kernel, {
         backend: "webgpu",
@@ -447,11 +579,50 @@ export class WebGpuViewport {
     }
   }
 
+  // Wrapper used by `window.addEventListener` and `ResizeObserver`. Class-field
+  // arrows survive instance creation, but during Vite HMR cycles we observed the
+  // listener-side `this.scheduleResize` going undefined and firing
+  // "TypeError: ... is not a function" every animation frame. Catching here
+  // ensures one bad HMR can't burn the renderer process.
+  private handleResizeEvent = (): void => {
+    if (this.disposed) {
+      return;
+    }
+    try {
+      this.scheduleResize();
+    } catch (error) {
+      console.warn("[simularca] resize listener failed; suppressing:", error);
+    }
+  };
+
+  private scheduleResize = (): void => {
+    if (this.disposed || this.resizeRafHandle) {
+      return;
+    }
+    this.resizeRafHandle = requestAnimationFrame(() => {
+      this.resizeRafHandle = 0;
+      if (this.disposed) {
+        return;
+      }
+      this.onResize();
+    });
+  };
+
   private onResize = (): void => {
     const { width, height } = this.getEffectiveViewportSize();
+    const pixelRatio = this.computeRenderScale(width, height);
+    if (
+      this.lastAppliedSize &&
+      this.lastAppliedSize.width === width &&
+      this.lastAppliedSize.height === height &&
+      this.lastAppliedSize.pixelRatio === pixelRatio
+    ) {
+      return;
+    }
+    this.lastAppliedSize = { width, height, pixelRatio };
     this.mountEl.style.width = `${width}px`;
     this.mountEl.style.height = `${height}px`;
-    this.applyRenderScale(width, height);
+    this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height);
     this.perspectiveCamera.aspect = width / height;
     this.perspectiveCamera.updateProjectionMatrix();
@@ -507,20 +678,19 @@ export class WebGpuViewport {
     return { width, height };
   }
 
-  private applyRenderScale(width: number, height: number): void {
+  private computeRenderScale(width: number, height: number): number {
     if (this.isExportViewport) {
-      this.renderer.setPixelRatio(1);
-      return;
+      return 1;
     }
     const safeWidth = Math.max(1, width);
     const safeHeight = Math.max(1, height);
     const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
     const dimensionLimit = Math.max(1, this.maxRenderDimension / Math.max(safeWidth, safeHeight));
-    const pixelRatio = Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
-    this.renderer.setPixelRatio(pixelRatio);
+    return Math.max(0.5, Math.min(devicePixelRatio, dimensionLimit));
   }
 
   private updateStats(): void {
+    this.reportColorBufferWarning();
     const now = performance.now();
     const frameDelta = Math.max(0, now - this.frameLastAt);
     this.frameLastAt = now;
@@ -560,6 +730,12 @@ export class WebGpuViewport {
         cameraDistance: this.activeCamera.position.distanceTo(this.controls.target),
         cameraControlsEnabled: Boolean((this.controls as any).enabled),
         cameraZoomEnabled: this.isWheelZoomEnabled(),
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? "",
         projectFileBytes: currentStats.projectFileBytesSaved > 0 && !this.kernel.store.getState().state.dirty
           ? currentStats.projectFileBytesSaved
           : currentStats.projectFileBytes
@@ -579,9 +755,30 @@ export class WebGpuViewport {
         memoryMb: memory.memoryMb,
         heapMb: memory.heapMb,
         resourceMb: memory.resourceMb,
-        projectFileBytes: estimatedProjectBytes
+        projectFileBytes: estimatedProjectBytes,
+        requestedColorBufferPrecision: this.colorBufferPrecision.requestedPrecision,
+        activeColorBufferPrecision: this.colorBufferPrecision.activePrecision,
+        activeColorBufferFormat: this.colorBufferPrecision.statusFormatLabel,
+        requestedAntialiasing: this.colorBufferPrecision.requestedAntialiasing,
+        activeAntialiasing: this.colorBufferPrecision.activeAntialiasing,
+        colorBufferWarning: this.colorBufferPrecision.warningMessage ?? ""
       });
     }
+  }
+
+  private reportColorBufferWarning(): void {
+    if (this.colorBufferPrecision.warningMessage === this.lastLoggedColorBufferWarning) {
+      return;
+    }
+    this.lastLoggedColorBufferWarning = this.colorBufferPrecision.warningMessage;
+    if (!this.colorBufferPrecision.warningMessage) {
+      return;
+    }
+    this.kernel.store.getState().actions.addLog({
+      level: "warn",
+      message: `WebGPU render target policy adjusted: ${this.colorBufferPrecision.warningMessage}`,
+      details: `Active intermediate format: ${this.colorBufferPrecision.statusFormatLabel}; MSAA ${this.colorBufferPrecision.activeAntialiasing ? "enabled" : "disabled"}`
+    });
   }
 
   private readMainRenderStats(): RenderStatsSample {
@@ -716,26 +913,57 @@ export class WebGpuViewport {
     this.lastAppliedCameraState = cloneCameraState(nextCameraState);
   }
 
+  private syncAoCamera(): void {
+    const target =
+      this.activeCamera instanceof THREE.OrthographicCamera
+        ? this.aoOrthographicCamera
+        : this.aoPerspectiveCamera;
+    target.copy(this.activeCamera, false);
+    target.layers.set(AO_MESH_LAYER);
+    target.updateMatrixWorld(true);
+    this.aoCamera = target;
+    // Only assign the pass.camera when the camera *reference* changes — not every
+    // frame. Three.js v0.173 invalidates the pass's shader graph on camera setter,
+    // which leaks TSL nodes (StorageBufferNode/VarNode/SplitNode et al) every frame.
+    if (this.aoMeshPass.camera !== this.aoCamera) {
+      this.aoMeshPass.camera = this.aoCamera;
+    }
+  }
+
   private syncToneMappingOutput(): void {
     const tonemapping = this.kernel.store.getState().state.scene.tonemapping;
     const postProcessing = this.kernel.store.getState().state.scene.postProcessing;
+    const aoEnabled = postProcessing.ambientOcclusion.enabled;
+    this.syncAoCamera();
     const signature = JSON.stringify({
       mode: tonemapping.mode,
       dither: tonemapping.dither,
       postProcessing,
-      outputColorSpace: this.renderer.outputColorSpace
+      outputColorSpace: this.renderer.outputColorSpace,
+      aoCameraType: this.aoCamera instanceof THREE.OrthographicCamera ? "ortho" : "persp"
     });
     this.renderer.toneMapping = threeToneMappingForMode(tonemapping.mode);
-    this.scenePass.camera = this.activeCamera;
+    if (this.scenePass.camera !== this.activeCamera) {
+      this.scenePass.camera = this.activeCamera;
+    }
     if (signature === this.lastOutputSignature) {
       return;
     }
     this.lastOutputSignature = signature;
+    const aoSources = aoEnabled
+      ? {
+          meshDepth: this.aoMeshPass.getTextureNode("depth"),
+          meshNormal: this.aoMeshPass.getTextureNode("normal"),
+          sceneDepth: this.scenePass.getTextureNode("depth"),
+          camera: this.aoCamera
+        }
+      : null;
     this.postProcessing.outputNode = buildWebGpuToneMappedOutputNode(
       this.scenePass.getTextureNode("output"),
       this.renderer.outputColorSpace,
       tonemapping,
-      postProcessing
+      postProcessing,
+      aoSources
     );
     this.postProcessing.needsUpdate = true;
   }
@@ -776,5 +1004,50 @@ export class WebGpuViewport {
       await rendererWithWait.waitForGPU();
     }
     this.sceneController.flushDeferredGpuDisposals();
+  }
+
+  private setGpuTimestampTracking(enabled: boolean): void {
+    const backend = (this.renderer as WebGPURenderer & { backend?: { trackTimestamp?: boolean } }).backend;
+    if (backend && backend.trackTimestamp !== enabled) {
+      backend.trackTimestamp = enabled;
+    }
+  }
+
+  private async resolveGpuProfile(): Promise<ProfileFrameGpuInput> {
+    const backend = (this.renderer as WebGPURenderer & { backend?: { trackTimestamp?: boolean } }).backend;
+    const rendererWithTimestamps = this.renderer as WebGPURenderer & {
+      resolveTimestampsAsync?: (type?: "render" | "compute") => Promise<number | undefined>;
+    };
+    const canResolve =
+      backend?.trackTimestamp === true && typeof rendererWithTimestamps.resolveTimestampsAsync === "function";
+    if (!canResolve) {
+      return { status: "unavailable" };
+    }
+    try {
+      const [renderMs, computeMs] = await Promise.all([
+        rendererWithTimestamps.resolveTimestampsAsync!("render"),
+        rendererWithTimestamps.resolveTimestampsAsync!("compute")
+      ]);
+      const roots = [];
+      if (typeof renderMs === "number" && Number.isFinite(renderMs)) {
+        roots.push({
+          id: "gpu:render",
+          label: "Render",
+          durationMs: renderMs,
+          children: []
+        });
+      }
+      if (typeof computeMs === "number" && Number.isFinite(computeMs) && computeMs > 0) {
+        roots.push({
+          id: "gpu:compute",
+          label: "Compute",
+          durationMs: computeMs,
+          children: []
+        });
+      }
+      return roots.length > 0 ? { status: "captured", roots } : { status: "unavailable" };
+    } catch {
+      return { status: "unavailable" };
+    }
   }
 }

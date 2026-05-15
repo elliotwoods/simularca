@@ -4,6 +4,7 @@ import type {
   AppState,
   CameraState,
   Material,
+  SceneColorBufferPrecision,
   SceneFramePacingSettings,
   SceneHelpersSettings,
   ScenePostProcessingSettings,
@@ -11,6 +12,7 @@ import type {
   SceneState,
   TimeState
 } from "./types";
+import type { ProjectIdentity } from "@/types/ipc";
 
 export function createInitialMaterials(): Record<string, Material> {
   const materials: Material[] = [
@@ -167,11 +169,13 @@ export const DEFAULT_TIME: TimeState = {
 };
 export const DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED = false;
 export const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
+export const DEFAULT_HEARTBEAT_LOGGING_ENABLED = false;
 export const DEFAULT_FRAME_PACING: SceneFramePacingSettings = {
   mode: "vsync",
   targetFps: 60
 };
 export const DEFAULT_RENDER_ENGINE: RenderEngine = "webgpu";
+export const DEFAULT_SCENE_COLOR_BUFFER_PRECISION: SceneColorBufferPrecision = "float16";
 export const DEFAULT_POST_PROCESSING: ScenePostProcessingSettings = {
   bloom: {
     enabled: false,
@@ -191,6 +195,15 @@ export const DEFAULT_POST_PROCESSING: ScenePostProcessingSettings = {
   grain: {
     enabled: false,
     intensity: 0.02
+  },
+  ambientOcclusion: {
+    enabled: false,
+    radius: 0.25,
+    thickness: 1,
+    distanceExponent: 1,
+    scale: 1,
+    samples: 16,
+    resolutionScale: 1
   }
 };
 
@@ -227,6 +240,7 @@ export function createDefaultScene(): {
     backgroundColor: "#070b12",
     renderEngine: DEFAULT_RENDER_ENGINE,
     antialiasing: true,
+    colorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
     framePacing: structuredClone(DEFAULT_FRAME_PACING),
     tonemapping: {
       mode: "aces",
@@ -237,7 +251,10 @@ export function createDefaultScene(): {
     cameraKeyboardNavigation: true,
     cameraNavigationSpeed: 6,
     cameraFlyLookInvertYaw: true,
-    cameraFlyLookSpeed: 1
+    cameraFlyLookSpeed: 1,
+    useEnvironmentBackground: true,
+    environmentOverrideActorId: null,
+    defaultIblEnabled: true
   };
   return {
     scene,
@@ -245,11 +262,19 @@ export function createDefaultScene(): {
   };
 }
 
-export function createInitialState(mode: AppState["mode"], projectName = "demo", snapshotName = "main"): AppState {
+export function createInitialState(
+  mode: AppState["mode"],
+  activeProjectOrName: ProjectIdentity | string | null = null,
+  snapshotName = "main"
+): AppState {
+  const activeProject: ProjectIdentity | null =
+    typeof activeProjectOrName === "string"
+      ? { uuid: `synthetic-${activeProjectOrName}`, path: `/synthetic/${activeProjectOrName}.simularca`, name: activeProjectOrName }
+      : activeProjectOrName;
   const defaults = createDefaultScene();
   return {
     mode,
-    activeProjectName: projectName,
+    activeProject,
     activeSnapshotName: snapshotName,
     scene: defaults.scene,
     actors: defaults.actors,
@@ -259,6 +284,7 @@ export function createInitialState(mode: AppState["mode"], projectName = "demo",
     time: DEFAULT_TIME,
     pluginViews: {},
     focusedPluginViewId: null,
+    pluginsEnabled: {},
     materials: createInitialMaterials(),
     assets: [],
     selection: [],
@@ -279,16 +305,25 @@ export function createInitialState(mode: AppState["mode"], projectName = "demo",
       projectFileBytesSaved: 0,
       cameraDistance: 0,
       cameraControlsEnabled: true,
-      cameraZoomEnabled: true
+      cameraZoomEnabled: true,
+      requestedColorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
+      activeColorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
+      activeColorBufferFormat: "",
+      requestedAntialiasing: true,
+      activeAntialiasing: true,
+      colorBufferWarning: ""
     },
     runtimeDebug: {
       slowFrameDiagnosticsEnabled: DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED,
-      slowFrameDiagnosticsThresholdMs: DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS
+      slowFrameDiagnosticsThresholdMs: DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS,
+      heartbeatLoggingEnabled: DEFAULT_HEARTBEAT_LOGGING_ENABLED
     },
     dirty: false,
     statusMessage: "Ready",
     consoleEntries: [],
-    actorStatusByActorId: {}
+    actorStatusByActorId: {},
+    actorFrameTimingsMs: {},
+    viewerPermissions: undefined
   };
 }
 

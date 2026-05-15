@@ -54,6 +54,7 @@ const COLOR_SPACE_APPLE_LOG = 3;
 interface SyncContext {
   actor: { id: string; params: Record<string, unknown> };
   object: unknown;
+  profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: unknown): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
 }
@@ -93,6 +94,7 @@ export class SplatController {
 
   // Per-frame status reporting
   private setActorStatusRef: ((status: unknown) => void) | null = null;
+  private profileChunkRef: (<T>(label: string, run: () => T) => T) | null = null;
   private lastSortStats: SortFrameStats | null = null;
   private statusFrameCounter = 0;
   private lastReportedSortMode = "";
@@ -122,6 +124,7 @@ export class SplatController {
 
     // Save reference for per-frame status updates
     this.setActorStatusRef = context.setActorStatus;
+    this.profileChunkRef = context.profileChunk ?? null;
 
     // Asset cleared
     if (!assetId) {
@@ -137,12 +140,16 @@ export class SplatController {
     // Asset changed — kick off async load
     if (assetId !== this.loadedAssetId && assetId !== this.pendingAssetId) {
       this.pendingAssetId = assetId;
-      void this.loadAsset(assetId, context.readAssetBytes, context.setActorStatus);
+      this.runProfileChunk("Asset load request", () => {
+        void this.loadAsset(assetId, context.readAssetBytes, context.setActorStatus);
+      });
     }
 
     // Update uniforms if mesh is live
     if (this.mesh && this.uniforms) {
-      this.updateUniforms(opacity, brightness, scaleFactor, splatSizeScale, colorInputSpace);
+      this.runProfileChunk("Uniform update", () => {
+        this.updateUniforms(opacity, brightness, scaleFactor, splatSizeScale, colorInputSpace);
+      });
     }
   }
 
@@ -151,6 +158,7 @@ export class SplatController {
     this.disposeRendering();
     this.loadedAssetId = "";
     this.pendingAssetId = "";
+    this.profileChunkRef = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -438,52 +446,63 @@ export class SplatController {
     // Update viewport size from renderer
     // Prefer getDrawingBufferSize (actual rendering resolution) over getSize (CSS pixels)
     // to match the coordinate space the projection matrix was built against
-    const size = this._cachedViewportSize;
-    if (typeof renderer.getDrawingBufferSize === "function") {
-      renderer.getDrawingBufferSize(size);
-    } else if (typeof renderer.getSize === "function") {
-      renderer.getSize(size);
-    }
-    if (size.x > 0 && size.y > 0) {
-      this.uniforms.viewportSize.value.set(size.x, size.y);
-    }
+    let focalX = 0;
+    let focalY = 0;
+    let isOrthographic = false;
+    let cameraNear = 0;
+    this.runProfileChunk("Viewport size", () => {
+      const size = this._cachedViewportSize;
+      if (typeof renderer.getDrawingBufferSize === "function") {
+        renderer.getDrawingBufferSize(size);
+      } else if (typeof renderer.getSize === "function") {
+        renderer.getSize(size);
+      }
+      if (size.x > 0 && size.y > 0) {
+        this.uniforms!.viewportSize.value.set(size.x, size.y);
+      }
+    });
 
     // Extract focal lengths from the camera's projection matrix
     // For a perspective camera:
     //   projectionMatrix[0] = 2n / (r-l)  ≈  2 * focalX / width
     //   projectionMatrix[5] = 2n / (t-b)  ≈  2 * focalY / height
-    const proj = camera.projectionMatrix.elements;
-    const vpWidth = this.uniforms.viewportSize.value.x;
-    const vpHeight = this.uniforms.viewportSize.value.y;
-    const focalX = (proj[0] * vpWidth) / 2;
-    const focalY = (proj[5] * vpHeight) / 2;
-    const isOrthographic = camera instanceof THREE.OrthographicCamera;
-    const cameraNear = sanitizeCameraNear((camera as THREE.Camera & { near?: number }).near ?? Number.NaN);
-    this.uniforms.focalX.value = focalX;
-    this.uniforms.focalY.value = focalY;
-    this.uniforms.cameraNear.value = cameraNear;
-    this.uniforms.isOrthographic.value = isOrthographic ? 1 : 0;
+    this.runProfileChunk("Camera projection", () => {
+      const proj = camera.projectionMatrix.elements;
+      const vpWidth = this.uniforms!.viewportSize.value.x;
+      const vpHeight = this.uniforms!.viewportSize.value.y;
+      focalX = (proj[0] * vpWidth) / 2;
+      focalY = (proj[5] * vpHeight) / 2;
+      isOrthographic = camera instanceof THREE.OrthographicCamera;
+      cameraNear = sanitizeCameraNear((camera as THREE.Camera & { near?: number }).near ?? Number.NaN);
+      this.uniforms!.focalX.value = focalX;
+      this.uniforms!.focalY.value = focalY;
+      this.uniforms!.cameraNear.value = cameraNear;
+      this.uniforms!.isOrthographic.value = isOrthographic ? 1 : 0;
+    });
 
     // Frustum cull chunks on CPU, then upload visibility to GPU
     let visibilityChanged = false;
     if (this.chunkData && this.chunkVisibilityArray && this.mesh && this.gpuSorter) {
-      this.lastVisibleChunks = updateChunkVisibility(
-        this.chunkData,
-        camera,
-        this.mesh.matrixWorld,
-        this.chunkVisibilityArray
-      );
-      const chunkPointCounts = this.chunkData.chunkPointCounts;
-      let visibleSplats = 0;
-      for (let i = 0; i < this.chunkVisibilityArray.length; i += 1) {
-        if (this.chunkVisibilityArray[i] === 1) {
-          visibleSplats += chunkPointCounts[i] ?? 0;
+      this.runProfileChunk("Chunk culling", () => {
+        this.lastVisibleChunks = updateChunkVisibility(
+          this.chunkData!,
+          camera,
+          this.mesh!.matrixWorld,
+          this.chunkVisibilityArray!
+        );
+        const chunkPointCounts = this.chunkData!.chunkPointCounts;
+        let visibleSplats = 0;
+        for (let i = 0; i < this.chunkVisibilityArray!.length; i += 1) {
+          if (this.chunkVisibilityArray![i] === 1) {
+            visibleSplats += chunkPointCounts[i] ?? 0;
+          }
         }
-      }
-      this.lastChunkKeptSplats = visibleSplats;
+        this.lastChunkKeptSplats = visibleSplats;
+      });
 
       // Upload visibility to GPU (sorter uses this for depth culling + triggers re-sort)
-      visibilityChanged = this.gpuSorter.updateChunkVisibility(this.chunkVisibilityArray);
+      this.runProfileChunk("Visibility upload", () => {
+        visibilityChanged = this.gpuSorter!.updateChunkVisibility(this.chunkVisibilityArray!);
 
       // Workaround: Three.js Bindings._update() doesn't re-sync storage buffers
       // after initialization — it only handles uniform buffers, samplers, and
@@ -498,11 +517,14 @@ export class SplatController {
           // First frame or buffer not yet created — _init() will handle it
         }
       }
+      });
     }
 
     // GPU depth sort (entirely on GPU — no CPU→GPU transfer needed for sort data)
     if (this.gpuSorter && this.mesh) {
-      this.lastSortStats = this.gpuSorter.sort(renderer, camera, this.mesh.matrixWorld);
+      this.runProfileChunk("GPU sort dispatch", () => {
+        this.lastSortStats = this.gpuSorter!.sort(renderer, camera, this.mesh!.matrixWorld);
+      });
     }
 
     const projectionDirty =
@@ -513,17 +535,19 @@ export class SplatController {
     // GPU projection compute pre-pass: project Cov3D → Cov2D once per splat
     // (instead of 4× per vertex in the vertex shader)
     if (this.splatProjection && this.mesh && projectionDirty) {
-      this.splatProjection.updateUniforms(
-        camera,
-        this.mesh.matrixWorld,
-        focalX,
-        focalY,
-        isOrthographic,
-        cameraNear,
-        this.currentSplatSizeScale,
-        this.uniforms.viewportSize.value
-      );
-      this.splatProjection.dispatch(renderer);
+      this.runProfileChunk("Projection compute dispatch", () => {
+        this.splatProjection!.updateUniforms(
+          camera,
+          this.mesh!.matrixWorld,
+          focalX,
+          focalY,
+          isOrthographic,
+          cameraNear,
+          this.currentSplatSizeScale,
+          this.uniforms!.viewportSize.value
+        );
+        this.splatProjection!.dispatch(renderer);
+      });
     }
     if (projectionDirty) {
       this.lastProjectionSnapshot = captureCameraProjectionSnapshot(camera, this.uniforms.viewportSize.value);
@@ -533,36 +557,44 @@ export class SplatController {
     this.statusFrameCounter++;
     const sortModeChanged = this.lastSortStats && this.lastSortStats.sortMode !== this.lastReportedSortMode;
     if (this.setActorStatusRef && this.lastSortStats && (sortModeChanged || this.statusFrameCounter >= 10)) {
-      this.statusFrameCounter = 0;
-      this.lastReportedSortMode = this.lastSortStats.sortMode;
-      this.lastExactVisibleCenters = this.computeExactVisibleCenterCount(camera);
-      this.setActorStatusRef({
-        values: {
-          backend: "webgpu-tsl",
-          loadState: "loaded",
-          pointCount: this.pointCount,
-          boundsMin: this.bounds?.min ?? "n/a",
-          boundsMax: this.bounds?.max ?? "n/a",
-          sortMethod: "gpu-bitonic-temporal",
-          projectionPrepass: this.splatProjection !== null,
-          cameraNear: Math.round(cameraNear * 10000) / 10000,
-          chunkCount: this.chunkData?.chunks.length ?? 0,
-          visibleChunks: this.lastVisibleChunks,
-          chunkKeptSplats: this.lastChunkKeptSplats,
-          chunkCulledSplats: Math.max(0, this.pointCount - this.lastChunkKeptSplats),
-          chunkKeptRatio: this.pointCount > 0 ? Math.round((this.lastChunkKeptSplats / this.pointCount) * 1000) / 1000 : 0,
-          exactVisibleCenters: this.lastExactVisibleCenters,
-          exactVisibleRatio: this.pointCount > 0 ? Math.round((this.lastExactVisibleCenters / this.pointCount) * 1000) / 1000 : 0,
-          cullingDebug: "chunk-local-obb",
-          // Per-frame sort stats
-          sortMode: this.lastSortStats.sortMode,
-          sortDispatches: this.lastSortStats.dispatches,
-          framesSinceFullSort: this.lastSortStats.framesSinceFullSort,
-          angleSinceSort: Math.round(this.lastSortStats.angleSinceSort * 1000) / 1000,
-        },
-        updatedAtIso: new Date().toISOString()
+      this.runProfileChunk("Status refresh", () => {
+        this.statusFrameCounter = 0;
+        this.lastReportedSortMode = this.lastSortStats!.sortMode;
+        this.lastExactVisibleCenters = this.computeExactVisibleCenterCount(camera);
+        this.setActorStatusRef!({
+          values: {
+            backend: "webgpu-tsl",
+            loadState: "loaded",
+            pointCount: this.pointCount,
+            boundsMin: this.bounds?.min ?? "n/a",
+            boundsMax: this.bounds?.max ?? "n/a",
+            sortMethod: "gpu-bitonic-temporal",
+            projectionPrepass: this.splatProjection !== null,
+            cameraNear: Math.round(cameraNear * 10000) / 10000,
+            chunkCount: this.chunkData?.chunks.length ?? 0,
+            visibleChunks: this.lastVisibleChunks,
+            chunkKeptSplats: this.lastChunkKeptSplats,
+            chunkCulledSplats: Math.max(0, this.pointCount - this.lastChunkKeptSplats),
+            chunkKeptRatio: this.pointCount > 0 ? Math.round((this.lastChunkKeptSplats / this.pointCount) * 1000) / 1000 : 0,
+            exactVisibleCenters: this.lastExactVisibleCenters,
+            exactVisibleRatio: this.pointCount > 0 ? Math.round((this.lastExactVisibleCenters / this.pointCount) * 1000) / 1000 : 0,
+            cullingDebug: "chunk-local-obb",
+            sortMode: this.lastSortStats!.sortMode,
+            sortDispatches: this.lastSortStats!.dispatches,
+            framesSinceFullSort: this.lastSortStats!.framesSinceFullSort,
+            angleSinceSort: Math.round(this.lastSortStats!.angleSinceSort * 1000) / 1000
+          },
+          updatedAtIso: new Date().toISOString()
+        });
       });
     }
+  }
+
+  private runProfileChunk<T>(label: string, run: () => T): T {
+    if (this.profileChunkRef) {
+      return this.profileChunkRef(label, run);
+    }
+    return run();
   }
 
   // ---------------------------------------------------------------------------

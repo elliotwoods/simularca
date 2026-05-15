@@ -2,7 +2,7 @@
 
 ## Live Debug Bridge
 - When debugging a running local Electron dev session, prefer the live debug bridge over asking the user to paste DevTools snippets.
-- This bridge is dev-only. It is available only while Rehearse Engine is running via the Electron dev flow.
+- This bridge is dev-only. It is available only while Simularca is running via the Electron dev flow.
 
 ## Discovery Flow
 1. Check `logs/codex-debug-session.json`.
@@ -23,7 +23,7 @@
   - `node scripts/debug-session.mjs logs 200`
 
 ## When To Use Which Mode
-- Use `renderer --console` first for app-level inspection because it reuses Rehearse Engine's structured console runtime.
+- Use `renderer --console` first for app-level inspection because it reuses Simularca's structured console runtime.
 - Use `renderer --eval` when you need direct access to `kernel`, `store`, `document`, `window`, or live event/canvas state.
 - Use `main` when the bug may be in Electron shell behavior, window focus/fullscreen state, preload wiring, or `webContents`.
 

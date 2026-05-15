@@ -9,6 +9,7 @@ import {
   resolveNewActorFileDropAction,
   resolveSelectedActorFileImportTarget
 } from "@/features/imports/actorFileImport";
+import { ActorProfilingService } from "@/render/profiling";
 
 const fileDefinition: FileParameterDefinition = {
   key: "assetId",
@@ -121,7 +122,8 @@ function createKernelStub(): AppKernel {
       },
       listByKind: (kind: string) => (kind === "actor" ? [descriptor, multiFileDescriptor] : [])
     } as unknown as AppKernel["descriptorRegistry"],
-    clock: {} as AppKernel["clock"]
+    clock: {} as AppKernel["clock"],
+    profiler: new ActorProfilingService()
   };
 }
 
@@ -133,7 +135,7 @@ describe("importFileAsActor", () => {
       descriptorId: "actor.mesh",
       sourcePath: "C:\\imports\\tree.obj",
       fileName: "tree.obj",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
 
     const actor = kernel.store.getState().state.actors[actorId];
@@ -148,7 +150,7 @@ describe("importFileAsActor", () => {
       descriptorId: "actor.mesh",
       sourcePath: "C:\\imports\\site.model.v2.obj",
       fileName: "site.model.v2.obj",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
 
     expect(kernel.store.getState().state.actors[actorId]?.name).toBe("site.model.v2");
@@ -161,7 +163,7 @@ describe("importFileAsActor", () => {
       descriptorId: "actor.mesh",
       sourcePath: "C:\\imports\\README",
       fileName: "README",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
 
     expect(kernel.store.getState().state.actors[actorId]?.name).toBe("README");
@@ -174,7 +176,7 @@ describe("importFileAsActor", () => {
       descriptorId: "actor.mesh",
       sourcePath: "C:\\imports\\.env",
       fileName: ".env",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
 
     expect(kernel.store.getState().state.actors[actorId]?.name).toBe(".env");
@@ -187,13 +189,13 @@ describe("importFileAsActor", () => {
       descriptorId: "actor.mesh",
       sourcePath: "C:\\imports\\Tree.obj",
       fileName: "Tree.obj",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
     const secondId = await importFileAsActor(kernel, {
       descriptorId: "actor.mesh",
       sourcePath: "C:\\imports\\Tree.fbx.obj",
       fileName: "Tree.obj",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
 
     expect(kernel.store.getState().state.actors[firstId]?.name).toBe("Tree");
@@ -288,7 +290,7 @@ describe("importFileAsActor", () => {
       actorId,
       definition: fileDefinition,
       sourcePath: "C:\\imports\\tree.obj",
-      projectName: "demo"
+      projectPath: "/p/demo.simularca"
     });
 
     const actor = kernel.store.getState().state.actors[actorId];

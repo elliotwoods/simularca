@@ -23,11 +23,26 @@ interface LiveDebugServerOptions {
   buildKind: "dev" | "build";
   getLogsRoot(): string;
   getRuntimeLogFilePath(): string;
-  writeRuntimeLog(scope: string, message: string, metadata?: unknown): void;
+  writeRuntimeLog(scope: string, message: string, metadata?: unknown, severity?: "error" | "warn" | "info"): void;
 }
 
 interface JsonResponseInit {
   status?: number;
+}
+
+export function isIgnorablePipeError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = "code" in error && typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : null;
+  if (code === "EPIPE" || code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED" || code === "ERR_SOCKET_CLOSED") {
+    return true;
+  }
+  const message =
+    "message" in error && typeof (error as { message?: unknown }).message === "string"
+      ? (error as { message: string }).message
+      : "";
+  return /broken pipe|socket hang up|write after end/i.test(message);
 }
 
 function serializeUnknown(value: unknown): string {
@@ -94,6 +109,25 @@ function writeJson(response: ServerResponse, payload: unknown, init: JsonRespons
   response.end(JSON.stringify(payload, null, 2));
 }
 
+export function canWriteJsonResponse(response: ServerResponse): boolean {
+  return !response.destroyed && !response.writableEnded && !(response.socket?.destroyed ?? false);
+}
+
+export function writeJsonSafe(response: ServerResponse, payload: unknown, init: JsonResponseInit = {}): boolean {
+  if (!canWriteJsonResponse(response)) {
+    return false;
+  }
+  try {
+    writeJson(response, payload, init);
+    return true;
+  } catch (error) {
+    if (isIgnorablePipeError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function tailRuntimeLog(filePath: string, maxLines: number): Promise<{ filePath: string; lineCount: number; lines: string[] }> {
   try {
     const raw = await fs.readFile(filePath, "utf8");
@@ -127,7 +161,7 @@ async function executeRendererCommand(request: RendererDebugExecuteRequest): Pro
   try {
     const result = (await targetWindow.webContents.executeJavaScript(
       `(() => {
-        const bridge = window.__REHEARSE_ENGINE_DEBUG__;
+        const bridge = window.__SIMULARCA_DEBUG__;
         if (!bridge || typeof bridge.${methodName} !== "function") {
           return {
             ok: false,
@@ -154,7 +188,7 @@ async function executeRendererSessionInfo(): Promise<unknown> {
   try {
     return await targetWindow.webContents.executeJavaScript(
       `(() => {
-        const bridge = window.__REHEARSE_ENGINE_DEBUG__;
+        const bridge = window.__SIMULARCA_DEBUG__;
         if (!bridge || typeof bridge.sessionInfo !== "function") {
           return null;
         }
@@ -288,20 +322,29 @@ export async function startLiveDebugServer(options: LiveDebugServerOptions): Pro
   };
 
   server = http.createServer(async (request, response) => {
+    response.on("error", (error) => {
+      if (!isIgnorablePipeError(error)) {
+        options.writeRuntimeLog("debug-bridge", "Response stream error", {
+          method: request.method,
+          url: request.url,
+          error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error)
+        }, "warn");
+      }
+    });
     if (!isLoopbackAddress(request.socket.remoteAddress)) {
-      writeJson(response, { error: "Loopback connections only." }, { status: 403 });
+      writeJsonSafe(response, { error: "Loopback connections only." }, { status: 403 });
       return;
     }
     const authHeader = request.headers.authorization ?? "";
     if (authHeader !== `Bearer ${token}`) {
-      writeJson(response, { error: "Unauthorized." }, { status: 401 });
+      writeJsonSafe(response, { error: "Unauthorized." }, { status: 401 });
       return;
     }
 
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
     try {
       if (request.method === "GET" && url.pathname === "/health") {
-        writeJson(response, {
+        writeJsonSafe(response, {
           ok: true,
           pid: process.pid,
           startedAtIso,
@@ -318,13 +361,13 @@ export async function startLiveDebugServer(options: LiveDebugServerOptions): Pro
       }
 
       if (request.method === "GET" && url.pathname === "/windows") {
-        writeJson(response, { ok: true, windows: listWindows() });
+        writeJsonSafe(response, { ok: true, windows: listWindows() });
         return;
       }
 
       if (request.method === "GET" && url.pathname === "/logs/runtime") {
         const tail = Number(url.searchParams.get("tail") ?? "200");
-        writeJson(response, {
+        writeJsonSafe(response, {
           ok: true,
           ...(await tailRuntimeLog(options.getRuntimeLogFilePath(), tail))
         });
@@ -333,24 +376,39 @@ export async function startLiveDebugServer(options: LiveDebugServerOptions): Pro
 
       if (request.method === "POST" && url.pathname === "/renderer/execute") {
         const body = (await readJsonBody(request)) as RendererDebugExecuteRequest;
-        writeJson(response, await executeRendererCommand(body));
+        writeJsonSafe(response, await executeRendererCommand(body));
         return;
       }
 
       if (request.method === "POST" && url.pathname === "/main/execute") {
         const body = (await readJsonBody(request)) as MainDebugExecuteRequest;
-        writeJson(response, await executeMainCommand(body, options.getRuntimeLogFilePath()));
+        writeJsonSafe(response, await executeMainCommand(body, options.getRuntimeLogFilePath()));
         return;
       }
 
-      writeJson(response, { error: "Not found." }, { status: 404 });
+      writeJsonSafe(response, { error: "Not found." }, { status: 404 });
     } catch (error) {
+      if (isIgnorablePipeError(error) || !canWriteJsonResponse(response)) {
+        return;
+      }
       options.writeRuntimeLog("debug-bridge", "Request failed", {
         method: request.method,
         url: request.url,
         error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error)
-      });
-      writeJson(response, toExecutionError("Debug bridge request failed.", error), { status: 500 });
+      }, "warn");
+      writeJsonSafe(response, toExecutionError("Debug bridge request failed.", error), { status: 500 });
+    }
+  });
+  server.on("clientError", (error, socket) => {
+    if (isIgnorablePipeError(error)) {
+      socket.destroy();
+      return;
+    }
+    options.writeRuntimeLog("debug-bridge", "Client error", {
+      error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error)
+    }, "warn");
+    if (!socket.destroyed) {
+      socket.destroy();
     }
   });
 

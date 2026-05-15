@@ -11,10 +11,13 @@ import { OutputShader } from "three/examples/jsm/shaders/OutputShader.js";
 import { bloom } from "three/examples/jsm/tsl/display/BloomNode.js";
 import { film } from "three/examples/jsm/tsl/display/FilmNode.js";
 import { rgbShift } from "three/examples/jsm/tsl/display/RGBShiftNode.js";
+import { ao } from "three/examples/jsm/tsl/display/GTAONode.js";
+import * as TSL from "three/tsl";
 import {
   clamp,
   float,
   fract,
+  mix,
   renderOutput,
   screenCoordinate,
   vec2,
@@ -22,6 +25,9 @@ import {
   vec4,
   dot
 } from "three/tsl";
+const abs = (TSL as any).abs as (x: any) => any;
+const step = (TSL as any).step as (edge: any, x: any) => any;
+import type { Camera } from "three";
 import type { ScenePostProcessingSettings, SceneToneMappingMode, SceneTonemappingSettings } from "@/core/types";
 
 const DISPLAY_DISTANCE_MAX = Math.SQRT2;
@@ -199,13 +205,35 @@ function applyWebGpuGrain(node: any, grain: ScenePostProcessingSettings["grain"]
   return film(node, float(grain.intensity));
 }
 
+export interface WebGpuAoSourceNodes {
+  meshDepth: any;
+  meshNormal: any;
+  sceneDepth: any;
+  camera: Camera;
+}
+
 export function buildWebGpuToneMappedOutputNode(
   inputNode: any,
   outputColorSpace: string,
   tonemapping: SceneTonemappingSettings,
-  postProcessing: ScenePostProcessingSettings
+  postProcessing: ScenePostProcessingSettings,
+  aoSources: WebGpuAoSourceNodes | null
 ): any {
   let linearNode = inputNode;
+
+  if (postProcessing.ambientOcclusion.enabled && aoSources) {
+    const settings = postProcessing.ambientOcclusion;
+    const aoPass = ao(aoSources.meshDepth, aoSources.meshNormal, aoSources.camera);
+    aoPass.radius.value = settings.radius;
+    aoPass.thickness.value = settings.thickness;
+    aoPass.distanceExponent.value = settings.distanceExponent;
+    aoPass.scale.value = settings.scale;
+    aoPass.samples.value = settings.samples;
+    aoPass.resolutionScale = settings.resolutionScale;
+    const aoTex = aoPass.getTextureNode();
+    const meshIsVisible = step(abs(aoSources.meshDepth.sub(aoSources.sceneDepth)), float(1e-4));
+    linearNode = linearNode.mul(mix(vec4(1.0), aoTex, meshIsVisible));
+  }
 
   if (postProcessing.bloom.enabled) {
     linearNode = linearNode.add(

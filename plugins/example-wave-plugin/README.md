@@ -1,6 +1,6 @@
 # Example Wave Plugin
 
-Reference plugin package for the Rehearse Engine app.
+Reference plugin package for the Simularca app.
 
 ## Purpose
 - Demonstrates the handshake contract expected by the host loader.

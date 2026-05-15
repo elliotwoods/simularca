@@ -171,11 +171,11 @@ export async function importFileIntoActor(
     actorId: string;
     definition: FileParameterDefinition;
     sourcePath: string;
-    projectName: string;
+    projectPath: string;
   }
 ): Promise<FileImportResult> {
   const imported = await importFileForActorParam(kernel, {
-    projectName: args.projectName,
+    projectPath: args.projectPath,
     sourcePath: args.sourcePath,
     definition: args.definition
   });
@@ -199,7 +199,7 @@ export async function importFileAsActor(
     descriptorId: string;
     sourcePath: string;
     fileName: string;
-    projectName: string;
+    projectPath: string;
   }
 ): Promise<string> {
   const option = optionFromDescriptor(kernel, args.descriptorId);
@@ -215,7 +215,7 @@ export async function importFileAsActor(
   kernel.store.getState().actions.renameNode({ kind: "actor", id: actorId }, actorNameFromFileName(args.fileName));
 
   const importedAsset = await importFileForActorParam(kernel, {
-    projectName: args.projectName,
+    projectPath: args.projectPath,
     sourcePath: args.sourcePath,
     definition: option.fileDefinition
   });

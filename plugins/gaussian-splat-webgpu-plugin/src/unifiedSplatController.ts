@@ -6,6 +6,7 @@ interface SyncContext {
   actor: { id: string; params: Record<string, unknown> };
   state: unknown;
   object: unknown;
+  profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: unknown): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
 }

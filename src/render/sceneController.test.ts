@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { createInitialState } from "@/core/defaults";
 import type { ActorNode, ActorRuntimeStatus } from "@/core/types";
-import { buildEnvironmentProbeSelectedActorSignature } from "@/render/sceneController";
+import {
+  buildEnvironmentProbeSelectedActorSignature,
+  computeAnimationClipTimeSeconds,
+  computeActorObjectVisibility
+} from "@/render/sceneController";
 
 function createMeshActor(): ActorNode {
   return {
@@ -24,6 +28,31 @@ function createMeshActor(): ActorNode {
       assetId: "",
       materialId: "",
       materialSlots: {}
+    }
+  };
+}
+
+function createCurveActor(): ActorNode {
+  return {
+    id: "actor.curve",
+    name: "Curve",
+    kind: "actor",
+    actorType: "curve",
+    enabled: true,
+    visibilityMode: "visible",
+    pluginType: undefined,
+    parentActorId: null,
+    childActorIds: [],
+    componentIds: [],
+    transform: {
+      position: [0, 0, 0],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1]
+    },
+    params: {
+      kind: "spline",
+      closed: false,
+      points: []
     }
   };
 }
@@ -68,5 +97,38 @@ describe("buildEnvironmentProbeSelectedActorSignature", () => {
     const after = buildEnvironmentProbeSelectedActorSignature(actor.id, state);
 
     expect(before).not.toBe(after);
+  });
+});
+
+describe("computeAnimationClipTimeSeconds", () => {
+  test("wraps looping animations against simulation time", () => {
+    expect(computeAnimationClipTimeSeconds(3.5, 1, 0, 2, true)).toBeCloseTo(1.5, 6);
+    expect(computeAnimationClipTimeSeconds(0.5, 2, 0.25, 2, true)).toBeCloseTo(1.25, 6);
+  });
+
+  test("clamps non-looping animations", () => {
+    expect(computeAnimationClipTimeSeconds(10, 1, 0, 2, false)).toBeCloseTo(2, 6);
+    expect(computeAnimationClipTimeSeconds(-2, 1, 0, 2, false)).toBeCloseTo(0, 6);
+  });
+});
+
+describe("computeActorObjectVisibility", () => {
+  test("hides curve actors when debug helpers are disabled", () => {
+    expect(computeActorObjectVisibility(createCurveActor(), false, false)).toBe(false);
+    expect(computeActorObjectVisibility(createCurveActor(), false, true)).toBe(true);
+  });
+
+  test("keeps standard actor visibility independent of debug helper state", () => {
+    expect(computeActorObjectVisibility(createMeshActor(), false, false)).toBe(true);
+    expect(computeActorObjectVisibility(createMeshActor(), false, true)).toBe(true);
+  });
+
+  test("still respects actor visibility mode for debug-only actors", () => {
+    const curve = {
+      ...createCurveActor(),
+      visibilityMode: "selected" as const
+    };
+    expect(computeActorObjectVisibility(curve, false, true)).toBe(false);
+    expect(computeActorObjectVisibility(curve, true, true)).toBe(true);
   });
 });

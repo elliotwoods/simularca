@@ -8,6 +8,7 @@ import { dxfReferenceActorDescriptor } from "@/features/actors/descriptors/dxfRe
 import { environmentProbeActorDescriptor } from "@/features/actors/descriptors/environmentProbeActor";
 import { mistVolumeActorDescriptor } from "@/features/actors/descriptors/mistVolumeActor";
 import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiveActor";
+import { ActorProfilingService } from "@/render/profiling";
 
 function createKernelStub(): AppKernel {
   const store = createAppStore("electron-rw");
@@ -29,7 +30,8 @@ function createKernelStub(): AppKernel {
         primitiveActorDescriptor
       ]
     } as unknown as AppKernel["descriptorRegistry"],
-    clock: {} as AppKernel["clock"]
+    clock: {} as AppKernel["clock"],
+    profiler: new ActorProfilingService()
   };
 }
 

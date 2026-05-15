@@ -19,6 +19,18 @@ export interface PluginViewComponentProps {
   actions: PluginViewActions;
 }
 
+export interface PluginInspectorComponentProps {
+  plugin: RegisteredPlugin;
+}
+
+export interface PluginRotoControlComponentProps {
+  plugin: RegisteredPlugin;
+}
+
+export interface PluginRuntimeComponentProps {
+  plugin: RegisteredPlugin;
+}
+
 export interface PluginViewDescriptor {
   viewType: string;
   title: string;
@@ -32,6 +44,9 @@ export interface PluginDefinition {
   actorDescriptors: ReloadableDescriptor[];
   componentDescriptors: ReloadableDescriptor[];
   viewDescriptors: PluginViewDescriptor[];
+  inspectorComponent?: ComponentType<PluginInspectorComponentProps>;
+  rotoControlComponent?: ComponentType<PluginRotoControlComponentProps>;
+  runtimeComponent?: ComponentType<PluginRuntimeComponentProps>;
 }
 
 export interface PluginDefinitionInput {
@@ -40,6 +55,9 @@ export interface PluginDefinitionInput {
   actorDescriptors: ReloadableDescriptor[];
   componentDescriptors: ReloadableDescriptor[];
   viewDescriptors?: PluginViewDescriptor[];
+  inspectorComponent?: ComponentType<PluginInspectorComponentProps>;
+  rotoControlComponent?: ComponentType<PluginRotoControlComponentProps>;
+  runtimeComponent?: ComponentType<PluginRuntimeComponentProps>;
 }
 
 export interface RegisteredPlugin {
@@ -67,6 +85,7 @@ export interface PluginApi {
     source?: RegisteredPlugin["source"]
   ): PluginRegistrationResult;
   listPlugins(): RegisteredPlugin[];
+  getPluginById(pluginId: string): RegisteredPlugin | null;
   getPluginByModulePath(modulePath: string): RegisteredPlugin | null;
   subscribe(listener: () => void): () => void;
   getRevision(): number;
@@ -166,6 +185,9 @@ export function createPluginApi(registry: DescriptorRegistry, hotReloadManager: 
     },
     listPlugins() {
       return [...plugins.values()];
+    },
+    getPluginById(pluginId) {
+      return plugins.get(pluginId) ?? null;
     },
     getPluginByModulePath(modulePath) {
       for (const entry of plugins.values()) {

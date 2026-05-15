@@ -10,19 +10,19 @@ interface ImageRefFieldProps {
 
 export const ImageRefField: React.FC<ImageRefFieldProps> = ({ value, onChange, label }) => {
   const assets = useAppStore((s) => s.state.assets);
-  const projectName = useAppStore((s) => s.state.activeProjectName);
+  const activeProject = useAppStore((s) => s.state.activeProject);
   const kernel = useKernel();
 
   const imageAssets = assets.filter((a) => a.kind === "image").sort((a, b) => a.sourceFileName.localeCompare(b.sourceFileName));
 
   const handleImport = async () => {
-    if (!window.electronAPI) return;
+    if (!window.electronAPI || !activeProject) return;
     const sourcePath = await window.electronAPI.openFileDialog({
       title: "Select image",
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "tif"] }]
     });
     if (!sourcePath) return;
-    const asset = await window.electronAPI.importAsset({ projectName, sourcePath, kind: "image" });
+    const asset = await window.electronAPI.importAsset({ projectPath: activeProject.path, sourcePath, kind: "image" });
     kernel.store.getState().actions.addAssets([asset]);
     onChange(asset.id);
   };

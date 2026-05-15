@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
+import { isPluginEnabled } from "@/features/plugins/pluginEnabled";
 import type { ParameterValues } from "@/core/types";
 
 interface PluginViewPanelProps {
@@ -17,6 +18,10 @@ export function PluginViewPanel(props: PluginViewPanelProps) {
   const runtimeStatus = useAppStore((store) => {
     const view = store.state.pluginViews[props.pluginViewId];
     return view ? store.state.actorStatusByActorId[view.actorId] ?? null : null;
+  });
+  const pluginEnabled = useAppStore((store) => {
+    const view = store.state.pluginViews[props.pluginViewId];
+    return view ? isPluginEnabled(store.state.pluginsEnabled, view.pluginId) : true;
   });
 
   const descriptor = useMemo(() => {
@@ -57,6 +62,10 @@ export function PluginViewPanel(props: PluginViewPanelProps) {
 
   if (!pluginView) {
     return <div className="panel-empty">Plugin view not found.</div>;
+  }
+
+  if (!pluginEnabled) {
+    return <div className="panel-empty">Plugin is disabled.</div>;
   }
 
   if (descriptor?.component && actions) {

@@ -22,14 +22,14 @@ export interface FileImportResult {
 export async function importFileForActorParam(
   kernel: AppKernel,
   args: {
-    projectName: string;
+    projectPath: string;
     sourcePath: string;
     definition: FileParameterDefinition;
   }
 ): Promise<FileImportResult> {
   if (args.definition.import.mode === "transcode-hdri") {
     const asset = await importHdriToKtx2(kernel, {
-      projectName: args.projectName,
+      projectPath: args.projectPath,
       sourcePath: args.sourcePath,
       options: args.definition.import.options
     });
@@ -39,7 +39,7 @@ export async function importFileForActorParam(
   // DAE import: capture textures and create materials
   if (args.definition.import.mode === "import-asset" && args.sourcePath.toLowerCase().endsWith(".dae")) {
     const result = await kernel.storage.importDae({
-      projectName: args.projectName,
+      projectPath: args.projectPath,
       sourcePath: args.sourcePath
     });
 
@@ -76,7 +76,7 @@ export async function importFileForActorParam(
   }
 
   const asset = await kernel.storage.importAsset({
-    projectName: args.projectName,
+    projectPath: args.projectPath,
     sourcePath: args.sourcePath,
     kind: args.definition.import.kind
   });
