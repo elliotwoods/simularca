@@ -107,6 +107,8 @@ Use local filesystem default location in AppData, etc for:
 
 Projects should live in their own folders. Also allow for filetype association
 
+Export/import packages for projects
+
 # Camera Path
 
 * Show seconds ticks along the camera path
