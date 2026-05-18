@@ -63,7 +63,8 @@ plugins-local/*
 !plugins-local/.gitkeep
 
 .codex/
-.claude/
+.claude/*
+!.claude/commands/
 
 tests/mylar-baseline/.live-cache/
 tests/mylar-baseline/
