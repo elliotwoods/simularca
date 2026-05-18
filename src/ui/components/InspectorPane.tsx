@@ -20,6 +20,7 @@ import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import { resolveActorPlugin } from "@/features/plugins/pluginViews";
 import { usePluginRegistryRevision } from "@/features/plugins/usePluginRegistryRevision";
+import { buildPluginHostBridge } from "@/features/plugins/usePluginHostBridge";
 import { isPluginEnabled } from "@/features/plugins/pluginEnabled";
 import {
   DEFAULT_POST_PROCESSING,
@@ -4638,6 +4639,12 @@ export function InspectorPane() {
     const PluginRotoControl = selectedPlugin.definition.rotoControlComponent;
     const pluginId = selectedPlugin.definition.id;
     const pluginEnabledValue = isPluginEnabled(appState.pluginsEnabled, pluginId);
+    const pluginHost = buildPluginHostBridge(
+      kernel,
+      appState.selection,
+      appState.actors,
+      kernel.descriptorRegistry.listByKind("actor")
+    );
     return (
       <>
         <div className="inspector-pane-root">
@@ -4666,7 +4673,7 @@ export function InspectorPane() {
         </div>
         {PluginRotoControl ? <PluginRotoControl plugin={selectedPlugin} /> : null}
         {PluginInspector ? (
-          <PluginInspector plugin={selectedPlugin} />
+          <PluginInspector plugin={selectedPlugin} host={pluginHost} />
         ) : (
           <div className="inspector-pane-root custom-inspector">
             <div className="inspector-empty">This plugin does not expose inspector properties.</div>

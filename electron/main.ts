@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, shell, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, session, shell, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -1323,6 +1323,33 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false
     }
+  });
+
+  // Renderer-side plugins that drive USB-MIDI hardware control surfaces (e.g.
+  // the Electra One surface plugin) use the browser Web MIDI API, including
+  // SysEx (navigator.requestMIDIAccess({ sysex: true })). Electra is MIDI-only
+  // — there is no Node-side MIDI host for it — so the renderer must be allowed
+  // the midi/midiSysex permissions. Before this app set no permission handler,
+  // which meant Electron's default of granting permission requests applied;
+  // these handlers preserve that behaviour while making the MIDI grant explicit
+  // (the `MIDI_PERMISSIONS` check documents intent — the effective result is
+  // unchanged for every other permission).
+  const MIDI_PERMISSIONS = new Set(["midi", "midiSysex"]);
+  const windowSession = mainWindow.webContents.session;
+  windowSession.setPermissionCheckHandler((_webContents, permission) => {
+    if (MIDI_PERMISSIONS.has(permission)) {
+      return true;
+    }
+    // Behaviour-preserving: matches Electron's prior no-handler default.
+    return true;
+  });
+  windowSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (MIDI_PERMISSIONS.has(permission)) {
+      callback(true);
+      return;
+    }
+    // Behaviour-preserving: matches Electron's prior no-handler default.
+    callback(true);
   });
 
   void writeRuntimeLog("window", "Creating BrowserWindow", {

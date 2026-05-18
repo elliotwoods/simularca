@@ -2,7 +2,13 @@ import type { ReactNode, ComponentType } from "react";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import { DescriptorRegistry } from "@/core/hotReload/descriptorRegistry";
 import type { HotReloadManager } from "@/core/hotReload/hotReloadManager";
-import type { ActorNode, ActorRuntimeStatus, ParameterValues, PluginViewState } from "@/core/types";
+import type {
+  ActorNode,
+  ActorRuntimeStatus,
+  ParameterSchema,
+  ParameterValues,
+  PluginViewState
+} from "@/core/types";
 import type { PluginManifest } from "./contracts";
 
 export interface PluginViewActions {
@@ -10,6 +16,47 @@ export interface PluginViewActions {
   openSiblingView(viewType: string): void;
   focusView(viewId: string): void;
   closeView(viewId: string): void;
+}
+
+/**
+ * A snapshot of one editor-selected actor, handed to app-wide plugin
+ * components (runtime / inspector) via {@link PluginHostBridge}. External
+ * plugins cannot import host modules (`@/...`) and so cannot reach the kernel
+ * store directly; this is their sanctioned, stable view of "what is selected".
+ */
+export interface PluginHostActorSnapshot {
+  id: string;
+  name: string;
+  actorType: string;
+  pluginType?: string;
+  /** Current parameter values (`actor.params`). */
+  params: ParameterValues;
+  /**
+   * The resolved descriptor schema for this actor, or `null` when no
+   * descriptor is registered for its type (no schema available).
+   */
+  schema: ParameterSchema | null;
+}
+
+/**
+ * Host bridge passed to app-wide plugin components. It is recomputed by the
+ * host on selection / parameter / descriptor changes, so a component that
+ * reads it re-renders when the selection or its values change. Mutations go
+ * through the same kernel path the built-in inspector UI uses.
+ */
+export interface PluginHostBridge {
+  /** Editor-selected actors, in selection order. Empty when none selected. */
+  selectedActors: PluginHostActorSnapshot[];
+  /**
+   * Apply a partial parameter update to an actor. `history` defaults to
+   * `true` (undoable, like a deliberate inspector edit); pass `false` for
+   * high-frequency live edits (e.g. a hardware encoder being turned).
+   */
+  updateActorParams(
+    actorId: string,
+    partial: ParameterValues,
+    options?: { history?: boolean }
+  ): void;
 }
 
 export interface PluginViewComponentProps {
@@ -21,6 +68,8 @@ export interface PluginViewComponentProps {
 
 export interface PluginInspectorComponentProps {
   plugin: RegisteredPlugin;
+  /** Live view of editor selection + a param-write path. See {@link PluginHostBridge}. */
+  host: PluginHostBridge;
 }
 
 export interface PluginRotoControlComponentProps {
@@ -29,6 +78,8 @@ export interface PluginRotoControlComponentProps {
 
 export interface PluginRuntimeComponentProps {
   plugin: RegisteredPlugin;
+  /** Live view of editor selection + a param-write path. See {@link PluginHostBridge}. */
+  host: PluginHostBridge;
 }
 
 export interface PluginViewDescriptor {
