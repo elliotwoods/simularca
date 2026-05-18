@@ -64,6 +64,7 @@ import type { ActorProfileMeta } from "@/render/profiling";
 import { collectActorRenderOrder } from "@/render/sceneRenderOrder";
 import { pruneInvalidSceneGraph } from "@/render/sceneGraphUtils";
 import { enableAOMeshLayer } from "@/render/aoLayer";
+import { mergeImportedSceneByMaterial } from "@/features/mesh/meshMerge";
 
 const GAUSSIAN_RENDER_ROOT_NAME = "gaussian-splat-render-root";
 const GAUSSIAN_RENDER_MESH_NAME = "gaussian-splat-render";
@@ -3379,6 +3380,12 @@ export class SceneController {
       return;
     }
     const prevEmissiveNode = m.emissiveNode;
+    // `materialEmissive` is a reference node bound to `material.emissive`. Materials without an
+    // emissive Color (LineBasicMaterial, PointsMaterial, SpriteMaterial, MeshBasicMaterial, ...)
+    // would back a color uniform with `undefined`, crashing NodeUniformsGroup.updateColor every
+    // frame. Only fall back to it when the material actually carries an emissive Color.
+    const matEmissive = (material as unknown as { emissive?: { isColor?: boolean } }).emissive;
+    const hasEmissiveColor = matEmissive?.isColor === true;
     // Emissive injection: additive bright color over lit fragments. Bypasses lighting so the
     // band is always crisp regardless of shadow / surface normal orientation.
     const wrapped = (Fn as any)(() => {
@@ -3400,7 +3407,7 @@ export class SceneController {
       // remain visible even in dimly-lit areas.
       const intensity = 4.0;
       const edgeGlow = (vec3 as any)(u.color).mul(mask).mul(intensity);
-      const baseEmissive = prevEmissiveNode ?? (materialEmissive as unknown);
+      const baseEmissive = prevEmissiveNode ?? (hasEmissiveColor ? (materialEmissive as unknown) : null);
       if (baseEmissive != null) {
         return (baseEmissive as { add: (x: unknown) => unknown }).add(edgeGlow);
       }
@@ -4472,6 +4479,29 @@ export class SceneController {
           // Apply immediately so the bounds we measure below are in meters. The next
           // applyActorTransform pass will set this same value idempotently.
           renderRoot.scale.setScalar(detected);
+        }
+      }
+      // Imported CAD/Collada/FBX scenes can explode into thousands of tiny
+      // sub-meshes; the WebGPU per-object CPU cost then scales with face count
+      // (a 4k-object building cost ~80ms/frame). Merge static same-material
+      // geometry into a few draw objects. Skipped for animated/skinned/morph
+      // imports since per-node transforms are baked into the merged geometry.
+      {
+        const importAnimations = Array.isArray(animations)
+          ? animations
+          : Array.isArray((loadedObject as { animations?: unknown }).animations)
+            ? ((loadedObject as { animations?: THREE.AnimationClip[] }).animations ?? [])
+            : [];
+        const animFeatures = countAnimatedMeshFeatures(loadedObject);
+        if (
+          importAnimations.length === 0 &&
+          animFeatures.skinnedMeshCount === 0 &&
+          animFeatures.morphTargetMeshCount === 0
+        ) {
+          const mergeResult = mergeImportedSceneByMaterial(loadedObject);
+          if (mergeResult.merged) {
+            loadedObject = mergeResult.object;
+          }
         }
       }
       renderRoot.clear();
