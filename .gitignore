@@ -20,7 +20,9 @@ src/**/*.js
 src/**/*.js.map
 logs/
 .simularca-build-info.json
+.rehearse-engine-build-info.json
 plugins/*/.simularca-plugin-build-info.json
+plugins/*/.rehearse-engine-plugin-build-info.json
 plugins/*/src/pluginBuildInfo.generated.ts
 
 # Local environment and OS files
@@ -57,6 +59,8 @@ temp/
 tools/roto_control_sanity/.venv/
 plugins-external/*
 !plugins-external/.gitkeep
+plugins-local/*
+!plugins-local/.gitkeep
 
 .codex/
 .claude/

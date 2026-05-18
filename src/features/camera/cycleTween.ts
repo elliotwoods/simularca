@@ -1,5 +1,4 @@
-import type { AppState, CameraPreset, CameraState } from "@/core/types";
-import { cameraStateForPreset } from "@/features/camera/viewUtils";
+import type { CameraState } from "@/core/types";
 
 const ORTHOGRAPHIC_HALF_HEIGHT = 8;
 const MIN_ZOOM = 0.05;
@@ -7,15 +6,6 @@ const MAX_ZOOM = 200;
 const MIN_FOV = 5;
 const MAX_FOV = 170;
 const MIN_NEAR = 0.0001;
-
-export const CAMERA_PRESET_ORDER: CameraPreset[] = ["perspective", "isometric", "top", "left", "front", "back"];
-
-export interface CameraCycleTarget {
-  id: string;
-  label: string;
-  camera: CameraState;
-  source: "preset";
-}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -62,46 +52,6 @@ function fovForViewHeight(viewHeightValue: number, distanceValue: number): numbe
 function zoomForViewHeight(viewHeightValue: number): number {
   const safeHeight = Math.max(0.00001, viewHeightValue);
   return clamp((ORTHOGRAPHIC_HALF_HEIGHT * 2) / safeHeight, MIN_ZOOM, MAX_ZOOM);
-}
-
-export function buildCameraCycleTargets(_state: AppState): CameraCycleTarget[] {
-  return CAMERA_PRESET_ORDER.map((preset) => ({
-    id: `preset:${preset}`,
-    label: `Preset: ${preset}`,
-    camera: cameraStateForPreset(preset),
-    source: "preset"
-  }));
-}
-
-function cameraDistanceMetric(a: CameraState, b: CameraState): number {
-  const modePenalty = a.mode === b.mode ? 0 : 0.5;
-  const position = distance(a.position, b.position);
-  const target = distance(a.target, b.target);
-  const projection =
-    a.mode === "perspective"
-      ? Math.abs(a.fov - b.fov) * 0.01
-      : Math.abs((a.zoom || 1) - (b.zoom || 1)) * 0.5;
-  return modePenalty + position + target + projection;
-}
-
-export function findCurrentCycleIndex(currentCamera: CameraState, targets: CameraCycleTarget[]): number {
-  if (targets.length === 0) {
-    return -1;
-  }
-  let bestIndex = 0;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < targets.length; i += 1) {
-    const candidate = targets[i];
-    if (!candidate) {
-      continue;
-    }
-    const score = cameraDistanceMetric(currentCamera, candidate.camera);
-    if (score < bestScore) {
-      bestScore = score;
-      bestIndex = i;
-    }
-  }
-  return bestIndex;
 }
 
 export function easeInOutCubic(t: number): number {

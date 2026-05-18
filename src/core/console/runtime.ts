@@ -164,7 +164,6 @@ const METHOD_DOCS: ConsoleMethodDoc[] = [
   { path: "time.toggle", signature: "time.toggle()", description: "Toggle simulation.", examples: ["time.toggle()"] },
   { path: "time.step", signature: "time.step(frames?)", description: "Step simulation.", examples: ["time.step()", "time.step(5)"] },
   { path: "time.speed", signature: "time.speed(value)", description: "Set simulation speed preset.", examples: ["time.speed(2)"] },
-  { path: "camera.preset", signature: "camera.preset(name)", description: "Apply camera preset.", examples: ["camera.preset('isometric')"] },
   { path: "camera.state", signature: "camera.state()", description: "Get current camera.", examples: ["camera.state()"] },
   { path: "camera.debug", signature: "camera.debug()", description: "Inspect live/store camera sync state.", examples: ["camera.debug()"] },
   { path: "app.undo", signature: "app.undo()", description: "Undo.", examples: ["app.undo()"] },
@@ -821,10 +820,6 @@ function buildRuntimeApi(kernel: AppKernel) {
       }
     },
     camera: {
-      preset(name: "perspective" | "isometric" | "top" | "left" | "front" | "back") {
-        kernel.store.getState().actions.applyCameraPreset(name);
-        return kernel.store.getState().state.camera;
-      },
       state() {
         return kernel.store.getState().state.camera;
       },

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { CameraPreset, CameraState } from "@/core/types";
+import type { CameraState } from "@/core/types";
 
 const ORTHOGRAPHIC_HALF_HEIGHT = 8;
 const MIN_ZOOM = 0.05;
@@ -146,42 +146,6 @@ export function resolveRepeatedDirectionalShortcut(
   oppositeDirection: Extract<CameraViewDirection, "back" | "left" | "bottom">
 ): CameraViewDirection {
   return isCameraFacingDirection(camera, primaryDirection) ? oppositeDirection : primaryDirection;
-}
-
-export function cameraStateForPreset(preset: CameraPreset): CameraState {
-  const base: CameraState = {
-    mode: "orthographic",
-    position: [6, 4, 6],
-    target: [0, 0, 0],
-    fov: 50,
-    zoom: 1,
-    near: 0.01,
-    far: 1000
-  };
-  if (preset === "perspective") {
-    return {
-      ...base,
-      mode: "perspective",
-      position: [6, 4, 6]
-    };
-  }
-  if (preset === "isometric") {
-    return {
-      ...base,
-      mode: "orthographic",
-      position: [8, 8, 8]
-    };
-  }
-  if (preset === "top") {
-    return { ...base, position: [0, 15, 0.001] };
-  }
-  if (preset === "left") {
-    return { ...base, position: [-15, 0, 0] };
-  }
-  if (preset === "front") {
-    return { ...base, position: [0, 0, 15] };
-  }
-  return { ...base, position: [0, 0, -15] };
 }
 
 export function cameraStateForHomeView(): CameraState {
