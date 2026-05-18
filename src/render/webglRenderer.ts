@@ -280,7 +280,11 @@ export class WebGlViewport {
         this.activeCamera
       );
     }
-    this.cameraController.setPointerDownBlocker((event) => this.curveEditController?.willHandlePointerDown(event) ?? false);
+    this.cameraController.setPointerDownBlocker(
+      (event) =>
+        (this.curveEditController?.willHandlePointerDown(event) ?? false) ||
+        (this.actorTransformController?.willHandlePointerDown(event) ?? false)
+    );
   }
 
   public async start(): Promise<void> {
