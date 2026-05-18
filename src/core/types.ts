@@ -163,7 +163,7 @@ export interface ParameterDefinitionBase {
   groupLabel?: string;
   visibleWhen?: Array<{
     key: string;
-    equals: string | number | boolean;
+    equals: string | number | boolean | Array<string | number | boolean>;
   }>;
 }
 

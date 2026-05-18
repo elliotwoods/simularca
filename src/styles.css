@@ -1014,6 +1014,39 @@ select {
   opacity: 0.7;
 }
 
+.titlebar-popover-sort {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 0;
+  border: 1px solid var(--line);
+  background: #0a1426;
+}
+
+.titlebar-popover-sort-option {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.titlebar-popover-sort-option:hover {
+  color: var(--text);
+}
+
+.titlebar-popover-sort-option.is-active {
+  background: #12213a;
+  color: var(--text);
+}
+
+.titlebar-popover-sort-option + .titlebar-popover-sort-option {
+  border-left: 1px solid var(--line);
+}
+
 .titlebar-project-list-empty {
   padding: 8px 10px;
   color: var(--text-muted);
