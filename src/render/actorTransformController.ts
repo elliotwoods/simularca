@@ -84,6 +84,28 @@ export class ActorTransformController {
     this.transformControls.camera = camera;
   }
 
+  public willHandlePointerDown(event: PointerEvent): boolean {
+    return this.claimsPointerDown(event);
+  }
+
+  private claimsPointerDown(event: PointerEvent): boolean {
+    if (event.button !== 0 || !this.transformControls.object || this.mode === "none") {
+      return false;
+    }
+    if (this.transformControls.dragging) {
+      return true;
+    }
+    if (this.activeActorId && this.hasActiveCurveControlSelectionFor(this.activeActorId)) {
+      return false;
+    }
+    const pointer = this.pointerToNdc(event);
+    if (!pointer) {
+      return false;
+    }
+    this.transformControls.pointerHover(pointer);
+    return Boolean(this.transformControls.axis);
+  }
+
   public setMode(mode: ActorTransformMode): void {
     if (this.mode === mode) {
       return;
