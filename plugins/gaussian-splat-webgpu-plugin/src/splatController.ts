@@ -52,7 +52,7 @@ const COLOR_SPACE_APPLE_LOG = 3;
 
 /** Context shape passed from syncObject (matches plugin SceneHookContext subset). */
 interface SyncContext {
-  actor: { id: string; params: Record<string, unknown> };
+  actor: { id: string; params: Record<string, unknown>; enabled?: boolean; visibilityMode?: string };
   object: unknown;
   profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: unknown): void;
@@ -101,6 +101,11 @@ export class SplatController {
 
   private lastProjectionSnapshot: CameraProjectionSnapshot | null = null;
 
+  // Whether the owning actor is currently visible+enabled. When false the
+  // render root is hidden and the per-frame projection/sort compute is skipped
+  // entirely — a hidden/disabled splat must cost nothing.
+  private active = true;
+
   constructor(renderRoot: THREE.Group) {
     this.renderRoot = renderRoot;
   }
@@ -125,6 +130,18 @@ export class SplatController {
     // Save reference for per-frame status updates
     this.setActorStatusRef = context.setActorStatus;
     this.profileChunkRef = context.profileChunk ?? null;
+
+    // Respect actor visibility/enabled. The expensive per-frame work (GPU
+    // projection pre-pass + sort) is driven from the mesh's onBeforeRender, so
+    // a stale-visible render root would keep ~1M splats sorting every frame
+    // even while the actor is hidden. Hide the render root and short-circuit.
+    const visibilityMode =
+      typeof context.actor.visibilityMode === "string" ? context.actor.visibilityMode : "visible";
+    this.active = context.actor.enabled !== false && visibilityMode !== "hidden";
+    this.renderRoot.visible = this.active;
+    if (!this.active) {
+      return;
+    }
 
     // Asset cleared
     if (!assetId) {
@@ -441,6 +458,7 @@ export class SplatController {
   // ---------------------------------------------------------------------------
 
   private updateFromCamera(camera: THREE.Camera, renderer: any): void {
+    if (!this.active) return;
     if (!this.uniforms) return;
 
     // Update viewport size from renderer

@@ -545,6 +545,9 @@ function isDefinitionVisibleForActor(
     const value = actor.params[rule.key];
     const controllingDefinition = definitions.find((candidate) => candidate.key === rule.key);
     const effectiveValue = value !== undefined ? value : controllingDefinition ? defaultValueForDefinition(controllingDefinition) : undefined;
+    if (Array.isArray(rule.equals)) {
+      return rule.equals.some((option) => option === effectiveValue);
+    }
     return effectiveValue === rule.equals;
   });
 }
@@ -571,7 +574,16 @@ const BEAM_SHADER_PARAM_KEYS = new Set([
   "scanDuty",
   "nearFadeStart",
   "nearFadeEnd",
-  "softClampKnee"
+  "softClampKnee",
+  "mediumPreset",
+  "beamLuminousFlux",
+  "selfExtinction",
+  "enableInverseSquareFalloff",
+  "enableAnisotropicPhase",
+  "enableAxialPathLength",
+  "enableGrazingPathLength",
+  "enableMistDensity",
+  "enableVolumeSlab"
 ]);
 
 function isBeamEmitterSelection(actorSelection: ActorNode[]): boolean {
@@ -3316,6 +3328,27 @@ export function InspectorPane() {
   }, [actorSelection, actorDescriptors]);
   const hasBeamShaderGroup = isBeamEmitterSelection(actorSelection) && definitions.some(isBeamShaderDefinition);
   const schemaDefinitionGroups = useMemo(() => buildDefinitionGroups(definitions), [definitions]);
+  // A schema group nests under "Shader Properties" if every definition in the group is also a
+  // beam-shader param key — those groups belong logically inside the shader, not as siblings.
+  const beamShaderNestedGroupKeys = useMemo(() => {
+    if (!hasBeamShaderGroup) return new Set<string>();
+    const groupKeys = new Set<string>();
+    for (const group of schemaDefinitionGroups) {
+      const defsInGroup = definitions.filter((definition) => definition.groupKey === group.key);
+      if (defsInGroup.length > 0 && defsInGroup.every(isBeamShaderDefinition)) {
+        groupKeys.add(group.key);
+      }
+    }
+    return groupKeys;
+  }, [schemaDefinitionGroups, definitions, hasBeamShaderGroup]);
+  const actorRootSchemaGroups = useMemo(
+    () => schemaDefinitionGroups.filter((group) => !beamShaderNestedGroupKeys.has(group.key)),
+    [schemaDefinitionGroups, beamShaderNestedGroupKeys]
+  );
+  const beamShaderNestedSchemaGroups = useMemo(
+    () => schemaDefinitionGroups.filter((group) => beamShaderNestedGroupKeys.has(group.key)),
+    [schemaDefinitionGroups, beamShaderNestedGroupKeys]
+  );
   const beamTypeDefinition = definitions.find((definition) => definition.key === "beamType");
   const beamTypeValues = beamTypeDefinition ? actorSelection.map((actor) => bindingValueFor(beamTypeDefinition, actor)) : [];
   const beamShaderGroupSummary =
@@ -4319,7 +4352,25 @@ export function InspectorPane() {
           )
         );
       }
-      schemaDefinitionGroups.forEach((group) => {
+      actorRootSchemaGroups.forEach((group) => {
+        bindings.push(
+          createRotoActionBinding(`group:${group.key}`, group.label, "drill", () =>
+            setInspectorView({
+              kind: "param-group",
+              paramKey: schemaParamGroupViewKey(group.key),
+              paramLabel: group.label,
+              fromComponentId: null
+            })
+          )
+        );
+      });
+    }
+
+    // When zoomed into Shader Properties, surface drill-ins for any schema groups whose entries
+    // are entirely beam-shader params (e.g. "Scattering Factors", "Medium / Atmosphere"). They
+    // belong inside the shader view, not as siblings of it.
+    if (inspectorView.kind === "param-group" && inspectorView.paramKey === BEAM_SHADER_GROUP_KEY) {
+      beamShaderNestedSchemaGroups.forEach((group) => {
         bindings.push(
           createRotoActionBinding(`group:${group.key}`, group.label, "drill", () =>
             setInspectorView({
@@ -4446,6 +4497,10 @@ export function InspectorPane() {
       if (inspectorView.kind === "param-group") {
         if (inspectorView.paramKey === BEAM_SHADER_GROUP_KEY) {
           if (!isBeamShaderDefinition(definition)) {
+            return;
+          }
+          // Grouped beam-shader defs are reached via the sub-group drill-in, not inline.
+          if (isSchemaGroupedDefinition(definition) && beamShaderNestedGroupKeys.has(definition.groupKey!)) {
             return;
           }
         } else {
@@ -5401,8 +5456,27 @@ export function InspectorPane() {
           onClick={() => setInspectorView({ kind: "param-group", paramKey: BEAM_SHADER_GROUP_KEY, paramLabel: BEAM_SHADER_GROUP_LABEL, fromComponentId: null })}
         />
       ) : null}
-      {inspectorView.kind === "actor-root" && schemaDefinitionGroups.length > 0
-        ? schemaDefinitionGroups.map((group) => (
+      {inspectorView.kind === "actor-root" && actorRootSchemaGroups.length > 0
+        ? actorRootSchemaGroups.map((group) => (
+          <DrillInRow
+            key={group.key}
+            label={group.label}
+            summary={`${group.count} setting${group.count === 1 ? "" : "s"}`}
+            onClick={() =>
+              setInspectorView({
+                kind: "param-group",
+                paramKey: schemaParamGroupViewKey(group.key),
+                paramLabel: group.label,
+                fromComponentId: null
+              })
+            }
+          />
+        ))
+        : null}
+      {inspectorView.kind === "param-group" &&
+      inspectorView.paramKey === BEAM_SHADER_GROUP_KEY &&
+      beamShaderNestedSchemaGroups.length > 0
+        ? beamShaderNestedSchemaGroups.map((group) => (
           <DrillInRow
             key={group.key}
             label={group.label}
@@ -5423,6 +5497,8 @@ export function InspectorPane() {
         if (inspectorView.kind === "param-group") {
           if (inspectorView.paramKey === BEAM_SHADER_GROUP_KEY) {
             if (!isBeamShaderDefinition(definition)) return null;
+            // Grouped beam-shader defs surface via the nested drill-in, not inline.
+            if (isSchemaGroupedDefinition(definition) && beamShaderNestedGroupKeys.has(definition.groupKey!)) return null;
           } else {
             const schemaGroupKey = parseSchemaParamGroupViewKey(inspectorView.paramKey);
             if (schemaGroupKey) {

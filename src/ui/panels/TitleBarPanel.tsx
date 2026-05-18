@@ -48,6 +48,7 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
   const [isMenuOpen, setMenuOpen] = useState(false);
   const [projectQuery, setProjectQuery] = useState("");
   const [snapshotQuery, setSnapshotQuery] = useState("");
+  const [snapshotSort, setSnapshotSort] = useState<"recent" | "name">("recent");
   const [focusedProjectIndex, setFocusedProjectIndex] = useState<number | null>(null);
   const [focusedSnapshotIndex, setFocusedSnapshotIndex] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -73,9 +74,22 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
 
   const filteredSnapshotOptions = useMemo(() => {
     const q = snapshotQuery.trim().toLowerCase();
-    if (!q) return snapshotOptions;
-    return snapshotOptions.filter((e) => e.name.toLowerCase().includes(q));
-  }, [snapshotOptions, snapshotQuery]);
+    const filtered = q
+      ? snapshotOptions.filter((e) => e.name.toLowerCase().includes(q))
+      : snapshotOptions;
+    const sorted = filtered.slice();
+    if (snapshotSort === "recent") {
+      sorted.sort((a, b) => {
+        const ta = a.updatedAtIso ? Date.parse(a.updatedAtIso) : Number.NEGATIVE_INFINITY;
+        const tb = b.updatedAtIso ? Date.parse(b.updatedAtIso) : Number.NEGATIVE_INFINITY;
+        if (tb !== ta) return tb - ta;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+    } else {
+      sorted.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    }
+    return sorted;
+  }, [snapshotOptions, snapshotQuery, snapshotSort]);
 
   const isDefaultProject = (uuid: string): boolean => defaults?.uuid === uuid;
 
@@ -702,8 +716,71 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                         onChange={(event) => { setSnapshotQuery(event.target.value); }}
                         onKeyDown={handleSnapshotSearchKeyDown}
                       />
+                      <div className="titlebar-popover-sort" role="group" aria-label="Sort snapshots">
+                        <button
+                          type="button"
+                          className={`titlebar-popover-sort-option${snapshotSort === "recent" ? " is-active" : ""}`}
+                          aria-pressed={snapshotSort === "recent"}
+                          title="Sort by most recently edited"
+                          onClick={() => { setSnapshotSort("recent"); }}
+                        >
+                          Recent
+                        </button>
+                        <button
+                          type="button"
+                          className={`titlebar-popover-sort-option${snapshotSort === "name" ? " is-active" : ""}`}
+                          aria-pressed={snapshotSort === "name"}
+                          title="Sort alphabetically by name"
+                          onClick={() => { setSnapshotSort("name"); }}
+                        >
+                          Name
+                        </button>
+                      </div>
                     </div>
                     <div ref={snapshotListRef} className="titlebar-project-snapshot-list" role="listbox" aria-label="Project snapshots">
+                      {!snapshotQuery ? (
+                        editingSnapshot?.mode === "create" ? (
+                          <div className="titlebar-project-snapshot-item is-editing">
+                            <div className="titlebar-project-snapshot-editor">
+                              <input
+                                ref={snapshotInputRef}
+                                type="text"
+                                className="titlebar-project-snapshot-input"
+                                value={editingSnapshot.value}
+                                placeholder="New snapshot name"
+                                aria-label="New snapshot name"
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  setEditingSnapshot((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          value: nextValue,
+                                          error: validateSnapshotName(nextValue, current.originalName)
+                                        }
+                                      : current
+                                  );
+                                }}
+                                onKeyDown={handleSnapshotInputKeyDown}
+                              />
+                              {editingSnapshot.error ? (
+                                <span className="titlebar-project-snapshot-error">{editingSnapshot.error}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="titlebar-project-new-snapshot"
+                            disabled={isReadOnly}
+                            onClick={() => {
+                              startSnapshotCreate();
+                            }}
+                          >
+                            <span>New snapshot...</span>
+                          </button>
+                        )
+                      ) : null}
                       {filteredSnapshotOptions.map((snapshot, index) => {
                         const isActive = snapshot.name === state.activeSnapshotName;
                         const isFocused = focusedSnapshotIndex === index;
@@ -804,49 +881,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                           </div>
                         );
                       })}
-                      {!snapshotQuery ? (
-                        editingSnapshot?.mode === "create" ? (
-                          <div className="titlebar-project-snapshot-item is-editing">
-                            <div className="titlebar-project-snapshot-editor">
-                              <input
-                                ref={snapshotInputRef}
-                                type="text"
-                                className="titlebar-project-snapshot-input"
-                                value={editingSnapshot.value}
-                                placeholder="New snapshot name"
-                                aria-label="New snapshot name"
-                                onChange={(event) => {
-                                  const nextValue = event.target.value;
-                                  setEditingSnapshot((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          value: nextValue,
-                                          error: validateSnapshotName(nextValue, current.originalName)
-                                        }
-                                      : current
-                                  );
-                                }}
-                                onKeyDown={handleSnapshotInputKeyDown}
-                              />
-                              {editingSnapshot.error ? (
-                                <span className="titlebar-project-snapshot-error">{editingSnapshot.error}</span>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="titlebar-project-new-snapshot"
-                            disabled={isReadOnly}
-                            onClick={() => {
-                              startSnapshotCreate();
-                            }}
-                          >
-                            <span>New snapshot...</span>
-                          </button>
-                        )
-                      ) : null}
                     </div>
                   </div>
 
