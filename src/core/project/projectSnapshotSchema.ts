@@ -439,21 +439,6 @@ const projectSnapshotSchema = z.object({
     near: z.number(),
     far: z.number()
   }).nullable().optional(),
-  cameraBookmarks: z.array(
-    z.object({
-      id: z.string(),
-      name: z.string(),
-      camera: z.object({
-        mode: z.enum(["perspective", "orthographic"]),
-        position: vector3Schema,
-        target: vector3Schema,
-        fov: z.number(),
-        zoom: z.number(),
-        near: z.number(),
-        far: z.number()
-      })
-    })
-  ).optional(),
   time: z.object({
     running: z.boolean(),
     speed: z.union([z.literal(0.125), z.literal(0.25), z.literal(0.5), z.literal(1), z.literal(2), z.literal(4)]),

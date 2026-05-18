@@ -16,7 +16,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
-import type { CameraPreset, TimeSpeedPreset } from "@/core/types";
+import type { TimeSpeedPreset } from "@/core/types";
 import { formatFramePacingLabel } from "@/render/framePacing";
 import type { ProfilingPublicState } from "@/render/profiling";
 import { MaterialsModal } from "@/ui/components/MaterialsModal";
@@ -24,7 +24,6 @@ import { PublishModal } from "@/ui/components/PublishModal";
 import { DigitScrubInput } from "@/ui/widgets";
 
 const SPEEDS: TimeSpeedPreset[] = [0.125, 0.25, 0.5, 1, 2, 4];
-const CAMERA_PRESETS: CameraPreset[] = ["perspective", "isometric", "top", "left", "front", "back"];
 const FPS_TARGET_PRESETS = [30, 60, 120];
 const MAX_CUSTOM_TARGET_FPS = 240;
 const TOOLBAR_LAYOUT_MODES = ["full", "compact", "wrapped", "scroll"] as const;
@@ -67,7 +66,6 @@ function clampInteger(value: number, min: number, max: number): number {
  * affordances).
  */
 export interface TopBarPanelVisibility {
-  camera?: boolean;
   time?: boolean;
   edit?: boolean;
   render?: boolean;
@@ -124,7 +122,6 @@ export function TopBarPanel(props: TopBarPanelProps) {
     return value ?? false;
   };
   // Force-hide editor-only affordances when the viewer renders this toolbar.
-  const showCamera = showSection("camera");
   const showTime = showSection("time");
   const showEdit = showSection("edit") && !isReadOnly;
   const showRender = showSection("render") && !isReadOnly;
@@ -362,24 +359,6 @@ export function TopBarPanel(props: TopBarPanelProps) {
       className={`top-toolbar${toolbarLayoutMode === "compact" || toolbarLayoutMode === "wrapped" || toolbarLayoutMode === "scroll" ? " is-compact" : ""}${toolbarLayoutMode === "wrapped" ? " is-wrapped" : ""}${toolbarLayoutMode === "scroll" ? " is-scroll" : ""}`}
       data-layout-mode={toolbarLayoutMode}
     >
-      {showCamera ? (
-        <div className="toolbar-group">
-          <label className="toolbar-group-label" title="Camera presets">Camera</label>
-          <select
-            onChange={(event) => {
-              kernel.store.getState().actions.applyCameraPreset(event.target.value as CameraPreset);
-            }}
-            defaultValue="perspective"
-          >
-            {CAMERA_PRESETS.map((preset) => (
-              <option key={preset} value={preset}>
-                {preset}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : null}
-
       {showTime ? (
       <div className="toolbar-group">
         <label className="toolbar-group-label" title="Simulation controls">Time</label>

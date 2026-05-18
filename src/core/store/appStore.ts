@@ -2,7 +2,6 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { produce } from "immer";
 import { createId } from "@/core/ids";
 import { createInitialState } from "@/core/defaults";
-import { cameraStateForPreset } from "@/features/camera/viewUtils";
 import { createPluginViewInstanceId, createPluginViewTabId } from "@/features/plugins/pluginViews";
 import {
   DEFAULT_CAMERA_TRANSITION_DURATION_MS,
@@ -14,7 +13,6 @@ import type {
   ActorNode,
   ActorVisibilityMode,
   AppState,
-  CameraPreset,
   ConsoleCommandEntry,
   ConsoleLogEntry,
   ComponentNode,
@@ -126,7 +124,6 @@ export interface AppActions {
   closePluginView(viewId: string): void;
   focusPluginView(viewId: string): void;
   setPluginViewTabset(viewId: string, tabsetId: string | null): void;
-  applyCameraPreset(preset: CameraPreset): void;
   requestCameraState(camera: AppState["camera"], options?: CameraTransitionRequestOptions): void;
   cancelCameraTransition(): void;
   setCameraState(
@@ -1010,13 +1007,6 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             }
             view.preferredTabsetId = tabsetId;
           })
-        });
-      },
-      applyCameraPreset(preset) {
-        get().actions.requestCameraState(cameraStateForPreset(preset), {
-          animated: true,
-          durationMs: DEFAULT_CAMERA_TRANSITION_DURATION_MS,
-          markDirty: true
         });
       },
       requestCameraState(camera, options) {

@@ -60,7 +60,6 @@ export interface Material {
 }
 
 export type ActorVisibilityMode = "visible" | "hidden" | "selected";
-export type CameraPreset = "perspective" | "top" | "left" | "front" | "back" | "isometric";
 export type TimeSpeedPreset = 0.125 | 0.25 | 0.5 | 1 | 2 | 4;
 export type SelectionKind = "actor" | "component" | "plugin";
 export type LogLevel = "info" | "warn" | "error";
