@@ -45,6 +45,7 @@ savedata/*/autosave.json
 savedata/*/tmp/
 
 # Local tool/runtime noise
+.tmp-*
 *.log
 npm-debug.log*
 pnpm-debug.log*
