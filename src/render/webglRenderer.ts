@@ -26,12 +26,15 @@ import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
 // See note in webgpuRenderer.ts: force a full reload on HMR rather than leaving
 // stale Three.js viewport instances bound to dead arrow-method listeners.
 if (import.meta.hot) {
-  import.meta.hot.decline();
+  // Vite 6 removed hot.decline(); self-accept then immediately invalidate so
+  // the update propagates to importers and ends in a full page reload.
+  import.meta.hot.accept(() => {
+    import.meta.hot?.invalidate();
+  });
 }
 import type { MistVolumeQualityMode } from "@/render/mistVolumeController";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "@/render/stats";
 import { SceneOutputPass, threeToneMappingForMode } from "@/render/tonemapping";
-import { pruneInvalidSceneGraph } from "@/render/sceneGraphUtils";
 import {
   captureViewportScreenshotFromCanvas,
   captureViewportThumbnail,

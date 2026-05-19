@@ -373,6 +373,10 @@ export interface RedactedPublishSettings {
   defaultTargetId?: string;
   publishesByProjectUuid: Record<string, ListedPublish[]>;
   viewerDeployment?: RedactedVercelDeploySettings;
+  /** Saved publish layout (flexlayout IJsonModel); validated/cast at use site. */
+  defaultPublishLayout?: unknown;
+  /** Saved viewer permission defaults; validated/cast at use site. */
+  defaultViewerPermissions?: unknown;
 }
 
 /**

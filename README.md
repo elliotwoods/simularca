@@ -1,24 +1,41 @@
+<div align="center">
+
+<img src="./icon.png" alt="Simularca" width="120" />
+
 # Simularca
 
-**A desktop simulation environment for pre-visualizing kinetic art.**
+### Pre-visualize kinetic art before you build it.
 
-Build a virtual version of an art installation, test parameters, create renders, ideate and communicate with others.
+Build a virtual version of an installation, dial in parameters, capture renders,
+and communicate the idea — all before a single motor turns.
 
-![Simularca screenshot](./screenshot.png)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f.svg)](#license)
+![Platform](https://img.shields.io/badge/platform-desktop%20(Electron)-blueviolet)
+![Renderer](https://img.shields.io/badge/render-WebGPU%20%2B%20WebGL-ff6f61)
+![Three.js](https://img.shields.io/badge/three.js-0.173-black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6)
+
+<img src="./screenshot.png" alt="Simularca screenshot" width="860" />
+
+</div>
+
+---
 
 ## Why Simularca
 
-- **Real-time 3D viewport** with both WebGPU and WebGL render paths, PBR materials, environment probes, ACES tone mapping, and post-processing (bloom, vignette, grain, chromatic aberration).
-- **Gaussian splat rendering** — drop a captured splat of the real venue into your scene and animate against it. Native Spark WebGL path plus a custom WebGPU path with GPU sorting for high splat counts.
-- **Hardware in the loop** — MIDI input/output and serial device support, including built-in integration for the Melbourne Instruments **Roto Control** surface. Map controllers directly to actor parameters.
-- **Plugin-based actors** — every artwork is a plugin. Ship a custom actor type with its own runtime, shaders, parameters, and inspector UI without forking the host. A reference plugin and template are included.
-- **Project + snapshot workflow** — projects are folders you store anywhere on disk (including cloud-synced folders), identified by a `.simularca` pointer file with a stable UUID; snapshots are named variants inside a project, so you can branch a lighting test or a choreography pass without losing the last good state.
-- **Camera paths and curves** — spline-based camera animation with keyframes and curve/actor targeting, plus a curve editor for path-driven motion.
-- **Multi-panel workspace** — drag-and-dock layout (viewport, scene tree, inspector, console, profiler, plugin views) you can rearrange per project.
-- **Imports** — DXF (CAD layers, plane and unit selection), Collada `.dae` meshes, PLY and `.splatbin` Gaussian splats, HDRI environments transcoded to KTX2.
-- **Video export** via `ffmpeg`, with a frame-pacing option for deterministic captures.
-- **Color and precision** — pick your working color space (linear, sRGB, iPhone SDR, Apple Log) and float32 / float16 / uint8 render-target precision.
-- **Profiling** — per-actor CPU/GPU timing including WebGPU timestamp queries, surfaced live in a profiler panel.
+| | |
+| --- | --- |
+| **Real-time 3D viewport** | WebGPU *and* WebGL render paths, PBR materials, environment probes, ACES tone mapping, and post-processing (bloom, vignette, grain, chromatic aberration). |
+| **Gaussian splat rendering** | Drop a captured splat of the real venue into your scene and animate against it. Native Spark WebGL path plus a custom WebGPU path with GPU sorting for high splat counts. |
+| **Hardware in the loop** | MIDI in/out and serial device support, including built-in integration for the Melbourne Instruments **Roto Control** surface. Map controllers directly to actor parameters. |
+| **Plugin-based actors** | Every artwork is a plugin — ship a custom actor type with its own runtime, shaders, parameters, and inspector UI without forking the host. Reference plugin and template included. |
+| **Project + snapshot workflow** | Projects are folders you store anywhere (including cloud-synced), identified by a `.simularca` pointer with a stable UUID. Snapshots are named variants — branch a lighting test or choreography pass without losing the last good state. |
+| **Camera paths & curves** | Spline-based camera animation with keyframes and curve/actor targeting, plus a curve editor for path-driven motion. |
+| **Multi-panel workspace** | Drag-and-dock layout (viewport, scene tree, inspector, console, profiler, plugin views) you can rearrange per project. |
+| **Imports** | DXF (CAD layers, plane/unit selection), Collada `.dae` meshes, PLY and `.splatbin` Gaussian splats, HDRI environments transcoded to KTX2. |
+| **Video export** | Export via `ffmpeg`, with frame-pacing for deterministic captures. |
+| **Color & precision** | Pick your working color space (linear, sRGB, iPhone SDR, Apple Log) and float32 / float16 / uint8 render-target precision. |
+| **Profiling** | Per-actor CPU/GPU timing including WebGPU timestamp queries, surfaced live in a profiler panel. |
 
 ## Status
 

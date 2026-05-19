@@ -42,7 +42,6 @@ import { MIN_PERSPECTIVE_PROJECTION_DEPTH } from "./projectionDepth";
 const COLOR_SPACE_LINEAR = 0;
 const COLOR_SPACE_SRGB = 1;
 const COLOR_SPACE_IPHONE_SDR = 2;
-const COLOR_SPACE_APPLE_LOG = 3;
 
 /**
  * Storage buffer data needed by the material.
@@ -147,9 +146,9 @@ export function createSplatMaterial(
       appleLogDecodeNode(rgb.z)
     );
     const appleDecoded = vec3(
-      float(1.6604962191478271).mul(appleLinear2020.x).sub(float(0.5876564949750909).mul(appleLinear2020.y)).sub(float(0.0728397241727355).mul(appleLinear2020.z)),
-      float(-0.12454709558601268).mul(appleLinear2020.x).add(float(1.132895151076045).mul(appleLinear2020.y)).sub(float(0.008348055490032559).mul(appleLinear2020.z)),
-      float(-0.01815076335490582).mul(appleLinear2020.x).sub(float(0.1005973716857425).mul(appleLinear2020.y)).add(float(1.1187481346535225).mul(appleLinear2020.z))
+      float(1.6604962191478272).mul(appleLinear2020.x).sub(float(0.5876564949750909).mul(appleLinear2020.y)).sub(float(0.0728397241727355).mul(appleLinear2020.z)),
+      float(-0.12454709558601268).mul(appleLinear2020.x).add(float(1.132895151076045).mul(appleLinear2020.y)).sub(float(0.00834805549003256).mul(appleLinear2020.z)),
+      float(-0.01815076335490582).mul(appleLinear2020.x).sub(float(0.1005973716857425).mul(appleLinear2020.y)).add(float(1.1187481346535224).mul(appleLinear2020.z))
     );
     return select(
       colorSpaceNode.equal(float(COLOR_SPACE_LINEAR)),

@@ -34,7 +34,7 @@ app.whenReady().then(async () => {
     }
   });
 
-  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+  win.webContents.on("console-message", (_event, level, message) => {
     const levels = ["debug", "info", "warning", "error"];
     const tag = levels[level] ?? "log";
     console.log(`[viewer:${tag}] ${message}`);

@@ -2,6 +2,7 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
+import globals from "globals";
 
 export default tseslint.config(
   js.configs.recommended,
@@ -42,7 +43,21 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
       "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }]
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: true }
+      ]
+    }
+  },
+  {
+    // CommonJS Node scripts (smoke tests, tooling). `require`, `module`,
+    // `__dirname` etc. are legitimate here.
+    files: ["**/*.cjs"],
+    languageOptions: {
+      globals: { ...globals.node }
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off"
     }
   },
   {
@@ -57,6 +72,8 @@ export default tseslint.config(
       "dist-electron/**",
       "coverage/**",
       "node_modules/**",
+      "tmp/**",
+      "public/dev-publish/**",
       ".claude/**",
       "electron/preload.mjs",
       "electron/preload.cjs",

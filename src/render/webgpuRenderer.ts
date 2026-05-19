@@ -31,7 +31,11 @@ import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
 // out from under live event listeners (observed: "this.scheduleResize is not
 // a function" firing every frame for hours). Force a full page reload instead.
 if (import.meta.hot) {
-  import.meta.hot.decline();
+  // Vite 6 removed hot.decline(); self-accept then immediately invalidate so
+  // the update propagates to importers and ends in a full page reload.
+  import.meta.hot.accept(() => {
+    import.meta.hot?.invalidate();
+  });
 }
 import type { MistVolumeQualityMode } from "./mistVolumeController";
 import { buildWebGpuToneMappedOutputNode, threeToneMappingForMode } from "./tonemapping";
@@ -247,8 +251,14 @@ export class WebGpuViewport {
       if (this.disposed) {
         return null;
       }
-      const memInfo = this.renderer.info?.memory;
-      const renderInfo = this.renderer.info?.render;
+      // WebGPURenderer.info exposes memory + render.frame at runtime, but the
+      // Three.js typings only declare render.{calls,triangles}.
+      const info = this.renderer.info as unknown as {
+        memory?: { geometries?: number; textures?: number };
+        render?: { triangles?: number; calls?: number; frame?: number };
+      };
+      const memInfo = info?.memory;
+      const renderInfo = info?.render;
       return {
         geometries: memInfo?.geometries ?? 0,
         textures: memInfo?.textures ?? 0,

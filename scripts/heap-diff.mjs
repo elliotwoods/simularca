@@ -9,7 +9,6 @@ function loadSnapshot(file) {
   const typeIndex = nodeFields.indexOf("type");
   const nameIndex = nodeFields.indexOf("name");
   const selfSizeIndex = nodeFields.indexOf("self_size");
-  const idIndex = nodeFields.indexOf("id");
   const nodeTypes = meta.node_types[typeIndex];
   const strings = data.strings;
   const nodes = data.nodes;

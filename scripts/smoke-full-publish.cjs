@@ -10,7 +10,7 @@
 //   SIMULARCA_SMOKE_SNAPSHOT     snapshot name to publish (default: from defaults.json)
 //   SIMULARCA_SMOKE_PUBLISH_ID   reuse an existing publish id (otherwise generated)
 
-const { app, BrowserWindow, safeStorage } = require("electron");
+const { app, BrowserWindow } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -185,7 +185,7 @@ app.whenReady().then(async () => {
     });
 
     const captured = [];
-    win.webContents.on("console-message", (_e, level, message, line, sourceId) => {
+    win.webContents.on("console-message", (_e, level, message) => {
       const levels = ["debug", "info", "warning", "error"];
       const tag = levels[level] ?? "log";
       captured.push({ tag, message });

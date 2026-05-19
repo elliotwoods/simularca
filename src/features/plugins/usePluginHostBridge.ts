@@ -2,7 +2,12 @@ import { useMemo } from "react";
 import type { AppKernel } from "@/app/kernel";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
-import type { ActorNode, ParameterValues, SelectionEntry } from "@/core/types";
+import type {
+  ActorNode,
+  ActorVisibilityMode,
+  ParameterValues,
+  SelectionEntry
+} from "@/core/types";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import type { PluginHostActorSnapshot, PluginHostBridge } from "./pluginApi";
 
@@ -45,7 +50,10 @@ export function buildPluginHostBridge(
       actorType: actor.actorType,
       pluginType: actor.pluginType,
       params: actor.params,
-      schema: resolveActorSchema(actor, actorDescriptors)
+      schema: resolveActorSchema(actor, actorDescriptors),
+      transform: actor.transform,
+      enabled: actor.enabled,
+      visibilityMode: actor.visibilityMode
     });
   }
   return {
@@ -57,6 +65,20 @@ export function buildPluginHostBridge(
         return;
       }
       actions.updateActorParams(actorId, partial);
+    },
+    updateActorTransform(actorId, key, value, options) {
+      const actions = kernel.store.getState().actions;
+      if (options?.history === false) {
+        actions.setActorTransformNoHistory(actorId, key, value);
+        return;
+      }
+      actions.setActorTransform(actorId, key, value);
+    },
+    updateActorEnabled(actorId, enabled) {
+      kernel.store.getState().actions.setNodeEnabled({ kind: "actor", id: actorId }, enabled);
+    },
+    updateActorVisibility(actorId, mode: ActorVisibilityMode) {
+      kernel.store.getState().actions.setActorVisibilityMode(actorId, mode);
     }
   };
 }

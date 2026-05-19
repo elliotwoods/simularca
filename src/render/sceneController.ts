@@ -3195,7 +3195,7 @@ export class SceneController {
     let materialsBackSide = 0;
     let materialsDepthWriteFalse = 0;
     let materialsAlphaToCoverage = 0;
-    let sampleMeshNames: string[] = [];
+    const sampleMeshNames: string[] = [];
     this.crossSectionClipGroup.traverse((node) => {
       if ((node as THREE.Mesh).isMesh) {
         clipDescendantMeshCount += 1;

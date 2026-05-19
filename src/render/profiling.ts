@@ -836,7 +836,7 @@ export class ActorProfilingService {
     this.currentMirrorChunkStack = mirrorChunk ? [...this.currentMirrorChunkStack, mirrorChunk] : this.currentMirrorChunkStack;
   }
 
-  public endDrawSample(actor: ActorProfileMeta, sampleKey: string): void {
+  public endDrawSample(_actor: ActorProfileMeta, sampleKey: string): void {
     if (!this.shouldProfileDraws()) {
       return;
     }

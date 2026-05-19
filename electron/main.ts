@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, session, shell, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, shell, type OpenDialogOptions } from "electron";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -249,10 +249,6 @@ function getRecentsFilePath(): string {
 
 function getDefaultsFilePath(): string {
   return path.join(getUserDataRoot(), DEFAULTS_FILE_NAME);
-}
-
-function getPreferencesFilePath(): string {
-  return path.join(getUserDataRoot(), "preferences.json");
 }
 
 function getDocumentsProjectsRoot(): string {

@@ -5,9 +5,11 @@ import type { HotReloadManager } from "@/core/hotReload/hotReloadManager";
 import type {
   ActorNode,
   ActorRuntimeStatus,
+  ActorVisibilityMode,
   ParameterSchema,
   ParameterValues,
-  PluginViewState
+  PluginViewState,
+  TransformTRS
 } from "@/core/types";
 import type { PluginManifest } from "./contracts";
 
@@ -36,6 +38,11 @@ export interface PluginHostActorSnapshot {
    * descriptor is registered for its type (no schema available).
    */
   schema: ParameterSchema | null;
+  /** The "common" inspector controls (above the descriptor params): the
+   *  actor transform (rotation in radians), enabled flag, visibility mode. */
+  transform: TransformTRS;
+  enabled: boolean;
+  visibilityMode: ActorVisibilityMode;
 }
 
 /**
@@ -57,6 +64,17 @@ export interface PluginHostBridge {
     partial: ParameterValues,
     options?: { history?: boolean }
   ): void;
+  /** Set one transform channel (rotation in radians, like `actor.transform`). */
+  updateActorTransform(
+    actorId: string,
+    key: "position" | "rotation" | "scale",
+    value: [number, number, number],
+    options?: { history?: boolean }
+  ): void;
+  /** Toggle the actor's enabled flag. */
+  updateActorEnabled(actorId: string, enabled: boolean): void;
+  /** Set the actor's visibility mode. */
+  updateActorVisibility(actorId: string, mode: ActorVisibilityMode): void;
 }
 
 export interface PluginViewComponentProps {

@@ -1,4 +1,4 @@
-import { S3Client, HeadObjectCommand, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { randomBytes, createHash } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
 import * as fsp from "node:fs/promises";

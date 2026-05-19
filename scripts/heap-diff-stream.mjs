@@ -126,7 +126,6 @@ function* iterateNodes(filePath, nodeFieldCount) {
     if (idx === -1) throw new Error('"nodes":[ not found in first 4MB');
     let absolute = idx + marker.length;
     let pending = ""; // partial number text across chunks
-    let count = 0;
     const CHUNK = 8 * 1024 * 1024;
     let buf = Buffer.alloc(CHUNK);
     let nodeBuf = new Int32Array(nodeFieldCount);
@@ -147,7 +146,6 @@ function* iterateNodes(filePath, nodeFieldCount) {
         if (c === "]") {
           if (fieldCursor !== 0) {
             yield nodeBuf.slice();
-            count++;
           }
           return;
         }
@@ -164,7 +162,6 @@ function* iterateNodes(filePath, nodeFieldCount) {
         i = j;
         if (fieldCursor === nodeFieldCount) {
           yield nodeBuf;
-          count++;
           fieldCursor = 0;
           nodeBuf = new Int32Array(nodeFieldCount);
         }
