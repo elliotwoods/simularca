@@ -4,13 +4,15 @@ import {
   faClone,
   faFloppyDisk,
   faFolderOpen,
+  faFolderPlus,
   faMagnifyingGlass,
   faPenToSquare,
-  faPlus,
-  faRotateRight,
+  faRotateLeft,
   faStar,
   faTrash,
-  faUpRightFromSquare
+  faUpDownLeftRight,
+  faUpRightFromSquare,
+  faXmark
 } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
@@ -413,6 +415,15 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
     }
   };
 
+  const handleRevealRecent = async (entry: RecentsEntry): Promise<void> => {
+    if (!window.electronAPI) return;
+    try {
+      await window.electronAPI.revealPath({ path: entry.path });
+    } catch (error) {
+      reportActionError("Unable to open project location", error);
+    }
+  };
+
   const handleRemoveRecent = async (entry: RecentsEntry): Promise<void> => {
     if (!window.electronAPI) return;
     try {
@@ -421,6 +432,19 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
     } catch (error) {
       reportActionError("Unable to remove recent", error);
     }
+  };
+
+  const handleReloadSnapshot = (): void => {
+    if (state.dirty) {
+      const confirmed = window.confirm(
+        "Discard unsaved changes and reload this snapshot from disk?"
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+    setMenuOpen(false);
+    void kernel.projectService.loadSnapshot(state.activeSnapshotName);
   };
 
   const cancelSnapshotEdit = (): void => {
@@ -533,17 +557,27 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
               {state.dirty ? <em>*</em> : null}
             </button>
             {state.dirty && activeProject ? (
-              <button
-                type="button"
-                className="titlebar-project-save-stale"
-                disabled={isReadOnly}
-                title="Save project"
-                onClick={() => {
-                  void kernel.projectService.saveProject();
-                }}
-              >
-                <FontAwesomeIcon icon={faFloppyDisk} />
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="titlebar-project-save-stale"
+                  disabled={isReadOnly}
+                  title="Save project"
+                  onClick={() => {
+                    void kernel.projectService.saveProject();
+                  }}
+                >
+                  <FontAwesomeIcon icon={faFloppyDisk} />
+                </button>
+                <button
+                  type="button"
+                  className="titlebar-project-save-stale"
+                  title="Revert: discard changes and reload the last saved snapshot"
+                  onClick={handleReloadSnapshot}
+                >
+                  <FontAwesomeIcon icon={faRotateLeft} />
+                </button>
+              </>
             ) : null}
           </div>
           {isMenuOpen ? (
@@ -592,12 +626,22 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                             <button
                               type="button"
                               className="titlebar-project-action"
+                              title="Open project location on disk"
+                              onClick={() => {
+                                void handleRevealRecent(entry);
+                              }}
+                            >
+                              <FontAwesomeIcon icon={faUpRightFromSquare} />
+                            </button>
+                            <button
+                              type="button"
+                              className="titlebar-project-action"
                               title="Locate moved project"
                               onClick={() => {
                                 void handleLocateRecent(entry);
                               }}
                             >
-                              <FontAwesomeIcon icon={faFolderOpen} />
+                              <FontAwesomeIcon icon={faMagnifyingGlass} />
                             </button>
                             <button
                               type="button"
@@ -607,7 +651,7 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                                 void handleRemoveRecent(entry);
                               }}
                             >
-                              <FontAwesomeIcon icon={faTrash} />
+                              <FontAwesomeIcon icon={faXmark} />
                             </button>
                           </div>
                           <span className="titlebar-project-list-indicator" aria-hidden="true">
@@ -627,7 +671,7 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                       void handleOpenProject();
                     }}
                   >
-                    <FontAwesomeIcon icon={faUpRightFromSquare} />
+                    <FontAwesomeIcon icon={faFolderOpen} />
                   </button>
                   <button
                     type="button"
@@ -637,7 +681,18 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                       void handleNewProject();
                     }}
                   >
-                    <FontAwesomeIcon icon={faPlus} />
+                    <FontAwesomeIcon icon={faFolderPlus} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isReadOnly || !activeProject}
+                    title="Save project"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void kernel.projectService.saveProject();
+                    }}
+                  >
+                    <FontAwesomeIcon icon={faFloppyDisk} />
                   </button>
                   <button
                     type="button"
@@ -652,16 +707,6 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                   <button
                     type="button"
                     disabled={isReadOnly || !activeProject}
-                    title="Move project to a new folder"
-                    onClick={() => {
-                      void handleMoveProject();
-                    }}
-                  >
-                    <FontAwesomeIcon icon={faFolderOpen} />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isReadOnly || !activeProject}
                     title="Rename project"
                     onClick={() => {
                       void handleRenameProject();
@@ -672,13 +717,12 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                   <button
                     type="button"
                     disabled={isReadOnly || !activeProject}
-                    title="Save project"
+                    title="Move project to a new folder"
                     onClick={() => {
-                      setMenuOpen(false);
-                      void kernel.projectService.saveProject();
+                      void handleMoveProject();
                     }}
                   >
-                    <FontAwesomeIcon icon={faFloppyDisk} />
+                    <FontAwesomeIcon icon={faUpDownLeftRight} />
                   </button>
                   <button
                     type="button"
@@ -887,21 +931,10 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                   <div className="titlebar-project-actions">
                     <button
                       type="button"
-                      title="Reload current snapshot"
-                      onClick={() => {
-                        if (state.dirty) {
-                          const confirmed = window.confirm(
-                            "Discard unsaved changes and reload this snapshot from disk?"
-                          );
-                          if (!confirmed) {
-                            return;
-                          }
-                        }
-                        setMenuOpen(false);
-                        void kernel.projectService.loadSnapshot(state.activeSnapshotName);
-                      }}
+                      title="Revert: discard changes and reload the last saved snapshot"
+                      onClick={handleReloadSnapshot}
                     >
-                      <FontAwesomeIcon icon={faRotateRight} />
+                      <FontAwesomeIcon icon={faRotateLeft} />
                     </button>
                   </div>
                 </>

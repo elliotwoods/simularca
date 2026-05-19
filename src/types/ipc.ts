@@ -643,6 +643,8 @@ export interface ElectronApi {
   saveRecents(entries: RecentsEntry[]): Promise<void>;
   removeRecent(args: { uuid: string }): Promise<void>;
   locateRecent(args: { uuid: string; title?: string }): Promise<RecentsEntry | null>;
+  /** Reveal a path in the OS file manager (Explorer/Finder). Opens folders directly; reveals files in their parent. */
+  revealPath(args: { path: string }): Promise<void>;
   loadDefaults(): Promise<DefaultProjectPointer | null>;
   saveDefaults(pointer: DefaultProjectPointer | null): Promise<void>;
   selectSimularcaFile(args?: { title?: string }): Promise<string | null>;

@@ -3451,6 +3451,32 @@ function registerPublishIpcHandlers(): void {
   );
 
   ipcMain.handle(
+    "shell:reveal-path",
+    async (_event, args: { path: string }): Promise<void> => {
+      const target = args?.path?.trim();
+      if (!target) return;
+      if (!path.isAbsolute(target)) {
+        throw new Error(`Refusing to reveal non-absolute path: ${target}`);
+      }
+      let stat: fsSync.Stats;
+      try {
+        stat = await fs.stat(target);
+      } catch {
+        throw new Error(`Path does not exist: ${target}`);
+      }
+      if (stat.isDirectory()) {
+        const error = await shell.openPath(target);
+        if (error) {
+          throw new Error(error);
+        }
+      } else {
+        // A file (e.g. legacy .simularca pointer): reveal it in its parent.
+        shell.showItemInFolder(target);
+      }
+    }
+  );
+
+  ipcMain.handle(
     "publish:verify-vercel-token",
     async (
       _event,

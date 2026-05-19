@@ -51,6 +51,7 @@ const api = {
   saveRecents: (entries) => ipcRenderer.invoke("recents:save", entries),
   removeRecent: (args) => ipcRenderer.invoke("recents:remove", args),
   locateRecent: (args) => ipcRenderer.invoke("recents:locate", args),
+  revealPath: (args) => ipcRenderer.invoke("shell:reveal-path", args),
   loadDefaults: () => ipcRenderer.invoke("defaults:load"),
   saveDefaults: (pointer) => ipcRenderer.invoke("defaults:save", pointer),
   selectSimularcaFile: (args) => ipcRenderer.invoke("dialog:select-simularca", args ?? {}),
