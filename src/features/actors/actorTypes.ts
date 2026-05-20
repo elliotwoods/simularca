@@ -1058,7 +1058,7 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       key: "curveType",
       label: "Curve Type",
       type: "select",
-      options: ["spline", "circle", "mesh-projection"],
+      options: ["spline", "circle", "arc", "helix", "mesh-projection"],
       defaultValue: "spline"
     },
     {
@@ -1086,7 +1086,47 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       min: 0,
       step: 0.05,
       defaultValue: 1,
-      visibleWhen: [{ key: "curveType", equals: "circle" }]
+      visibleWhen: [{ key: "curveType", equals: ["circle", "arc", "helix"] }]
+    },
+    {
+      key: "arcFraction",
+      label: "Arc Fraction",
+      description: "Sweep of the arc as a fraction of a full revolution. 1 = closed circle, 0.5 = semicircle.",
+      type: "number",
+      min: 0,
+      max: 1,
+      step: 0.05,
+      defaultValue: 0.5,
+      visibleWhen: [{ key: "curveType", equals: "arc" }]
+    },
+    {
+      key: "arcCentered",
+      label: "Center Arc",
+      description: "Center the arc symmetrically about the +X axis. At low fractions the arc spans ±half-fraction around +X instead of sweeping from +X counter-clockwise.",
+      type: "boolean",
+      defaultValue: false,
+      visibleWhen: [{ key: "curveType", equals: "arc" }]
+    },
+    {
+      key: "helixPitch",
+      label: "Pitch",
+      description: "Vertical rise per full revolution.",
+      type: "number",
+      unit: "m",
+      min: 0,
+      step: 0.05,
+      defaultValue: 0.25,
+      visibleWhen: [{ key: "curveType", equals: "helix" }]
+    },
+    {
+      key: "helixTurns",
+      label: "Turns",
+      description: "Number of revolutions over the parametric range.",
+      type: "number",
+      min: 0.01,
+      step: 0.25,
+      defaultValue: 2,
+      visibleWhen: [{ key: "curveType", equals: "helix" }]
     },
     {
       key: "handleSize",

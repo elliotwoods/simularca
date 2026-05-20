@@ -1,4 +1,4 @@
-export type CurveKind = "spline" | "circle" | "mesh-projection";
+export type CurveKind = "spline" | "circle" | "arc" | "helix" | "mesh-projection";
 export type CurveHandleMode = "normal" | "mirrored" | "auto" | "hard";
 export type CurveHandleWeightMode = "normal" | "hard";
 
@@ -17,6 +17,14 @@ export interface CurveData {
   closed: boolean;
   points: CurvePoint[];
   radius?: number;
+  // Sweep fraction in [0, 1] for "arc" curves (1 = full circle and closed).
+  arcFraction?: number;
+  // Center the "arc" sweep symmetrically about the +X axis (start at -π·fraction).
+  arcCentered?: boolean;
+  // Vertical rise per full revolution (m) for "helix" curves.
+  helixPitch?: number;
+  // Number of revolutions over t ∈ [0, 1] for "helix" curves.
+  helixTurns?: number;
   // Runtime-only: populated for mesh-projection curves before sampling.
   // Not persisted (sanitizeCurveData drops it).
   projectedPoints?: ([number, number, number] | null)[];
@@ -54,8 +62,14 @@ function sanitizeHandleWeightMode(value: unknown): CurveHandleWeightMode {
 
 function sanitizeCurveKind(value: unknown): CurveKind {
   if (value === "circle") return "circle";
+  if (value === "arc") return "arc";
+  if (value === "helix") return "helix";
   if (value === "mesh-projection") return "mesh-projection";
   return "spline";
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function sanitizePoint(value: unknown, fallback: CurvePoint): CurvePoint {
@@ -134,12 +148,45 @@ export function createCircleCurveData(radius = 1): CurveData {
   };
 }
 
+export function createArcCurveData(radius = 1, fraction = 1, centered = false): CurveData {
+  const safeFraction = clamp(toFiniteNumber(fraction, 1), 0, 1);
+  return {
+    kind: "arc",
+    closed: safeFraction >= 1,
+    points: [],
+    radius: Math.max(0, toFiniteNumber(radius, 1)),
+    arcFraction: safeFraction,
+    arcCentered: Boolean(centered)
+  };
+}
+
+export function createHelixCurveData(radius = 1, pitch = 1, turns = 1): CurveData {
+  return {
+    kind: "helix",
+    closed: false,
+    points: [],
+    radius: Math.max(0, toFiniteNumber(radius, 1)),
+    helixPitch: Math.max(0, toFiniteNumber(pitch, 1)),
+    helixTurns: Math.max(0.01, toFiniteNumber(turns, 1))
+  };
+}
+
 export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveData {
   const baseline = fallback ?? createDefaultCurveData();
   const baselineKind = sanitizeCurveKind(baseline.kind);
   if (!value || typeof value !== "object") {
     if (baselineKind === "circle") {
       return createCircleCurveData(baseline.radius ?? 1);
+    }
+    if (baselineKind === "arc") {
+      return createArcCurveData(baseline.radius ?? 1, baseline.arcFraction ?? 1, baseline.arcCentered ?? false);
+    }
+    if (baselineKind === "helix") {
+      return createHelixCurveData(
+        baseline.radius ?? 1,
+        baseline.helixPitch ?? 1,
+        baseline.helixTurns ?? 1
+      );
     }
     if (baselineKind === "mesh-projection") {
       return { kind: "mesh-projection", closed: true, points: [] };
@@ -151,11 +198,41 @@ export function sanitizeCurveData(value: unknown, fallback?: CurveData): CurveDa
     };
   }
 
-  const source = value as { kind?: unknown; closed?: unknown; points?: unknown; radius?: unknown };
+  const source = value as {
+    kind?: unknown;
+    closed?: unknown;
+    points?: unknown;
+    radius?: unknown;
+    arcFraction?: unknown;
+    arcCentered?: unknown;
+    helixPitch?: unknown;
+    helixTurns?: unknown;
+  };
   const kind = sanitizeCurveKind(source.kind ?? baseline.kind);
   if (kind === "circle") {
     const fallbackRadius = typeof baseline.radius === "number" ? baseline.radius : 1;
     return createCircleCurveData(toFiniteNumber(source.radius, fallbackRadius));
+  }
+  if (kind === "arc") {
+    const fallbackRadius = typeof baseline.radius === "number" ? baseline.radius : 1;
+    const fallbackFraction = typeof baseline.arcFraction === "number" ? baseline.arcFraction : 1;
+    const fallbackCentered = typeof baseline.arcCentered === "boolean" ? baseline.arcCentered : false;
+    const centered = typeof source.arcCentered === "boolean" ? source.arcCentered : fallbackCentered;
+    return createArcCurveData(
+      toFiniteNumber(source.radius, fallbackRadius),
+      toFiniteNumber(source.arcFraction, fallbackFraction),
+      centered
+    );
+  }
+  if (kind === "helix") {
+    const fallbackRadius = typeof baseline.radius === "number" ? baseline.radius : 1;
+    const fallbackPitch = typeof baseline.helixPitch === "number" ? baseline.helixPitch : 1;
+    const fallbackTurns = typeof baseline.helixTurns === "number" ? baseline.helixTurns : 1;
+    return createHelixCurveData(
+      toFiniteNumber(source.radius, fallbackRadius),
+      toFiniteNumber(source.helixPitch, fallbackPitch),
+      toFiniteNumber(source.helixTurns, fallbackTurns)
+    );
   }
   if (kind === "mesh-projection") {
     return { kind: "mesh-projection", closed: true, points: [] };

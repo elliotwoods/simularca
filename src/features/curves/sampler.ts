@@ -59,6 +59,14 @@ function isCircleCurve(curve: CurveData): boolean {
   return curve.kind === "circle";
 }
 
+function isArcCurve(curve: CurveData): boolean {
+  return curve.kind === "arc";
+}
+
+function isHelixCurve(curve: CurveData): boolean {
+  return curve.kind === "helix";
+}
+
 function isMeshProjectionCurve(curve: CurveData): boolean {
   return curve.kind === "mesh-projection";
 }
@@ -66,6 +74,33 @@ function isMeshProjectionCurve(curve: CurveData): boolean {
 function getCircleRadius(curve: CurveData): number {
   const parsed = Number(curve.radius);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 1;
+}
+
+function getArcFraction(curve: CurveData): number {
+  const parsed = Number(curve.arcFraction);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function getArcCentered(curve: CurveData): boolean {
+  return Boolean(curve.arcCentered);
+}
+
+// Returns the starting angle for an arc sweep. When centered, the sweep is
+// symmetric about the +X axis (start at -π·fraction). Otherwise the arc starts
+// at +X and sweeps counter-clockwise.
+function getArcStartAngle(curve: CurveData): number {
+  return getArcCentered(curve) ? -Math.PI * getArcFraction(curve) : 0;
+}
+
+function getHelixPitch(curve: CurveData): number {
+  const parsed = Number(curve.helixPitch);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 1;
+}
+
+function getHelixTurns(curve: CurveData): number {
+  const parsed = Number(curve.helixTurns);
+  return Number.isFinite(parsed) ? Math.max(0.01, parsed) : 1;
 }
 
 interface PolylineSegment {
@@ -121,6 +156,27 @@ function enabledCurve(curve: CurveData): CurveData {
       closed: true,
       points: [],
       radius: getCircleRadius(curve)
+    };
+  }
+  if (isArcCurve(curve)) {
+    const fraction = getArcFraction(curve);
+    return {
+      kind: "arc",
+      closed: fraction >= 1,
+      points: [],
+      radius: getCircleRadius(curve),
+      arcFraction: fraction,
+      arcCentered: getArcCentered(curve)
+    };
+  }
+  if (isHelixCurve(curve)) {
+    return {
+      kind: "helix",
+      closed: false,
+      points: [],
+      radius: getCircleRadius(curve),
+      helixPitch: getHelixPitch(curve),
+      helixTurns: getHelixTurns(curve)
     };
   }
   if (isMeshProjectionCurve(curve)) {
@@ -196,6 +252,20 @@ export function sampleCurvePosition(curve: CurveData, t: number): [number, numbe
     const radius = getCircleRadius(curve);
     return [Math.cos(angle) * radius, Math.sin(angle) * radius, 0];
   }
+  if (isArcCurve(curve)) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    const angle = getArcStartAngle(curve) + clamped * Math.PI * 2 * getArcFraction(curve);
+    const radius = getCircleRadius(curve);
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius, 0];
+  }
+  if (isHelixCurve(curve)) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    const turns = getHelixTurns(curve);
+    const pitch = getHelixPitch(curve);
+    const radius = getCircleRadius(curve);
+    const angle = clamped * Math.PI * 2 * turns;
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius, clamped * pitch * turns];
+  }
   if (isMeshProjectionCurve(curve)) {
     const { segments, totalLength } = buildProjectionSegments(curve);
     const found = findProjectionSegmentAtT(segments, totalLength, t);
@@ -225,6 +295,24 @@ export function sampleCurveTangent(curve: CurveData, t: number): [number, number
     const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
     const angle = clamped * Math.PI * 2;
     return normalize3([-Math.sin(angle), Math.cos(angle), 0]);
+  }
+  if (isArcCurve(curve)) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    const angle = getArcStartAngle(curve) + clamped * Math.PI * 2 * getArcFraction(curve);
+    return normalize3([-Math.sin(angle), Math.cos(angle), 0]);
+  }
+  if (isHelixCurve(curve)) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+    const turns = getHelixTurns(curve);
+    const pitch = getHelixPitch(curve);
+    const radius = getCircleRadius(curve);
+    const angle = clamped * Math.PI * 2 * turns;
+    const angVel = Math.PI * 2 * turns;
+    return normalize3([
+      -Math.sin(angle) * radius * angVel,
+      Math.cos(angle) * radius * angVel,
+      pitch * turns
+    ]);
   }
   if (isMeshProjectionCurve(curve)) {
     const { segments, totalLength } = buildProjectionSegments(curve);
@@ -259,6 +347,16 @@ export function estimateCurveLength(curve: CurveData, samplesPerSegment = 24): n
   curve = enabledCurve(curve);
   if (isCircleCurve(curve)) {
     return Math.PI * 2 * getCircleRadius(curve);
+  }
+  if (isArcCurve(curve)) {
+    return Math.PI * 2 * getCircleRadius(curve) * getArcFraction(curve);
+  }
+  if (isHelixCurve(curve)) {
+    const turns = getHelixTurns(curve);
+    const pitch = getHelixPitch(curve);
+    const radius = getCircleRadius(curve);
+    const circumference = Math.PI * 2 * radius;
+    return turns * Math.hypot(circumference, pitch);
   }
   if (isMeshProjectionCurve(curve)) {
     return buildProjectionSegments(curve).totalLength;

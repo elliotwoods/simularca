@@ -2442,10 +2442,11 @@ export class MistVolumeController {
         continue;
       }
       const curveData = curveDataWithOverrides(sourceActor);
-      const pointCount = curveData.kind === "circle" ? 1
+      const isAnalyticKind = curveData.kind === "circle" || curveData.kind === "arc" || curveData.kind === "helix";
+      const pointCount = isAnalyticKind ? 1
         : curveData.kind === "mesh-projection" ? (getProjectedPolyline(sourceActor.id)?.hitCount ?? 0)
         : curveData.points.filter((point) => point.enabled !== false).length;
-      const segmentCount = curveData.kind === "circle" ? 1
+      const segmentCount = isAnalyticKind ? 1
         : curveData.kind === "mesh-projection" ? 1
         : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
       const sampleCount = curveData.kind === "mesh-projection"

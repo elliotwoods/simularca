@@ -1,7 +1,16 @@
 import type { ActorStatusEntry, ReloadableDescriptor } from "@/core/hotReload/types";
 import type { ActorNode, AppState } from "@/core/types";
 import { CURVE_ACTOR_SCHEMA } from "@/features/actors/actorTypes";
-import { curveDataWithOverrides, getCurveDataFromActor, getCurveSamplesPerSegmentFromActor, getCurveTypeFromActor } from "@/features/curves/model";
+import {
+  curveDataWithOverrides,
+  getCurveArcCenteredFromActor,
+  getCurveArcFractionFromActor,
+  getCurveDataFromActor,
+  getCurveHelixParamsFromActor,
+  getCurveRadiusFromActor,
+  getCurveSamplesPerSegmentFromActor,
+  getCurveTypeFromActor
+} from "@/features/curves/model";
 import { estimateCurveLength } from "@/features/curves/sampler";
 
 function formatRaycastLodSummary(actor: ActorNode, state: AppState): string {
@@ -34,18 +43,37 @@ function formatRaycastLodSummary(actor: ActorNode, state: AppState): string {
 }
 
 interface CurveRuntime {
-  curveType: "spline" | "circle" | "mesh-projection";
+  curveType: "spline" | "circle" | "arc" | "helix" | "mesh-projection";
   closed: boolean;
   samplesPerSegment: number;
   pointCount: number;
   resolution: number;
   targetCount: number;
+  radius?: number;
+  arcFraction?: number;
+  arcCentered?: boolean;
+  helixPitch?: number;
+  helixTurns?: number;
 }
 
 function resolveCurveType(value: unknown): CurveRuntime["curveType"] {
   if (value === "circle") return "circle";
+  if (value === "arc") return "arc";
+  if (value === "helix") return "helix";
   if (value === "mesh-projection") return "mesh-projection";
   return "spline";
+}
+
+function readArcFraction(params: { arcFraction?: unknown }, fallback = 1): number {
+  const parsed = Number(params.arcFraction);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function readNumber(value: unknown, min: number, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, parsed);
 }
 
 export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
@@ -65,9 +93,18 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
     const targetCount = Array.isArray(params.targetActorIds)
       ? (params.targetActorIds as unknown[]).filter((entry) => typeof entry === "string").length
       : 0;
+    const arcFraction = curveType === "arc" ? readArcFraction(params as { arcFraction?: unknown }, 1) : undefined;
+    const arcCentered = curveType === "arc" ? Boolean((params as { arcCentered?: unknown }).arcCentered) : undefined;
+    const closed = curveType === "arc"
+      ? (arcFraction ?? 1) >= 1
+      : curveType === "circle"
+        ? true
+        : curveType === "helix"
+          ? false
+          : Boolean(params.closed);
     return {
       curveType,
-      closed: Boolean(params.closed),
+      closed,
       samplesPerSegment: Math.max(2, Math.floor(Number(params.samplesPerSegment ?? 24))),
       pointCount: curveType === "spline"
         ? Array.isArray((params as { curveData?: { points?: unknown[] } }).curveData?.points)
@@ -75,12 +112,18 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
           : 0
         : 0,
       resolution: Math.max(3, Math.floor(Number(params.resolution ?? 64))),
-      targetCount
+      targetCount,
+      radius: curveType === "circle" || curveType === "arc" || curveType === "helix"
+        ? readNumber((params as { radius?: unknown }).radius, 0, 1)
+        : undefined,
+      arcFraction,
+      arcCentered,
+      helixPitch: curveType === "helix" ? readNumber((params as { helixPitch?: unknown }).helixPitch, 0, 1) : undefined,
+      helixTurns: curveType === "helix" ? readNumber((params as { helixTurns?: unknown }).helixTurns, 0.01, 1) : undefined
     };
   },
   updateRuntime(runtime, { params }) {
     runtime.curveType = resolveCurveType(params.curveType);
-    runtime.closed = Boolean(params.closed);
     runtime.samplesPerSegment = Math.max(
       2,
       Math.floor(Number(params.samplesPerSegment ?? runtime.samplesPerSegment ?? 24))
@@ -94,6 +137,32 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
     runtime.targetCount = Array.isArray(params.targetActorIds)
       ? (params.targetActorIds as unknown[]).filter((entry) => typeof entry === "string").length
       : 0;
+    if (runtime.curveType === "circle" || runtime.curveType === "arc" || runtime.curveType === "helix") {
+      runtime.radius = readNumber((params as { radius?: unknown }).radius, 0, runtime.radius ?? 1);
+    } else {
+      runtime.radius = undefined;
+    }
+    if (runtime.curveType === "arc") {
+      runtime.arcFraction = readArcFraction(params as { arcFraction?: unknown }, runtime.arcFraction ?? 1);
+      runtime.arcCentered = Boolean((params as { arcCentered?: unknown }).arcCentered);
+    } else {
+      runtime.arcFraction = undefined;
+      runtime.arcCentered = undefined;
+    }
+    if (runtime.curveType === "helix") {
+      runtime.helixPitch = readNumber((params as { helixPitch?: unknown }).helixPitch, 0, runtime.helixPitch ?? 1);
+      runtime.helixTurns = readNumber((params as { helixTurns?: unknown }).helixTurns, 0.01, runtime.helixTurns ?? 1);
+    } else {
+      runtime.helixPitch = undefined;
+      runtime.helixTurns = undefined;
+    }
+    runtime.closed = runtime.curveType === "arc"
+      ? (runtime.arcFraction ?? 1) >= 1
+      : runtime.curveType === "circle"
+        ? true
+        : runtime.curveType === "helix"
+          ? false
+          : Boolean(params.closed);
   },
   status: {
     build({ actor, state, runtimeStatus }) {
@@ -106,17 +175,36 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
       const hardCount = curve.points.filter((point) => point.mode === "hard").length;
       const normalCount = curve.points.length - autoCount - mirroredCount - hardCount;
       const defaultSegmentCount =
-        curveType === "circle" ? 1
+        curveType === "circle" || curveType === "arc" || curveType === "helix" ? 1
           : curveType === "mesh-projection" ? 0
           : curve.points.length < 2 ? 0
           : (curve.closed ? curve.points.length : curve.points.length - 1);
 
+      const isAnalyticRadius = curveType === "circle" || curveType === "arc" || curveType === "helix";
       const baseRows: ActorStatusEntry[] = [
         { label: "Type", value: "Curve" },
         { label: "Curve Type", value: curveType },
-        { label: "Closed", value: curveType === "circle" || curveType === "mesh-projection" ? true : curve.closed },
-        { label: "Radius (m)", value: curveType === "circle" ? curve.radius ?? 1 : "n/a" }
+        { label: "Closed", value: curve.closed },
+        { label: "Radius (m)", value: isAnalyticRadius ? getCurveRadiusFromActor(actor) : "n/a" }
       ];
+
+      const arcRows: ActorStatusEntry[] = curveType === "arc"
+        ? [
+            { label: "Arc Fraction", value: getCurveArcFractionFromActor(actor) },
+            { label: "Centered", value: getCurveArcCenteredFromActor(actor) }
+          ]
+        : [];
+
+      const helixRows: ActorStatusEntry[] = curveType === "helix"
+        ? (() => {
+            const { pitch, turns } = getCurveHelixParamsFromActor(actor);
+            return [
+              { label: "Pitch (m)", value: pitch },
+              { label: "Turns", value: turns },
+              { label: "Height (m)", value: pitch * turns }
+            ] as ActorStatusEntry[];
+          })()
+        : [];
 
       const splineRows: ActorStatusEntry[] = curveType === "spline"
         ? [
@@ -157,7 +245,7 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
         { label: "Error", value: runtimeStatus?.error ?? null, tone: "error" }
       ];
 
-      return [...baseRows, ...splineRows, ...projectionRows, ...trailingRows];
+      return [...baseRows, ...arcRows, ...helixRows, ...splineRows, ...projectionRows, ...trailingRows];
     }
   }
 };
