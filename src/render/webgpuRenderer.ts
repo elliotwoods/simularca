@@ -347,27 +347,60 @@ export class WebGpuViewport {
     return this.renderer.domElement;
   }
 
-  public async captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult> {
+  /**
+   * Coordinated toggle for debug helpers (grid, axes, curve tangent
+   * handles) and the actor transform gizmo. Use this anywhere that wants
+   * a "clean" render — the transform gizmo is not owned by
+   * SceneController, so calling setDebugHelpersVisible alone leaves it
+   * on-screen. Pair this with a try/finally so the live viewport
+   * recovers its previous state.
+   */
+  private setEditorHelpersVisible(visible: boolean): void {
+    this.sceneController.setDebugHelpersVisible(visible);
+    this.actorTransformController?.setVisible(visible);
+  }
+
+  public async captureViewportScreenshot(args: {
+    width: number;
+    height: number;
+    useVideoRenderSettings: boolean;
+  }): Promise<ViewportScreenshotResult> {
     if (this.disposed) {
       throw new Error("Viewport has been disposed.");
     }
-    void requestSize;
+    void args.width;
+    void args.height;
     while (this.renderInFlight) {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
     }
+    if (!args.useVideoRenderSettings) {
+      // Capture exactly as the user sees it. One rAF wait so we sample a
+      // committed swap-chain frame; blank-frame retry inside
+      // captureViewportScreenshotFromCanvas handles the unlikely empty
+      // read.
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      const asIs = await captureViewportScreenshotFromCanvas({
+        backend: "webgpu",
+        canvas: this.renderer.domElement
+      });
+      return { ...asIs, debugHelpersHidden: false };
+    }
     const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    const previousTransformGizmoVisible = this.actorTransformController?.getVisible() ?? true;
     try {
-      this.sceneController.setDebugHelpersVisible(false);
+      this.setEditorHelpersVisible(false);
       for (let passIndex = 0; passIndex < 2; passIndex += 1) {
         await this.renderOnce();
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
       }
-      return await captureViewportScreenshotFromCanvas({
+      const result = await captureViewportScreenshotFromCanvas({
         backend: "webgpu",
         canvas: this.renderer.domElement
       });
+      return { ...result, debugHelpersHidden: true };
     } finally {
       this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+      this.actorTransformController?.setVisible(previousTransformGizmoVisible);
     }
   }
 
@@ -379,8 +412,9 @@ export class WebGpuViewport {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
     }
     const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    const previousTransformGizmoVisible = this.actorTransformController?.getVisible() ?? true;
     try {
-      this.sceneController.setDebugHelpersVisible(false);
+      this.setEditorHelpersVisible(false);
       for (let passIndex = 0; passIndex < 2; passIndex += 1) {
         await this.renderOnce();
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
@@ -388,6 +422,7 @@ export class WebGpuViewport {
       return await captureViewportThumbnail({ canvas: this.renderer.domElement });
     } finally {
       this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+      this.actorTransformController?.setVisible(previousTransformGizmoVisible);
     }
   }
 

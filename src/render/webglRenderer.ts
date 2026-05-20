@@ -389,27 +389,49 @@ export class WebGlViewport {
     return this.renderer.domElement;
   }
 
-  public async captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult> {
+  /** See WebGpuViewport.setEditorHelpersVisible — same coordinated toggle. */
+  private setEditorHelpersVisible(visible: boolean): void {
+    this.sceneController.setDebugHelpersVisible(visible);
+    this.actorTransformController?.setVisible(visible);
+  }
+
+  public async captureViewportScreenshot(args: {
+    width: number;
+    height: number;
+    useVideoRenderSettings: boolean;
+  }): Promise<ViewportScreenshotResult> {
     if (this.disposed) {
       throw new Error("Viewport has been disposed.");
     }
-    void requestSize;
+    void args.width;
+    void args.height;
     while (this.renderInFlight) {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
     }
+    if (!args.useVideoRenderSettings) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      const asIs = await captureViewportScreenshotFromCanvas({
+        backend: "webgl2",
+        canvas: this.renderer.domElement
+      });
+      return { ...asIs, debugHelpersHidden: false };
+    }
     const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    const previousTransformGizmoVisible = this.actorTransformController?.getVisible() ?? true;
     try {
-      this.sceneController.setDebugHelpersVisible(false);
+      this.setEditorHelpersVisible(false);
       for (let passIndex = 0; passIndex < 2; passIndex += 1) {
         await this.renderOnce();
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
       }
-      return await captureViewportScreenshotFromCanvas({
+      const result = await captureViewportScreenshotFromCanvas({
         backend: "webgl2",
         canvas: this.renderer.domElement
       });
+      return { ...result, debugHelpersHidden: true };
     } finally {
       this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+      this.actorTransformController?.setVisible(previousTransformGizmoVisible);
     }
   }
 
@@ -421,8 +443,9 @@ export class WebGlViewport {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
     }
     const previousDebugHelpersVisible = this.sceneController.getDebugHelpersVisible();
+    const previousTransformGizmoVisible = this.actorTransformController?.getVisible() ?? true;
     try {
-      this.sceneController.setDebugHelpersVisible(false);
+      this.setEditorHelpersVisible(false);
       for (let passIndex = 0; passIndex < 2; passIndex += 1) {
         await this.renderOnce();
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
@@ -430,6 +453,7 @@ export class WebGlViewport {
       return await captureViewportThumbnail({ canvas: this.renderer.domElement });
     } finally {
       this.sceneController.setDebugHelpersVisible(previousDebugHelpersVisible);
+      this.actorTransformController?.setVisible(previousTransformGizmoVisible);
     }
   }
 

@@ -18,15 +18,28 @@ describe("viewportScreenshot helpers", () => {
     expect(() => assertViewportScreenshotSize(320, 0)).toThrow("Viewport screenshot is unavailable");
   });
 
-  it("formats a success status message with backend details", () => {
+  it("formats a success status message that reflects the helpers-hidden mode", () => {
     expect(
       formatViewportScreenshotStatus({
         pngBytes: new Uint8Array(),
         width: 2560,
         height: 1440,
-        backend: "webgpu"
+        backend: "webgpu",
+        debugHelpersHidden: true
       })
-    ).toBe("Viewport screenshot copied to clipboard. 2560 x 1440 PNG | WEBGPU | debug views hidden.");
+    ).toBe("Viewport screenshot copied to clipboard. 2560 x 1440 PNG | WEBGPU | helpers hidden.");
+  });
+
+  it("formats a success status message for the viewport-as-is path", () => {
+    expect(
+      formatViewportScreenshotStatus({
+        pngBytes: new Uint8Array(),
+        width: 1920,
+        height: 1080,
+        backend: "webgl2",
+        debugHelpersHidden: false
+      })
+    ).toBe("Viewport screenshot copied to clipboard. 1920 x 1080 PNG | WEBGL2 | viewport as-is.");
   });
 
   it("detects whether a screenshot contains any opaque pixels", () => {

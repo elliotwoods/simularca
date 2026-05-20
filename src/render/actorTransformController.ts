@@ -65,6 +65,22 @@ export class ActorTransformController {
     window.addEventListener(CURVE_VERTEX_SELECT_EVENT, this.onCurveVertexSelect as EventListener);
   }
 
+  /**
+   * Show or hide the transform gizmo. Used by the viewport's coordinated
+   * `setEditorHelpersVisible(...)` so that hiding helpers (e.g. during a
+   * "clean" screenshot or video render) also hides the active transform
+   * controls. This is a hard override: the controller's attach/detach
+   * logic re-sets `transformHelper.visible` on the next selection change,
+   * so callers that flip this off should restore it explicitly when done.
+   */
+  public setVisible(visible: boolean): void {
+    this.transformHelper.visible = visible;
+  }
+
+  public getVisible(): boolean {
+    return this.transformHelper.visible;
+  }
+
   public dispose(): void {
     this.domElement.removeEventListener("pointerdown", this.onPointerDownCapture, true);
     this.domElement.removeEventListener("pointerup", this.onPointerUpCapture, true);

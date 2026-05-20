@@ -32,7 +32,11 @@ import { WebGlViewport } from "@/render/webglRenderer";
 interface ViewportRuntime {
   start(): Promise<void>;
   stop(): Promise<void>;
-  captureViewportScreenshot(requestSize: { width: number; height: number }): Promise<ViewportScreenshotResult>;
+  captureViewportScreenshot(args: {
+    width: number;
+    height: number;
+    useVideoRenderSettings: boolean;
+  }): Promise<ViewportScreenshotResult>;
   captureViewportThumbnail(): Promise<ViewportThumbnailResult>;
   setActorTransformMode(mode: ActorTransformMode): void;
   setActorTransformSnappingEnabled(enabled: boolean): void;
@@ -42,6 +46,13 @@ interface ViewportRuntime {
 interface ViewportPanelProps {
   suspended?: boolean;
   screenshotRequestId?: number;
+  /**
+   * Latched alongside `screenshotRequestId`: when true, the capture
+   * temporarily hides debug helpers + the transform gizmo (the
+   * "video-render look", triggered by Shift-clicking the screenshot
+   * button). When false (default), the canvas is captured as-is.
+   */
+  screenshotUseVideoRenderSettings?: boolean;
   onScreenshotBusyChange?: (busy: boolean) => void;
 }
 
@@ -451,7 +462,8 @@ export function ViewportPanel(props: ViewportPanelProps) {
     let active = true;
     void viewportRuntime.captureViewportScreenshot({
       width: captureWidth,
-      height: captureHeight
+      height: captureHeight,
+      useVideoRenderSettings: props.screenshotUseVideoRenderSettings ?? false
     })
       .then(async (result) => {
         if (!window.electronAPI?.writeClipboardImagePng) {

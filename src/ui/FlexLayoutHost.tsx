@@ -492,6 +492,7 @@ interface FlexLayoutHostProps {
   viewportSuspended?: boolean;
   viewportFullscreen?: boolean;
   viewportScreenshotRequestId?: number;
+  viewportScreenshotUseVideoRenderSettings?: boolean;
   onViewportScreenshotBusyChange?: (busy: boolean) => void;
   profileResults: ProfileSessionResult | null;
   profileResultsOpen: boolean;
@@ -632,6 +633,7 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
             <ViewportPanel
               suspended={props.viewportSuspended}
               screenshotRequestId={props.viewportScreenshotRequestId}
+              screenshotUseVideoRenderSettings={props.viewportScreenshotUseVideoRenderSettings}
               onScreenshotBusyChange={props.onViewportScreenshotBusyChange}
             />
           );
@@ -660,6 +662,7 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
       props.pendingDropFileName,
       props.profileResults,
       props.viewportScreenshotRequestId,
+      props.viewportScreenshotUseVideoRenderSettings,
       props.viewportSuspended,
       viewerConfig
     ]

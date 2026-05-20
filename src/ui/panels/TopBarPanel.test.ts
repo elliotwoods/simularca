@@ -134,6 +134,15 @@ describe("TopBarPanel screenshot button", () => {
       screenshotButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onCaptureViewportScreenshot).toHaveBeenCalledTimes(1);
+    expect(onCaptureViewportScreenshot.mock.calls[0]?.[0]?.shiftKey).toBe(false);
+
+    // Shift-click → handler receives a synthetic event whose shiftKey is
+    // true, so App can switch to the "video-render look" capture path.
+    await act(async () => {
+      screenshotButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+    });
+    expect(onCaptureViewportScreenshot).toHaveBeenCalledTimes(2);
+    expect(onCaptureViewportScreenshot.mock.calls[1]?.[0]?.shiftKey).toBe(true);
 
     await act(async () => {
       root.unmount();

@@ -145,6 +145,9 @@ export function App() {
   const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
   const [viewportScreenshotRequestId, setViewportScreenshotRequestId] = useState(0);
   const [viewportScreenshotBusy, setViewportScreenshotBusy] = useState(false);
+  // Latched alongside the request id: Shift-click → true (video-render
+  // look, helpers hidden), plain click → false (capture as-is).
+  const [viewportScreenshotUseVideoRenderSettings, setViewportScreenshotUseVideoRenderSettings] = useState(false);
   const [viewportFullscreen, setViewportFullscreen] = useState(false);
   const renderHostElRef = useRef<HTMLDivElement | null>(null);
   const renderPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1216,10 +1219,11 @@ export function App() {
         onToggleKeyboardMap={() => setKeyboardMapOpen((value) => !value)}
         onOpenRender={() => setRenderModalOpen(true)}
         onOpenProfiling={() => setProfileModalOpen(true)}
-        onCaptureViewportScreenshot={() => {
+        onCaptureViewportScreenshot={(event) => {
           if (viewportScreenshotBusy) {
             return;
           }
+          setViewportScreenshotUseVideoRenderSettings(event.shiftKey);
           setViewportScreenshotBusy(true);
           setViewportScreenshotRequestId((value) => value + 1);
         }}
@@ -1261,6 +1265,7 @@ export function App() {
           viewportSuspended={mainViewportSuspended}
           viewportFullscreen={viewportFullscreen}
           viewportScreenshotRequestId={viewportScreenshotRequestId}
+          viewportScreenshotUseVideoRenderSettings={viewportScreenshotUseVideoRenderSettings}
           onViewportScreenshotBusyChange={setViewportScreenshotBusy}
           profileResults={profileResults}
           profileResultsOpen={profileResultsOpen}

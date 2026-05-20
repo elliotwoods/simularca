@@ -76,6 +76,12 @@ export interface ViewportScreenshotResult {
   width: number;
   height: number;
   backend: RenderEngine;
+  /**
+   * True when the capture pipeline temporarily hid debug helpers + editor
+   * overlays (the "video-render-style" path triggered by Shift-click).
+   * False when the canvas was captured exactly as the user sees it.
+   */
+  debugHelpersHidden: boolean;
 }
 
 export function hasOpaquePixel(rgbaBytes: ArrayLike<number>): boolean {
@@ -102,7 +108,7 @@ export function assertViewportScreenshotSize(width: number, height: number): { w
 export function formatViewportScreenshotStatus(result: ViewportScreenshotResult): string {
   return `Viewport screenshot copied to clipboard. ${result.width} x ${result.height} PNG | ${
     result.backend === "webgl2" ? "WEBGL2" : "WEBGPU"
-  } | debug views hidden.`;
+  } | ${result.debugHelpersHidden ? "helpers hidden" : "viewport as-is"}.`;
 }
 
 export async function captureViewportScreenshotFromCanvas(args: {
@@ -126,6 +132,7 @@ export async function captureViewportScreenshotFromCanvas(args: {
       width,
       height,
       backend: args.backend,
+      debugHelpersHidden: false,
       isBlank: !hasOpaquePixel(imageData.data)
     };
   };

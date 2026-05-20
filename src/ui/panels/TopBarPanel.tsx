@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -78,7 +78,7 @@ export interface TopBarPanelVisibility {
 interface TopBarPanelProps {
   onToggleKeyboardMap: () => void;
   onOpenRender: () => void;
-  onCaptureViewportScreenshot: () => void;
+  onCaptureViewportScreenshot: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   canCaptureViewportScreenshot: boolean;
   viewportScreenshotBusy: boolean;
   onOpenProfiling: () => void;
@@ -446,10 +446,10 @@ export function TopBarPanel(props: TopBarPanelProps) {
               ? "Copy viewport screenshot to clipboard (desktop only)"
               : props.viewportScreenshotBusy
                 ? "Viewport screenshot in progress"
-                : "Copy viewport screenshot to clipboard"
+                : "Copy viewport screenshot to clipboard\nShift-click for clean render (helpers off)"
           }
           aria-label="Copy viewport screenshot to clipboard"
-          onClick={props.onCaptureViewportScreenshot}
+          onClick={(event) => props.onCaptureViewportScreenshot(event)}
           disabled={!props.canCaptureViewportScreenshot || props.viewportScreenshotBusy}
         >
           <FontAwesomeIcon icon={faCamera} />
