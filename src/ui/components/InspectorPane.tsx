@@ -579,7 +579,7 @@ const BEAM_SHADER_PARAM_KEYS = new Set([
   "mediumPreset",
   "beamLuminousFlux",
   "selfExtinction",
-  "enableInverseSquareFalloff",
+  "enableInverseFalloff",
   "enableAnisotropicPhase",
   "enableAxialPathLength",
   "enableGrazingPathLength",
