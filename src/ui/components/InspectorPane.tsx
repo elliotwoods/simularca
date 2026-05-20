@@ -3205,6 +3205,7 @@ function ComponentSelectionInspectorView(props: ComponentSelectionInspectorViewP
               value={typeof current === "string" ? current : "#000000"}
               mixed={mixed}
               disabled={props.readOnly}
+              alpha={definition.alpha === true}
               showReset={canReset}
               onReset={() => {
                 props.updateSelectedComponentParams(definition.key, String(defaultValue));
@@ -4643,7 +4644,8 @@ export function InspectorPane() {
       kernel,
       appState.selection,
       appState.actors,
-      kernel.descriptorRegistry.listByKind("actor")
+      kernel.descriptorRegistry.listByKind("actor"),
+      appState.time.running
     );
     return (
       <>
@@ -5590,6 +5592,7 @@ export function InspectorPane() {
               value={typeof current === "string" ? current : "#000000"}
               mixed={mixed}
               disabled={readOnly}
+              alpha={definition.alpha === true}
               showReset={canReset}
               onReset={() => {
                 updateSelectedActorParams(definition.key, String(defaultValue));

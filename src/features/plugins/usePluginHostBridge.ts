@@ -33,7 +33,8 @@ export function buildPluginHostBridge(
   kernel: AppKernel,
   selection: SelectionEntry[],
   actors: Record<string, ActorNode>,
-  actorDescriptors: ReloadableDescriptor[]
+  actorDescriptors: ReloadableDescriptor[],
+  transportPlaying: boolean
 ): PluginHostBridge {
   const selectedActors: PluginHostActorSnapshot[] = [];
   for (const entry of selection) {
@@ -79,6 +80,14 @@ export function buildPluginHostBridge(
     },
     updateActorVisibility(actorId, mode: ActorVisibilityMode) {
       kernel.store.getState().actions.setActorVisibilityMode(actorId, mode);
+    },
+    transportPlaying,
+    toggleTransport() {
+      // Read fresh from the kernel store rather than closing over the captured
+      // snapshot -- a slightly stale `transportPlaying` here would flip the
+      // wrong direction on rapid double-toggles.
+      const store = kernel.store.getState();
+      store.actions.setTimeRunning(!store.state.time.running);
     }
   };
 }
@@ -92,8 +101,16 @@ export function usePluginHostBridge(): PluginHostBridge {
   const kernel = useKernel();
   const selection = useAppStore((store) => store.state.selection);
   const actors = useAppStore((store) => store.state.actors);
+  const transportPlaying = useAppStore((store) => store.state.time.running);
   return useMemo(
-    () => buildPluginHostBridge(kernel, selection, actors, kernel.descriptorRegistry.listByKind("actor")),
-    [kernel, selection, actors]
+    () =>
+      buildPluginHostBridge(
+        kernel,
+        selection,
+        actors,
+        kernel.descriptorRegistry.listByKind("actor"),
+        transportPlaying
+      ),
+    [kernel, selection, actors, transportPlaying]
   );
 }

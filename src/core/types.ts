@@ -186,6 +186,11 @@ export interface StringParameterDefinition extends ParameterDefinitionBase {
 
 export interface ColorParameterDefinition extends ParameterDefinitionBase {
   type: "color";
+  /** When true, the value is an 8-digit hex `#RRGGBBAA` carrying alpha;
+   *  otherwise (default) the value is a 6-digit `#RRGGBB`. Driven by the
+   *  Electra One surface so the zoomed-in RGBA control knows which encoder
+   *  to bind to alpha vs. HSV V (brightness). */
+  alpha?: boolean;
 }
 
 export interface Vector3ParameterDefinition extends ParameterDefinitionBase {

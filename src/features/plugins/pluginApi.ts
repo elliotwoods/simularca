@@ -75,6 +75,10 @@ export interface PluginHostBridge {
   updateActorEnabled(actorId: string, enabled: boolean): void;
   /** Set the actor's visibility mode. */
   updateActorVisibility(actorId: string, mode: ActorVisibilityMode): void;
+  /** Current transport playback state. Mirrors `state.time.running`. */
+  transportPlaying: boolean;
+  /** Toggle transport play/pause (same effect as the Space-bar shortcut). */
+  toggleTransport(): void;
 }
 
 export interface PluginViewComponentProps {
