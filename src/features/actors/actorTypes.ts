@@ -1182,6 +1182,136 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
   ]
 };
 
+export const DIMENSION_ACTOR_SCHEMA: ParameterSchema = {
+  id: "actor.dimension",
+  title: "Dimension",
+  params: [
+    {
+      key: "axis",
+      label: "Axis",
+      type: "select",
+      options: ["direct", "x", "y", "z"],
+      defaultValue: "direct",
+      description: "Measurement axis. Direct = straight point-to-point distance; X/Y/Z = distance along that world axis."
+    },
+    {
+      key: "units",
+      label: "Units",
+      type: "select",
+      options: ["m", "cm", "mm", "ft", "in"],
+      defaultValue: "m"
+    },
+    {
+      key: "decimals",
+      label: "Decimals",
+      type: "number",
+      min: 0,
+      max: 6,
+      step: 1,
+      precision: 0,
+      defaultValue: 2
+    },
+    {
+      key: "showValue",
+      label: "Show Value",
+      type: "boolean",
+      defaultValue: true
+    },
+    {
+      key: "lineColor",
+      label: "Line Color",
+      type: "color",
+      groupKey: "style",
+      groupLabel: "Style",
+      defaultValue: "#ffcc33"
+    },
+    {
+      key: "textColor",
+      label: "Text Color",
+      type: "color",
+      groupKey: "style",
+      groupLabel: "Style",
+      defaultValue: "#ffffff"
+    },
+    {
+      key: "textSizePx",
+      label: "Text Size",
+      type: "number",
+      unit: "px",
+      min: 8,
+      max: 72,
+      step: 1,
+      precision: 0,
+      groupKey: "style",
+      groupLabel: "Style",
+      defaultValue: 14
+    },
+    {
+      key: "extensionGap",
+      label: "Offset",
+      type: "number",
+      unit: "m",
+      min: 0,
+      step: 0.05,
+      precision: 2,
+      groupKey: "style",
+      groupLabel: "Style",
+      description: "How far the measure line is offset from the measured points. Set interactively while placing, or drag the handle on a selected dimension.",
+      defaultValue: 0.25
+    }
+  ]
+};
+
+export const ANNOTATION_ACTOR_SCHEMA: ParameterSchema = {
+  id: "actor.annotation",
+  title: "Annotation",
+  params: [
+    {
+      key: "text",
+      label: "Text",
+      type: "string",
+      defaultValue: "Note"
+    },
+    {
+      key: "leader",
+      label: "Leader Line",
+      type: "boolean",
+      description: "Draw a short leader line from the label to its anchor point.",
+      defaultValue: true
+    },
+    {
+      key: "textColor",
+      label: "Text Color",
+      type: "color",
+      groupKey: "style",
+      groupLabel: "Style",
+      defaultValue: "#ffffff"
+    },
+    {
+      key: "backgroundColor",
+      label: "Background",
+      type: "color",
+      alpha: true,
+      groupKey: "style",
+      groupLabel: "Style",
+      defaultValue: "#000000cc"
+    },
+    {
+      key: "textSizePx",
+      label: "Text Size",
+      type: "number",
+      unit: "px",
+      min: 8,
+      max: 72,
+      step: 1,
+      precision: 0,
+      groupKey: "style",
+      groupLabel: "Style",
+      defaultValue: 14
+    }
+  ]
+};
+
 export const CAMERA_PATH_ACTOR_SCHEMA: ParameterSchema = {
   id: "actor.cameraPath",
   title: "Camera Path",

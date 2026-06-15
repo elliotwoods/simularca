@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import * as THREE from "three";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faMagnet, faMaximize, faRotateRight, faUpDownLeftRight } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBorderAll,
+  faBraille,
+  faCircleDot,
+  faCrosshairs,
+  faLocationDot,
+  faMagnet,
+  faMaximize,
+  faRotateRight,
+  faUpDownLeftRight,
+  faVectorSquare
+} from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
 import type { CameraState, SceneFramePacingSettings } from "@/core/types";
@@ -222,6 +233,9 @@ export function ViewportPanel(props: ViewportPanelProps) {
   const framePacing = useAppStore((store) => store.state.scene.framePacing);
   const camera = useAppStore((store) => store.state.camera);
   const rememberedPerspectiveCamera = useAppStore((store) => store.state.lastPerspectiveCamera);
+  const interactionTool = useAppStore((store) => store.state.interactionTool);
+  const dimensionSnap = useAppStore((store) => store.state.dimensionSnap);
+  const dimensionSnapHover = useAppStore((store) => store.state.dimensionSnapHover);
   const loadingBannerText = useAppStore((store) => {
     const statuses = store.state.actorStatusByActorId;
     const actors = store.state.actors;
@@ -819,6 +833,68 @@ export function ViewportPanel(props: ViewportPanelProps) {
           >
             <FontAwesomeIcon icon={faMagnet} />
           </button>
+        </div>
+      ) : null}
+      {!props.suspended && interactionTool !== "select" ? (
+        <div className="viewport-snap-toolbar" role="toolbar" aria-label="Dimension snapping">
+          <span className="viewport-snap-title">Snap</span>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.vertex ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ vertex: !dimensionSnap.vertex })}
+            title="Snap to actor landmarks (e.g. vertices, beam emitters, etc)"
+            aria-pressed={dimensionSnap.vertex}
+          >
+            <FontAwesomeIcon icon={faCircleDot} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.surface ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ surface: !dimensionSnap.surface })}
+            title="Snap to surfaces (anywhere on a face)"
+            aria-pressed={dimensionSnap.surface}
+          >
+            <FontAwesomeIcon icon={faVectorSquare} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.origin ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ origin: !dimensionSnap.origin })}
+            title="Snap to the world origin"
+            aria-pressed={dimensionSnap.origin}
+          >
+            <FontAwesomeIcon icon={faCrosshairs} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.grid ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ grid: !dimensionSnap.grid })}
+            title="Snap to grid intersections on the ground plane"
+            aria-pressed={dimensionSnap.grid}
+          >
+            <FontAwesomeIcon icon={faBorderAll} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.free ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ free: !dimensionSnap.free })}
+            title="Allow free points on a camera-facing plane"
+            aria-pressed={dimensionSnap.free}
+          >
+            <FontAwesomeIcon icon={faLocationDot} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.showSnapPoints ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ showSnapPoints: !dimensionSnap.showSnapPoints })}
+            title="Show snap-point dots at nearby actor landmarks"
+            aria-pressed={dimensionSnap.showSnapPoints}
+          >
+            <FontAwesomeIcon icon={faBraille} />
+          </button>
+          <span className="viewport-snap-readout" title="Current snap target">
+            {dimensionSnapHover ? `${dimensionSnapHover.actorName} · ${dimensionSnapHover.pointName}` : "—"}
+          </span>
         </div>
       ) : null}
       {!props.suspended ? (

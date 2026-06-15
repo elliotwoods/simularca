@@ -16,6 +16,11 @@ import type {
   ConsoleCommandEntry,
   ConsoleLogEntry,
   ComponentNode,
+  DimensionAxis,
+  DimensionSnapHover,
+  DimensionSnapSettings,
+  InteractionTool,
+  Landmark,
   LogLevel,
   Material,
   ParameterValues,
@@ -99,6 +104,14 @@ export interface AppActions {
     pluginType?: string;
     select?: boolean;
   }): string;
+  createDimension(input: {
+    start: Landmark;
+    end: Landmark;
+    axis?: DimensionAxis;
+    offsetDir?: [number, number, number];
+    extensionGap?: number;
+  }): string;
+  createAnnotation(input: { anchor: Landmark; text?: string }): string;
   deleteSelection(): void;
   renameNode(node: SelectionEntry, name: string): void;
   setActorTransform(actorId: string, key: "position" | "rotation" | "scale", value: [number, number, number]): void;
@@ -139,6 +152,9 @@ export interface AppActions {
   setRuntimeDebugSettings(settings: Partial<RuntimeDebugState>): void;
   setStats(stats: Partial<SceneStats>): void;
   setActorStatus(actorId: string, status: AppState["actorStatusByActorId"][string] | null): void;
+  setInteractionTool(tool: InteractionTool): void;
+  setDimensionSnap(partial: Partial<DimensionSnapSettings>): void;
+  setDimensionSnapHover(hover: DimensionSnapHover): void;
   setActorFrameTimings(timings: Record<string, number>): void;
   createMaterial(input?: Partial<Material>): string;
   createMaterialFromDef(def: Omit<Material, "id">): string;
@@ -306,6 +322,25 @@ function insertActor(state: AppState, input: {
   state.stats.actorCount = Object.keys(state.actors).length;
   state.stats.actorCountEnabled = Object.values(state.actors).filter((entry) => entry.enabled).length;
   state.dirty = true;
+}
+
+const DIMENSIONS_FOLDER_NAME = "Dimensions";
+
+/**
+ * Find the shared "Dimensions" folder (an empty actor used purely to group
+ * dimension/annotation actors in the scene tree), creating it at the scene root
+ * if it doesn't exist yet. Operates on an Immer draft.
+ */
+function findOrCreateDimensionsFolder(state: AppState): string {
+  const existing = Object.values(state.actors).find(
+    (actor) => actor.actorType === "empty" && actor.name === DIMENSIONS_FOLDER_NAME
+  );
+  if (existing) {
+    return existing.id;
+  }
+  const id = createId("actor");
+  insertActor(state, { id, actorType: "empty", name: DIMENSIONS_FOLDER_NAME, select: false });
+  return id;
 }
 
 export function createAppStore(mode: AppMode): AppStoreApi {
@@ -582,8 +617,11 @@ export function createAppStore(mode: AppMode): AppStoreApi {
                 if (typeof grid.size === "number" && Number.isFinite(grid.size)) {
                   draft.scene.helpers.grid.size = Math.max(0.001, grid.size);
                 }
-                if (typeof grid.divisions === "number" && Number.isFinite(grid.divisions)) {
-                  draft.scene.helpers.grid.divisions = Math.max(1, Math.round(grid.divisions));
+                if (typeof grid.majorPitch === "number" && Number.isFinite(grid.majorPitch)) {
+                  draft.scene.helpers.grid.majorPitch = Math.max(1e-3, grid.majorPitch);
+                }
+                if (typeof grid.minorPitch === "number" && Number.isFinite(grid.minorPitch)) {
+                  draft.scene.helpers.grid.minorPitch = Math.max(1e-3, grid.minorPitch);
                 }
                 if (typeof grid.majorColor === "string") {
                   draft.scene.helpers.grid.majorColor = grid.majorColor;
@@ -664,6 +702,61 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         set({
           state: produce(get().state, (draft) => {
             insertActor(draft, { id, actorType, name, parentActorId, pluginType, select });
+          })
+        });
+        return id;
+      },
+      createDimension({ start, end, axis = "direct", offsetDir, extensionGap }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return "";
+        }
+        const id = createId("actor");
+        withHistory(get, set, "Create dimension");
+        set({
+          state: produce(get().state, (draft) => {
+            const folderId = findOrCreateDimensionsFolder(draft);
+            insertActor(draft, {
+              id,
+              actorType: "dimension",
+              name: "Dimension 1",
+              parentActorId: folderId,
+              select: true
+            });
+            const actor = draft.actors[id];
+            if (actor) {
+              const params: ParameterValues = { start, end, axis };
+              if (offsetDir) {
+                params.offsetDir = offsetDir;
+              }
+              if (typeof extensionGap === "number" && Number.isFinite(extensionGap)) {
+                params.extensionGap = Math.max(0, extensionGap);
+              }
+              actor.params = params;
+            }
+          })
+        });
+        return id;
+      },
+      createAnnotation({ anchor, text = "Note" }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return "";
+        }
+        const id = createId("actor");
+        withHistory(get, set, "Create annotation");
+        set({
+          state: produce(get().state, (draft) => {
+            const folderId = findOrCreateDimensionsFolder(draft);
+            insertActor(draft, {
+              id,
+              actorType: "annotation",
+              name: "Note 1",
+              parentActorId: folderId,
+              select: true
+            });
+            const actor = draft.actors[id];
+            if (actor) {
+              actor.params = { anchor, text };
+            }
           })
         });
         return id;
@@ -1095,6 +1188,27 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               return;
             }
             draft.actorStatusByActorId[actorId] = status;
+          })
+        });
+      },
+      setInteractionTool(tool) {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.interactionTool = tool;
+          })
+        });
+      },
+      setDimensionSnap(partial) {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.dimensionSnap = { ...draft.dimensionSnap, ...partial };
+          })
+        });
+      },
+      setDimensionSnapHover(hover) {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.dimensionSnapHover = hover;
           })
         });
       },

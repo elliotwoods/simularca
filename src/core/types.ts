@@ -21,7 +21,43 @@ export type ActorType =
   | "curve"
   | "camera-path"
   | "cross-section"
+  | "dimension"
+  | "annotation"
   | "plugin";
+
+/**
+ * A picked point used by dimension/annotation actors. Landmarks live-follow:
+ * `actor` landmarks re-resolve to a world point every frame from the referenced
+ * actor's current transform, so dimensions track moving/animated actors.
+ *  - `actor`: a point fixed in a referenced actor's local space (e.g. a snapped
+ *    mesh vertex or beam-emitter position). `localOffset` is in the actor's local space.
+ *  - `origin`: the world origin (0,0,0).
+ *  - `world`: a fixed world-space coordinate (arbitrary free-space point).
+ */
+export type Landmark =
+  | { kind: "actor"; actorId: string; localOffset: [number, number, number]; label?: string }
+  | { kind: "origin" }
+  | { kind: "world"; point: [number, number, number] };
+
+/** Measurement axis for a dimension. "direct" = point-to-point Euclidean distance. */
+export type DimensionAxis = "direct" | "x" | "y" | "z";
+
+/** Ephemeral viewport tool the toolbar arms; drives placement controllers. Not persisted. */
+export type InteractionTool = "select" | "dimension" | "annotation";
+
+/** Which snap targets the dimension/annotation placement tool considers. Ephemeral, not persisted. */
+export interface DimensionSnapSettings {
+  vertex: boolean;
+  surface: boolean;
+  origin: boolean;
+  grid: boolean;
+  free: boolean;
+  /** Display toggle (not a snap target): show dots at nearby landmark vertices. */
+  showSnapPoints: boolean;
+}
+
+/** Live readout of what the placement cursor is currently snapped to. Ephemeral, not persisted. */
+export type DimensionSnapHover = { actorName: string; pointName: string } | null;
 
 export type DxfInputUnits = "millimeters" | "centimeters" | "meters" | "inches" | "feet";
 export type DxfSourcePlane = "auto" | "xy" | "yz" | "xz";
@@ -131,7 +167,8 @@ export interface SceneAmbientOcclusionSettings {
 export interface SceneGridSettings {
   visible: boolean;
   size: number;
-  divisions: number;
+  majorPitch: number;
+  minorPitch: number;
   majorColor: string;
   minorColor: string;
   opacity: number;
@@ -551,6 +588,13 @@ export interface AppState {
   // existing panel even when it is already open.
   hdrPreviewOpen: boolean;
   hdrPreviewFocusToken: number;
+  // Ephemeral UI state (not persisted): the armed viewport tool. Drives the
+  // toolbar highlight and tells the dimension/annotation placement controller
+  // whether it should capture pointer events.
+  interactionTool: InteractionTool;
+  // Ephemeral snap configuration + live readout for the dimension/annotation tool.
+  dimensionSnap: DimensionSnapSettings;
+  dimensionSnapHover: DimensionSnapHover;
   pluginsEnabled: Record<string, boolean>;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];

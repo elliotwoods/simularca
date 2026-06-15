@@ -914,8 +914,10 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     props.appState.scene.colorBufferPrecision !== DEFAULT_SCENE_COLOR_BUFFER_PRECISION;
   const canResetGridVisible = props.appState.scene.helpers.grid.visible !== DEFAULT_SCENE_HELPERS.grid.visible;
   const canResetGridSize = Math.abs(props.appState.scene.helpers.grid.size - DEFAULT_SCENE_HELPERS.grid.size) > 1e-9;
-  const canResetGridDivisions =
-    props.appState.scene.helpers.grid.divisions !== DEFAULT_SCENE_HELPERS.grid.divisions;
+  const canResetGridMajorPitch =
+    Math.abs(props.appState.scene.helpers.grid.majorPitch - DEFAULT_SCENE_HELPERS.grid.majorPitch) > 1e-9;
+  const canResetGridMinorPitch =
+    Math.abs(props.appState.scene.helpers.grid.minorPitch - DEFAULT_SCENE_HELPERS.grid.minorPitch) > 1e-9;
   const canResetGridMajorColor =
     props.appState.scene.helpers.grid.majorColor.toLowerCase() !== DEFAULT_SCENE_HELPERS.grid.majorColor;
   const canResetGridMinorColor =
@@ -1350,7 +1352,8 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     if (sceneInspectorView === "helpers") {
       bindings.push(createRotoBooleanBinding("grid-visible", "Grid Visible", props.appState.scene.helpers.grid.visible, (next) => actions.setSceneRenderSettings({ helpers: { grid: { visible: next } } }), "toggle", props.readOnly));
       bindings.push(createRotoNumberBinding({ id: "grid-size", label: "Grid Size", colorRole: "default", value: props.appState.scene.helpers.grid.size, min: 0.001, step: 0.1, precision: 2, unit: "m", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { size: next } } }) }, enterRotoZoom));
-      bindings.push(createRotoNumberBinding({ id: "grid-divisions", label: "Grid Divs", colorRole: "default", value: props.appState.scene.helpers.grid.divisions, min: 1, step: 1, precision: 0, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { divisions: Math.max(1, Math.round(next)) } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "grid-major-pitch", label: "Grid Major", colorRole: "default", value: props.appState.scene.helpers.grid.majorPitch, min: 0.001, step: 0.1, precision: 2, unit: "m", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { majorPitch: next } } }) }, enterRotoZoom));
+      bindings.push(createRotoNumberBinding({ id: "grid-minor-pitch", label: "Grid Minor", colorRole: "default", value: props.appState.scene.helpers.grid.minorPitch, min: 0.001, step: 0.05, precision: 3, unit: "m", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { minorPitch: next } } }) }, enterRotoZoom));
       bindings.push(createRotoNumberBinding({ id: "grid-opacity", label: "Grid Opacity", colorRole: "default", value: props.appState.scene.helpers.grid.opacity, min: 0, max: 1, step: 0.01, precision: 2, disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { grid: { opacity: next } } }) }, enterRotoZoom));
       bindings.push(createRotoBooleanBinding("axes-visible", "Axes Visible", props.appState.scene.helpers.axes.visible, (next) => actions.setSceneRenderSettings({ helpers: { axes: { visible: next } } }), "toggle", props.readOnly));
       bindings.push(createRotoNumberBinding({ id: "axes-size", label: "Axes Size", colorRole: "default", value: props.appState.scene.helpers.axes.size, min: 0.001, step: 0.1, precision: 2, unit: "m", disabled: props.readOnly, onChange: (next) => actions.setSceneRenderSettings({ helpers: { axes: { size: next } } }) }, enterRotoZoom));
@@ -2599,18 +2602,19 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
             }}
           />
           <NumberField
-            label="Grid Divisions"
-            value={props.appState.scene.helpers.grid.divisions}
-            min={1}
-            step={1}
-            precision={0}
+            label="Grid Major Pitch"
+            value={props.appState.scene.helpers.grid.majorPitch}
+            min={0.001}
+            step={0.1}
+            precision={2}
+            unit="m"
             disabled={props.readOnly}
-            showReset={canResetGridDivisions}
+            showReset={canResetGridMajorPitch}
             onReset={() => {
               props.kernel.store.getState().actions.setSceneRenderSettings({
                 helpers: {
                   grid: {
-                    divisions: DEFAULT_SCENE_HELPERS.grid.divisions
+                    majorPitch: DEFAULT_SCENE_HELPERS.grid.majorPitch
                   }
                 }
               });
@@ -2619,7 +2623,35 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
               props.kernel.store.getState().actions.setSceneRenderSettings({
                 helpers: {
                   grid: {
-                    divisions: next
+                    majorPitch: next
+                  }
+                }
+              });
+            }}
+          />
+          <NumberField
+            label="Grid Minor Pitch"
+            value={props.appState.scene.helpers.grid.minorPitch}
+            min={0.001}
+            step={0.05}
+            precision={3}
+            unit="m"
+            disabled={props.readOnly}
+            showReset={canResetGridMinorPitch}
+            onReset={() => {
+              props.kernel.store.getState().actions.setSceneRenderSettings({
+                helpers: {
+                  grid: {
+                    minorPitch: DEFAULT_SCENE_HELPERS.grid.minorPitch
+                  }
+                }
+              });
+            }}
+            onChange={(next) => {
+              props.kernel.store.getState().actions.setSceneRenderSettings({
+                helpers: {
+                  grid: {
+                    minorPitch: next
                   }
                 }
               });

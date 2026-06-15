@@ -23,6 +23,8 @@ import {
 } from "./colorBufferPrecision";
 import { countActorStats, summarizeMemory, type RenderStatsSample } from "./stats";
 import { CurveEditController } from "./curveEditController";
+import { DimensionOverlayController } from "./dimensionOverlayController";
+import { SceneGridController } from "./sceneGridController";
 import { reportSlowFrame } from "./slowFrameDiagnostics";
 import { bumpFrameCounter, setViewportStatsProvider } from "@/app/runtimeStats";
 
@@ -100,6 +102,8 @@ export class WebGpuViewport {
   private readonly cameraController: CameraInteractionController;
   private readonly sceneController: SceneController;
   private readonly curveEditController: CurveEditController | null;
+  private readonly dimensionOverlayController: DimensionOverlayController | null;
+  private readonly sceneGridController: SceneGridController;
   private readonly actorTransformController: ActorTransformController | null;
   private frameHandle = 0;
   private frameCount = 0;
@@ -251,6 +255,7 @@ export class WebGpuViewport {
     if (options.editorOverlays === false) {
       this.curveEditController = null;
       this.actorTransformController = null;
+      this.dimensionOverlayController = null;
     } else {
       this.curveEditController = new CurveEditController(
         kernel,
@@ -266,11 +271,20 @@ export class WebGpuViewport {
         this.renderer.domElement,
         this.activeCamera
       );
+      this.dimensionOverlayController = new DimensionOverlayController(
+        kernel,
+        this.sceneController,
+        this.controls,
+        this.renderer.domElement,
+        this.activeCamera
+      );
     }
+    this.sceneGridController = new SceneGridController(kernel, this.sceneController, this.activeCamera);
     this.cameraController.setPointerDownBlocker(
       (event) =>
         (this.curveEditController?.willHandlePointerDown(event) ?? false) ||
-        (this.actorTransformController?.willHandlePointerDown(event) ?? false)
+        (this.actorTransformController?.willHandlePointerDown(event) ?? false) ||
+        (this.dimensionOverlayController?.willHandlePointerDown(event) ?? false)
     );
   }
 
@@ -360,6 +374,8 @@ export class WebGpuViewport {
     this.controls.dispose();
     this.actorTransformController?.dispose();
     this.curveEditController?.dispose();
+    this.dimensionOverlayController?.dispose();
+    this.sceneGridController.dispose();
     this.kernel.profiler.clearDrawHooks();
     this.sceneController.setRenderer(null);
     this.sceneController.dispose();
@@ -536,8 +552,13 @@ export class WebGpuViewport {
       this.cameraController.update(performance.now());
       this.curveEditController?.setCamera(this.activeCamera);
       this.actorTransformController?.setCamera(this.activeCamera);
+      this.dimensionOverlayController?.setCamera(this.activeCamera);
       this.curveEditController?.update();
       this.actorTransformController?.update();
+      this.dimensionOverlayController?.update();
+      this.sceneGridController.setCamera(this.activeCamera);
+      this.sceneGridController.setViewportSize(this.lastAppliedSize?.width ?? 1, this.lastAppliedSize?.height ?? 1);
+      this.sceneGridController.update();
       this.controls.update();
       this.enforceActorCompatibility("webgpu");
       this.syncCameraToState();
@@ -1077,7 +1098,12 @@ export class WebGpuViewport {
       if (utils) {
         utils.getPreferredCanvasFormat = () => "rgba16float";
       }
-      this.renderer.outputColorSpace = (THREE as any).DisplayP3ColorSpace;
+      // three r0.173 has no Display-P3 color space (no DisplayP3ColorSpace export /
+      // "display-p3" value). Setting outputColorSpace to undefined poisons the
+      // tone-mapping output node build. Fall back to sRGB when P3 isn't available so
+      // HDR extended-range output still works without a wide-gamut transform.
+      const displayP3ColorSpace = (THREE as any).DisplayP3ColorSpace;
+      this.renderer.outputColorSpace = displayP3ColorSpace ?? THREE.SRGBColorSpace;
       // Force the tone-mapping output node to rebuild against the new color space.
       this.lastOutputSignature = "";
       this.syncToneMappingOutput();

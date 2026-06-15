@@ -32,8 +32,7 @@ import type {
   DxfInputUnits,
   DxfLayerStateMap,
   DxfSourcePlane,
-  SceneAxesSettings,
-  SceneGridSettings
+  SceneAxesSettings
 } from "@/core/types";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
 import { getEffectiveCurveHandlesAt } from "@/features/curves/handles";
@@ -279,7 +278,7 @@ export interface SceneControllerOptions {
 }
 
 function isDebugOnlyActor(actor: Pick<ActorNode, "actorType">): boolean {
-  return actor.actorType === "curve";
+  return actor.actorType === "curve" || actor.actorType === "dimension" || actor.actorType === "annotation";
 }
 
 export function computeActorObjectVisibility(
@@ -473,7 +472,7 @@ function estimateAttributeMean(attribute: any): number {
   return sum / (sampleCount * 3);
 }
 
-function normalizeBackgroundColor(value: unknown): string {
+export function normalizeBackgroundColor(value: unknown): string {
   if (typeof value !== "string") {
     return "#070b12";
   }
@@ -491,7 +490,7 @@ function normalizeHelperOpacity(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function applyLineOpacity(target: { material?: THREE.Material | THREE.Material[] }, opacity: number): void {
+export function applyLineOpacity(target: { material?: THREE.Material | THREE.Material[] }, opacity: number): void {
   const materials = Array.isArray(target.material) ? target.material : target.material ? [target.material] : [];
   const nextOpacity = normalizeHelperOpacity(opacity);
   for (const material of materials) {
@@ -666,9 +665,7 @@ function extractPlyVertexPropertyNames(bytes: Uint8Array): Set<string> {
 
 export class SceneController {
   public readonly scene = new THREE.Scene();
-  private gridHelper: THREE.GridHelper | null = null;
   private axesHelper: THREE.AxesHelper | null = null;
-  private gridHelperSignature = "";
   private axesHelperSignature = "";
   private readonly actorObjects = new Map<string, any>();
   private readonly pluginDescriptorByActorId = new Map<string, ReloadableDescriptor | null>();
@@ -847,23 +844,9 @@ export class SceneController {
 
   private applySceneHelperVisibility(): void {
     const helperSettings = this.kernel.store.getState().state.scene.helpers;
-    if (this.gridHelper) {
-      this.gridHelper.visible = this.debugHelpersVisible && helperSettings.grid.visible;
-    }
     if (this.axesHelper) {
       this.axesHelper.visible = this.debugHelpersVisible && helperSettings.axes.visible;
     }
-  }
-
-  private buildGridHelper(settings: SceneGridSettings): THREE.GridHelper {
-    const grid = new THREE.GridHelper(
-      Math.max(0.001, settings.size),
-      Math.max(1, Math.round(settings.divisions)),
-      normalizeBackgroundColor(settings.majorColor),
-      normalizeBackgroundColor(settings.minorColor)
-    );
-    applyLineOpacity(grid, settings.opacity);
-    return grid;
   }
 
   private buildAxesHelper(settings: SceneAxesSettings): THREE.AxesHelper {
@@ -874,23 +857,6 @@ export class SceneController {
   }
 
   private syncSceneHelpers(settings: AppState["scene"]["helpers"]): void {
-    const gridSignature = JSON.stringify({
-      size: Math.max(0.001, settings.grid.size),
-      divisions: Math.max(1, Math.round(settings.grid.divisions)),
-      majorColor: normalizeBackgroundColor(settings.grid.majorColor),
-      minorColor: normalizeBackgroundColor(settings.grid.minorColor),
-      opacity: normalizeHelperOpacity(settings.grid.opacity)
-    });
-    if (gridSignature !== this.gridHelperSignature || !this.gridHelper) {
-      this.gridHelper?.removeFromParent();
-      disposeHelper(this.gridHelper);
-      this.gridHelper = this.buildGridHelper(settings.grid);
-      this.scene.add(this.gridHelper);
-      this.gridHelperSignature = gridSignature;
-    } else {
-      applyLineOpacity(this.gridHelper, settings.grid.opacity);
-    }
-
     const axesSignature = JSON.stringify({
       size: Math.max(0.001, settings.axes.size),
       xColor: normalizeBackgroundColor(settings.axes.xColor),
@@ -1170,6 +1136,24 @@ export class SceneController {
 
   public getActorObject(actorId: string): any | null {
     return this.actorObjects.get(actorId) ?? null;
+  }
+
+  /**
+   * Walk up an object's ancestry to find which actor root it belongs to.
+   * Used by the dimension placement tool to attribute a raycast hit to an actor
+   * so picked landmarks can live-follow that actor.
+   */
+  public getActorIdForObject(object: THREE.Object3D | null): string | null {
+    let cursor: THREE.Object3D | null = object;
+    while (cursor) {
+      for (const [actorId, actorObject] of this.actorObjects.entries()) {
+        if (actorObject === cursor) {
+          return actorId;
+        }
+      }
+      cursor = cursor.parent;
+    }
+    return null;
   }
 
   public listActorObjectsForProfiling(): Array<{ actorId: string; object: THREE.Object3D }> {
@@ -1605,6 +1589,16 @@ export class SceneController {
 
     if (actor.actorType === "cross-section") {
       return this.buildCrossSectionGizmo();
+    }
+
+    if (actor.actorType === "dimension" || actor.actorType === "annotation") {
+      // Dimension/annotation actors carry no per-actor scene geometry; their
+      // overlay (lines + labels) is drawn by DimensionOverlayController against a
+      // dedicated screen-space-sized root. The group only anchors the transform.
+      const group = new THREE.Group();
+      group.name = `${actor.actorType}-anchor`;
+      group.visible = false;
+      return group;
     }
 
     if (actor.actorType === "plugin") {

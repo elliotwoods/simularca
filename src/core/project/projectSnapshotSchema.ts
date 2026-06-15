@@ -192,6 +192,8 @@ const actorSchema = z.object({
     "curve",
     "camera-path",
     "cross-section",
+    "dimension",
+    "annotation",
     "plugin"
   ]),
   visibilityMode: z.enum(["visible", "hidden", "selected"]).default("visible"),
@@ -287,7 +289,8 @@ const projectSnapshotSchema = z.object({
       }),
     tonemapping: z
       .object({
-        mode: z.enum(["off", "aces"]).default("aces"),
+        // Legacy snapshots stored the disabled state as "none"; map it to "off".
+        mode: z.preprocess((v) => (v === "none" ? "off" : v), z.enum(["off", "aces"]).default("aces")),
         dither: z.boolean().default(true),
         hdrPeak: z.number().min(1).default(4)
       })
@@ -396,7 +399,8 @@ const projectSnapshotSchema = z.object({
           .object({
             visible: z.boolean().default(DEFAULT_SCENE_HELPERS.grid.visible),
             size: z.number().default(DEFAULT_SCENE_HELPERS.grid.size),
-            divisions: z.number().default(DEFAULT_SCENE_HELPERS.grid.divisions),
+            majorPitch: z.number().default(DEFAULT_SCENE_HELPERS.grid.majorPitch),
+            minorPitch: z.number().default(DEFAULT_SCENE_HELPERS.grid.minorPitch),
             majorColor: z.string().default(DEFAULT_SCENE_HELPERS.grid.majorColor),
             minorColor: z.string().default(DEFAULT_SCENE_HELPERS.grid.minorColor),
             opacity: z.number().default(DEFAULT_SCENE_HELPERS.grid.opacity)

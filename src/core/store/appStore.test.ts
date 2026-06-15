@@ -199,7 +199,7 @@ describe("appStore undo/redo", () => {
       helpers: {
         grid: {
           visible: false,
-          divisions: 48,
+          minorPitch: 0.25,
           opacity: 0.5
         }
       }
@@ -208,7 +208,8 @@ describe("appStore undo/redo", () => {
     expect(store.getState().state.scene.helpers.grid).toEqual({
       visible: false,
       size: 20,
-      divisions: 48,
+      majorPitch: 1,
+      minorPitch: 0.25,
       majorColor: "#2f8f9d",
       minorColor: "#1f2430",
       opacity: 0.5
@@ -232,7 +233,7 @@ describe("appStore undo/redo", () => {
       }
     });
 
-    expect(store.getState().state.scene.helpers.grid.divisions).toBe(48);
+    expect(store.getState().state.scene.helpers.grid.minorPitch).toBe(0.25);
     expect(store.getState().state.scene.helpers.axes).toEqual({
       visible: false,
       size: 4,

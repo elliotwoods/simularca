@@ -211,7 +211,8 @@ export const DEFAULT_SCENE_HELPERS: SceneHelpersSettings = {
   grid: {
     visible: true,
     size: 20,
-    divisions: 20,
+    majorPitch: 1,
+    minorPitch: 0.1,
     majorColor: "#2f8f9d",
     minorColor: "#1f2430",
     opacity: 0.35
@@ -288,6 +289,9 @@ export function createInitialState(
     focusedPluginViewId: null,
     hdrPreviewOpen: false,
     hdrPreviewFocusToken: 0,
+    interactionTool: "select",
+    dimensionSnap: { vertex: true, surface: false, origin: true, grid: false, free: false, showSnapPoints: true },
+    dimensionSnapHover: null,
     pluginsEnabled: {},
     materials: createInitialMaterials(),
     assets: [],

@@ -9,6 +9,8 @@ import { primitiveActorDescriptor } from "@/features/actors/descriptors/primitiv
 import { curveActorDescriptor } from "@/features/actors/descriptors/curveActor";
 import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraPathActor";
 import { crossSectionActorDescriptor } from "@/features/actors/descriptors/crossSectionActor";
+import { dimensionActorDescriptor } from "@/features/actors/descriptors/dimensionActor";
+import { annotationActorDescriptor } from "@/features/actors/descriptors/annotationActor";
 
 export function registerCoreActorDescriptors(kernel: AppKernel): void {
   const descriptors = [
@@ -20,7 +22,9 @@ export function registerCoreActorDescriptors(kernel: AppKernel): void {
     primitiveActorDescriptor,
     curveActorDescriptor,
     cameraPathActorDescriptor,
-    crossSectionActorDescriptor
+    crossSectionActorDescriptor,
+    dimensionActorDescriptor,
+    annotationActorDescriptor
   ];
   for (const descriptor of descriptors) {
     kernel.descriptorRegistry.register(descriptor);

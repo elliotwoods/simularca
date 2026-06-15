@@ -244,6 +244,17 @@ body {
   background: var(--panel-muted);
 }
 
+.top-toolbar button.toolbar-tool-active {
+  border-color: var(--accent);
+  color: #06121f;
+  background: var(--accent);
+}
+
+.top-toolbar button.toolbar-tool-active:hover {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
 .toolbar-group-label {
   color: var(--text-muted);
   font-size: 11px;
@@ -1902,6 +1913,42 @@ select {
 .viewport-transform-button.is-active {
   border-color: rgba(126, 163, 203, 0.85);
   background: rgba(126, 163, 203, 0.18);
+}
+
+.viewport-snap-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(126, 163, 203, 0.35);
+  border-radius: 6px;
+  background: rgba(7, 17, 30, 0.84);
+  color: #d6e7ff;
+}
+
+.viewport-snap-title {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0 2px;
+}
+
+.viewport-snap-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent-2);
+  padding: 0 6px;
+  min-width: 90px;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .viewport-axes-widget {
@@ -3841,6 +3888,171 @@ body.is-dragging-viewport-axes * {
 }
 
 .render-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* === Print modal === */
+
+.print-offscreen-host {
+  position: fixed;
+  left: -100000px;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+}
+
+
+.print-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  background: rgba(2, 5, 10, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.print-modal {
+  width: min(940px, 96vw);
+  border: 1px solid var(--line-strong);
+  background: #0a1423;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.print-modal h3 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.print-modal-body {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.print-modal-form {
+  display: grid;
+  gap: 8px;
+}
+
+.print-modal-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.print-modal-checkbox {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.print-modal-checkbox span {
+  color: var(--text);
+}
+
+.print-modal-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.print-modal-note {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.print-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 360px;
+  height: 100%;
+  border: 1px solid var(--line);
+  background: repeating-conic-gradient(rgba(255, 255, 255, 0.04) 0% 25%, transparent 0% 50%) 50% / 24px 24px;
+}
+
+.print-preview-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  box-shadow: 0 6px 26px rgba(0, 0, 0, 0.55);
+}
+
+.print-preview-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 52vh;
+  object-fit: contain;
+}
+
+.print-preview-placeholder {
+  width: 220px;
+  height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  border: 1px dashed var(--line-strong);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.print-preview-spinner {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  background: rgba(2, 5, 10, 0.7);
+  border: 1px solid var(--line);
+}
+
+.print-modal-readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.print-modal-readout strong {
+  color: var(--text);
+}
+
+.print-modal-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.print-modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;

@@ -10,6 +10,8 @@ import { estimateProjectPayloadBytes } from "@/core/project/projectSize";
 import type { CameraState, SceneColorBufferPrecision, SceneFramePacingSettings } from "@/core/types";
 import { ActorTransformController, type ActorTransformMode } from "@/render/actorTransformController";
 import { CurveEditController } from "@/render/curveEditController";
+import { DimensionOverlayController } from "@/render/dimensionOverlayController";
+import { SceneGridController } from "@/render/sceneGridController";
 import { CameraInteractionController } from "@/render/cameraInteractionController";
 import { cameraStatesApproximatelyEqual, cloneCameraState, readViewportCameraState } from "@/render/cameraSync";
 import { incompatibilityReason } from "@/render/engineCompatibility";
@@ -120,6 +122,8 @@ export class WebGlViewport {
   private readonly cameraController: CameraInteractionController;
   private readonly sceneController: SceneController;
   private readonly curveEditController: CurveEditController | null;
+  private readonly dimensionOverlayController: DimensionOverlayController | null;
+  private readonly sceneGridController: SceneGridController;
   private readonly actorTransformController: ActorTransformController | null;
   private frameHandle = 0;
   private frameCount = 0;
@@ -267,6 +271,7 @@ export class WebGlViewport {
     if (options.editorOverlays === false) {
       this.curveEditController = null;
       this.actorTransformController = null;
+      this.dimensionOverlayController = null;
     } else {
       this.curveEditController = new CurveEditController(
         kernel,
@@ -282,11 +287,20 @@ export class WebGlViewport {
         this.renderer.domElement,
         this.activeCamera
       );
+      this.dimensionOverlayController = new DimensionOverlayController(
+        kernel,
+        this.sceneController,
+        this.controls,
+        this.renderer.domElement,
+        this.activeCamera
+      );
     }
+    this.sceneGridController = new SceneGridController(kernel, this.sceneController, this.activeCamera);
     this.cameraController.setPointerDownBlocker(
       (event) =>
         (this.curveEditController?.willHandlePointerDown(event) ?? false) ||
-        (this.actorTransformController?.willHandlePointerDown(event) ?? false)
+        (this.actorTransformController?.willHandlePointerDown(event) ?? false) ||
+        (this.dimensionOverlayController?.willHandlePointerDown(event) ?? false)
     );
   }
 
@@ -352,6 +366,8 @@ export class WebGlViewport {
     this.controls.dispose();
     this.actorTransformController?.dispose();
     this.curveEditController?.dispose();
+    this.dimensionOverlayController?.dispose();
+    this.sceneGridController.dispose();
     this.kernel.profiler.clearDrawHooks();
     this.sceneController.setWebGlRenderer(null);
     this.sceneController.dispose();
@@ -504,8 +520,13 @@ export class WebGlViewport {
       this.cameraController.update(performance.now());
       this.curveEditController?.setCamera(this.activeCamera);
       this.actorTransformController?.setCamera(this.activeCamera);
+      this.dimensionOverlayController?.setCamera(this.activeCamera);
       this.curveEditController?.update();
       this.actorTransformController?.update();
+      this.dimensionOverlayController?.update();
+      this.sceneGridController.setCamera(this.activeCamera);
+      this.sceneGridController.setViewportSize(this.lastAppliedSize?.width ?? 1, this.lastAppliedSize?.height ?? 1);
+      this.sceneGridController.update();
       this.controls.update();
       this.syncCameraToState();
     });
