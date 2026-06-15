@@ -39,6 +39,13 @@ if (import.meta.hot) {
 }
 import type { MistVolumeQualityMode } from "./mistVolumeController";
 import { buildWebGpuToneMappedOutputNode, threeToneMappingForMode } from "./tonemapping";
+import { configureCanvasForHdr, isHdrOutputSupported } from "./hdrSupport";
+import {
+  HDR_HISTOGRAM_BINS,
+  HDR_HISTOGRAM_MAX,
+  isHdrHistogramEnabled,
+  publishHdrHistogram
+} from "@/features/render/hdrHistogramBridge";
 import { pruneInvalidSceneGraph } from "./sceneGraphUtils";
 import {
   captureViewportScreenshotFromCanvas,
@@ -50,6 +57,33 @@ import type { ProfileFrameGpuInput } from "./profiling";
 
 const FAST_STATS_INTERVAL_MS = 500;
 const SLOW_STATS_INTERVAL_MS = 2000;
+
+// HDR histogram readback tuning.
+const HISTOGRAM_SAMPLE_INTERVAL_MS = 120; // ~8 Hz
+const HISTOGRAM_MAX_SAMPLES = 50_000; // stride-sample cap to bound CPU work
+
+function halfToFloat(h: number): number {
+  const sign = (h & 0x8000) >> 15;
+  const exp = (h & 0x7c00) >> 10;
+  const frac = h & 0x03ff;
+  let val: number;
+  if (exp === 0) {
+    val = (frac / 1024) * Math.pow(2, -14);
+  } else if (exp === 0x1f) {
+    val = frac ? Number.NaN : Number.POSITIVE_INFINITY;
+  } else {
+    val = (1 + frac / 1024) * Math.pow(2, exp - 15);
+  }
+  return sign ? -val : val;
+}
+
+// Inverse of the sRGB OETF (the canvas stores OETF-encoded values), extended
+// monotonically for encoded values > 1 so HDR highlights decode to linear > 1.
+function srgbEotf(e: number): number {
+  const a = Math.abs(e);
+  const lin = a <= 0.04045 ? a / 12.92 : Math.pow((a + 0.055) / 1.055, 2.4);
+  return e < 0 ? -lin : lin;
+}
 
 export class WebGpuViewport {
   private readonly renderer: WebGPURenderer;
@@ -94,6 +128,15 @@ export class WebGpuViewport {
   private readonly framePacer: FramePacer;
   private readonly colorBufferPrecision: ResolvedSceneColorBufferPrecision;
   private lastLoggedColorBufferWarning: string | null = null;
+  private readonly hdrOutput: boolean;
+  private hdrConfigured = false;
+  // Live viewport luminance histogram readback (HDR Preview panel). Sampling only runs
+  // while a subscriber is registered on the bridge; throttled + guarded so it never
+  // stalls the frame.
+  private histogramBusy = false;
+  private histogramLastSampleMs = 0;
+  private histogramStagingBuffer: GPUBuffer | null = null;
+  private histogramStagingSize = 0;
   public constructor(
     private readonly kernel: AppKernel,
     private readonly mountEl: HTMLElement,
@@ -105,6 +148,7 @@ export class WebGpuViewport {
       viewportSize?: { width: number; height: number };
       manualFrameControl?: boolean;
       colorBufferPrecision?: SceneColorBufferPrecision;
+      hdrOutput?: boolean;
     }
   ) {
     if (!("gpu" in navigator)) {
@@ -132,6 +176,12 @@ export class WebGpuViewport {
         requestedAntialiasing: options.antialias
       }
     );
+    // HDR is for the live display only. Export viewports render to 8-bit SDR
+    // images/video, where an HDR float / Display-P3 canvas would shift exported colors.
+    this.hdrOutput =
+      !this.isExportViewport &&
+      (options.hdrOutput ?? kernel.store.getState().state.scene.hdrOutput) &&
+      isHdrOutputSupported();
     this.renderer = new WebGPURenderer({
       antialias: this.colorBufferPrecision.activeAntialiasing,
       alpha: false,
@@ -234,6 +284,7 @@ export class WebGpuViewport {
       await (this.renderer as any).init();
     }
     this.initialized = true;
+    this.applyHdrConfiguration();
     this.setGpuTimestampTracking(false);
     this.onResize();
     if (!this.fixedViewportSize) {
@@ -296,6 +347,15 @@ export class WebGpuViewport {
       await rendererWithWait.waitForGPU();
     }
     await this.flushDeferredGpuDisposals();
+    if (this.histogramStagingBuffer) {
+      try {
+        this.histogramStagingBuffer.destroy();
+      } catch {
+        // Buffer may already be released with the device.
+      }
+      this.histogramStagingBuffer = null;
+      this.histogramStagingSize = 0;
+    }
     this.cameraController.dispose();
     this.controls.dispose();
     this.actorTransformController?.dispose();
@@ -337,6 +397,7 @@ export class WebGpuViewport {
         await (this.renderer as any).init();
       }
       this.initialized = true;
+      this.applyHdrConfiguration();
       this.setGpuTimestampTracking(false);
     }
     this.onResize();
@@ -521,6 +582,12 @@ export class WebGpuViewport {
         }
       }
     });
+    // Fire-and-forget HDR histogram readback of the just-rendered canvas. Live viewport
+    // only (export renders use their own SDR canvas); runs while the HDR Preview panel is
+    // subscribed; internally throttled and guarded.
+    if (!this.disposed && !this.isExportViewport && isHdrHistogramEnabled()) {
+      this.maybeCaptureHistogram();
+    }
     await this.kernel.profiler.withFrameChunk("GPU resource cleanup", () => this.flushDeferredGpuDisposals());
     const gpu = wantsGpuTimings
       ? await this.kernel.profiler.withFrameChunk("GPU readback", () => this.resolveGpuProfile())
@@ -979,6 +1046,183 @@ export class WebGpuViewport {
     }
   }
 
+  /**
+   * Reconfigure the WebGPU canvas for HDR output (extended-range / brighter-than-white
+   * + Display-P3 wide gamut) once the renderer backend has initialized. No-op when HDR
+   * is disabled, unsupported, or the backend isn't ready. Falls back silently to the
+   * backend's default SDR configuration when the runtime rejects the HDR config.
+   *
+   * Highlights only read as brighter-than-white when the pipeline writes values >1.0
+   * (i.e. with tonemapping off); ACES compresses to SDR by design. The P3 gamut applies
+   * in either tonemapping mode via `outputColorSpace` below.
+   */
+  private applyHdrConfiguration(): void {
+    if (this.hdrConfigured || !this.hdrOutput) {
+      return;
+    }
+    const backend = (this.renderer as any).backend;
+    const context = backend?.context as GPUCanvasContext | undefined;
+    const device = backend?.device as GPUDevice | undefined;
+    if (!context || !device) {
+      return;
+    }
+    if (configureCanvasForHdr(context, device)) {
+      this.hdrConfigured = true;
+      // Three derives the default-framebuffer pipeline color format from
+      // utils.getPreferredCanvasFormat() (WebGPUUtils.getCurrentColorFormat). We
+      // reconfigured the context to rgba16float, so the pipeline format must agree or
+      // WebGPU rejects the draw. Override it before the first render — the backend has
+      // not drawn yet at this point, so no stale pipeline exists.
+      const utils = backend?.utils;
+      if (utils) {
+        utils.getPreferredCanvasFormat = () => "rgba16float";
+      }
+      this.renderer.outputColorSpace = (THREE as any).DisplayP3ColorSpace;
+      // Force the tone-mapping output node to rebuild against the new color space.
+      this.lastOutputSignature = "";
+      this.syncToneMappingOutput();
+    }
+  }
+
+  /**
+   * Copy the just-rendered canvas texture to a staging buffer and build a linear
+   * luminance histogram on the CPU, published to the HDR histogram bridge for the HDR
+   * Preview panel. Fire-and-forget: throttled, guarded by `histogramBusy`, and tolerant
+   * of the canvas format changing (rgba16float when HDR is on, 8-bit otherwise).
+   */
+  private maybeCaptureHistogram(): void {
+    if (this.histogramBusy) {
+      return;
+    }
+    const now = performance.now();
+    if (now - this.histogramLastSampleMs < HISTOGRAM_SAMPLE_INTERVAL_MS) {
+      return;
+    }
+    const backend = (this.renderer as any).backend;
+    const context = backend?.context as GPUCanvasContext | undefined;
+    const device = backend?.device as GPUDevice | undefined;
+    if (!context || !device) {
+      return;
+    }
+    let texture: GPUTexture;
+    try {
+      texture = context.getCurrentTexture();
+    } catch {
+      return;
+    }
+    const width = texture.width;
+    const height = texture.height;
+    if (width === 0 || height === 0) {
+      return;
+    }
+    const format = texture.format;
+    const isFloat = format === "rgba16float";
+    const isBgra = format.startsWith("bgra");
+    const bytesPerPixel = isFloat ? 8 : 4;
+    const bytesPerRow = Math.ceil((width * bytesPerPixel) / 256) * 256;
+    const bufferSize = bytesPerRow * height;
+
+    if (!this.histogramStagingBuffer || this.histogramStagingSize !== bufferSize) {
+      this.histogramStagingBuffer?.destroy();
+      this.histogramStagingBuffer = device.createBuffer({
+        size: bufferSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+      });
+      this.histogramStagingSize = bufferSize;
+    }
+    const staging = this.histogramStagingBuffer;
+
+    this.histogramBusy = true;
+    this.histogramLastSampleMs = now;
+    try {
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture },
+        { buffer: staging, bytesPerRow, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 }
+      );
+      device.queue.submit([encoder.finish()]);
+    } catch {
+      this.histogramBusy = false;
+      return;
+    }
+
+    void staging
+      .mapAsync(GPUMapMode.READ)
+      .then(() => {
+        if (this.disposed) {
+          return;
+        }
+        const view = new DataView(staging.getMappedRange());
+        const totalPixels = width * height;
+        const stride = Math.max(1, Math.floor(totalPixels / HISTOGRAM_MAX_SAMPLES));
+        const bins = new Uint32Array(HDR_HISTOGRAM_BINS);
+        const binScale = HDR_HISTOGRAM_BINS / HDR_HISTOGRAM_MAX;
+        let overflow = 0;
+        let totalSamples = 0;
+        let hdrCount = 0;
+        let peak = 0;
+        for (let idx = 0; idx < totalPixels; idx += stride) {
+          const x = idx % width;
+          const y = (idx - x) / width;
+          const offset = y * bytesPerRow + x * bytesPerPixel;
+          let r: number;
+          let g: number;
+          let b: number;
+          if (isFloat) {
+            r = halfToFloat(view.getUint16(offset, true));
+            g = halfToFloat(view.getUint16(offset + 2, true));
+            b = halfToFloat(view.getUint16(offset + 4, true));
+          } else {
+            const c0 = view.getUint8(offset) / 255;
+            const c1 = view.getUint8(offset + 1) / 255;
+            const c2 = view.getUint8(offset + 2) / 255;
+            r = isBgra ? c2 : c0;
+            g = c1;
+            b = isBgra ? c0 : c2;
+          }
+          const lum = 0.2126 * srgbEotf(r) + 0.7152 * srgbEotf(g) + 0.0722 * srgbEotf(b);
+          totalSamples++;
+          if (lum > peak) {
+            peak = lum;
+          }
+          if (lum > 1) {
+            hdrCount++;
+          }
+          if (lum >= HDR_HISTOGRAM_MAX) {
+            overflow++;
+          } else {
+            let bin = Math.floor(lum * binScale);
+            if (bin < 0) {
+              bin = 0;
+            } else if (bin >= HDR_HISTOGRAM_BINS) {
+              bin = HDR_HISTOGRAM_BINS - 1;
+            }
+            bins[bin] = (bins[bin] ?? 0) + 1;
+          }
+        }
+        publishHdrHistogram({
+          bins,
+          overflow,
+          totalSamples,
+          peakLuminance: peak,
+          fractionHdr: totalSamples > 0 ? hdrCount / totalSamples : 0,
+          isFloat
+        });
+      })
+      .catch(() => {
+        // Mapping can fail if the device is lost or the buffer was destroyed mid-flight.
+      })
+      .finally(() => {
+        try {
+          staging.unmap();
+        } catch {
+          // Already unmapped / destroyed.
+        }
+        this.histogramBusy = false;
+      });
+  }
+
   private syncToneMappingOutput(): void {
     const tonemapping = this.kernel.store.getState().state.scene.tonemapping;
     const postProcessing = this.kernel.store.getState().state.scene.postProcessing;
@@ -987,8 +1231,10 @@ export class WebGpuViewport {
     const signature = JSON.stringify({
       mode: tonemapping.mode,
       dither: tonemapping.dither,
+      hdrPeak: tonemapping.hdrPeak,
       postProcessing,
       outputColorSpace: this.renderer.outputColorSpace,
+      hdrActive: this.hdrConfigured,
       aoCameraType: this.aoCamera instanceof THREE.OrthographicCamera ? "ortho" : "persp"
     });
     this.renderer.toneMapping = threeToneMappingForMode(tonemapping.mode);
@@ -1012,7 +1258,8 @@ export class WebGpuViewport {
       this.renderer.outputColorSpace,
       tonemapping,
       postProcessing,
-      aoSources
+      aoSources,
+      this.hdrConfigured
     );
     this.postProcessing.needsUpdate = true;
   }

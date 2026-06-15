@@ -217,6 +217,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
   const kernel = useKernel();
   const backend = useAppStore((store) => store.state.scene.renderEngine);
   const antialiasing = useAppStore((store) => store.state.scene.antialiasing);
+  const hdrOutput = useAppStore((store) => store.state.scene.hdrOutput);
   const colorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
   const framePacing = useAppStore((store) => store.state.scene.framePacing);
   const camera = useAppStore((store) => store.state.camera);
@@ -398,7 +399,8 @@ export function ViewportPanel(props: ViewportPanelProps) {
         : new WebGpuViewport(kernel, hostRef.current, {
             antialias: antialiasing,
             qualityMode: "interactive",
-            colorBufferPrecision
+            colorBufferPrecision,
+            hdrOutput
           });
     viewport.setActorTransformMode(actorTransformMode);
     viewport.setActorTransformSnappingEnabled(actorTransformSnappingEnabled);
@@ -422,7 +424,7 @@ export function ViewportPanel(props: ViewportPanelProps) {
       viewportRef.current = null;
       registerThumbnailCapturer(null);
     };
-  }, [antialiasing, backend, colorBufferPrecision, kernel, props.suspended]);
+  }, [antialiasing, hdrOutput, backend, colorBufferPrecision, kernel, props.suspended]);
 
   useEffect(() => {
     viewportRef.current?.setActorTransformMode(actorTransformMode);

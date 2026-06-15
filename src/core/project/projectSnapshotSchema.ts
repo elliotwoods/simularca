@@ -274,6 +274,7 @@ const projectSnapshotSchema = z.object({
     backgroundColor: z.string().default("#070b12"),
     renderEngine: z.enum(["webgl2", "webgpu"]).default(DEFAULT_RENDER_ENGINE),
     antialiasing: z.boolean().default(true),
+    hdrOutput: z.boolean().default(true),
     colorBufferPrecision: z.enum(["float32", "float16", "uint8"]).default(DEFAULT_SCENE_COLOR_BUFFER_PRECISION),
     framePacing: z
       .object({
@@ -287,11 +288,13 @@ const projectSnapshotSchema = z.object({
     tonemapping: z
       .object({
         mode: z.enum(["off", "aces"]).default("aces"),
-        dither: z.boolean().default(true)
+        dither: z.boolean().default(true),
+        hdrPeak: z.number().min(1).default(4)
       })
       .default({
         mode: "aces",
-        dither: true
+        dither: true,
+        hdrPeak: 4
       }),
     postProcessing: z
       .object({

@@ -82,6 +82,12 @@ export interface SceneNodeBase {
 export interface SceneTonemappingSettings {
   mode: SceneToneMappingMode;
   dither: boolean;
+  /**
+   * HDR display headroom in paper-white units (1.0 = SDR white). When HDR output is
+   * active and ACES tonemapping is on, highlights roll off up to this multiple of
+   * paper-white instead of clamping at 1.0. Ignored in SDR or when tonemapping is off.
+   */
+  hdrPeak: number;
 }
 
 export interface SceneFramePacingSettings {
@@ -347,6 +353,7 @@ export interface SceneState extends SceneNodeBase {
   backgroundColor: string;
   renderEngine: RenderEngine;
   antialiasing: boolean;
+  hdrOutput: boolean;
   colorBufferPrecision: SceneColorBufferPrecision;
   framePacing: SceneFramePacingSettings;
   tonemapping: SceneTonemappingSettings;
@@ -539,6 +546,11 @@ export interface AppState {
   time: TimeState;
   pluginViews: Record<string, PluginViewState>;
   focusedPluginViewId: string | null;
+  // Ephemeral UI state (not persisted in the project): the dockable HDR Preview panel.
+  // `hdrPreviewFocusToken` is bumped on every open request so re-opening focuses the
+  // existing panel even when it is already open.
+  hdrPreviewOpen: boolean;
+  hdrPreviewFocusToken: number;
   pluginsEnabled: Record<string, boolean>;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];

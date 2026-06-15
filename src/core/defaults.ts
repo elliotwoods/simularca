@@ -240,11 +240,13 @@ export function createDefaultScene(): {
     backgroundColor: "#070b12",
     renderEngine: DEFAULT_RENDER_ENGINE,
     antialiasing: true,
+    hdrOutput: true,
     colorBufferPrecision: DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
     framePacing: structuredClone(DEFAULT_FRAME_PACING),
     tonemapping: {
       mode: "aces",
-      dither: true
+      dither: true,
+      hdrPeak: 4
     },
     postProcessing: structuredClone(DEFAULT_POST_PROCESSING),
     helpers: structuredClone(DEFAULT_SCENE_HELPERS),
@@ -284,6 +286,8 @@ export function createInitialState(
     time: DEFAULT_TIME,
     pluginViews: {},
     focusedPluginViewId: null,
+    hdrPreviewOpen: false,
+    hdrPreviewFocusToken: 0,
     pluginsEnabled: {},
     materials: createInitialMaterials(),
     assets: [],

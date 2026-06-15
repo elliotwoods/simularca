@@ -9,6 +9,7 @@ import { ViewportPanel } from "@/ui/panels/ViewportPanel";
 import { ConsolePanel } from "@/ui/panels/ConsolePanel";
 import { PluginViewPanel } from "@/ui/panels/PluginViewPanel";
 import { ProfilingResultsPanel } from "@/ui/panels/ProfilingResultsPanel";
+import { HdrPreview } from "@/ui/components/HdrPreview";
 import { focusPluginViewTab, listPluginViewTabs, syncPluginViewTabs } from "@/ui/pluginViewLayout";
 import type { ProfileSessionResult } from "@/render/profiling";
 import type { PublishConfig } from "@/features/publish/publishConfigSchema";
@@ -16,6 +17,7 @@ import type { PublishConfig } from "@/features/publish/publishConfigSchema";
 const LAYOUT_STORAGE_KEY = "simularca:flex-layout:v1";
 const VIEWER_LAYOUT_STORAGE_KEY = "simularca:flex-layout-viewer:v1";
 const PROFILE_RESULTS_TAB_ID = "tab.profiling-results";
+const HDR_PREVIEW_TAB_ID = "tab.hdr-preview";
 
 type JsonLike = Record<string, unknown>;
 
@@ -31,44 +33,52 @@ function defaultLayoutConfig(): IJsonModel {
         {
           type: "row",
           id: "panel.main",
-          weight: 78,
+          weight: 80,
           children: [
             {
-              type: "tabset",
-              id: "panel.left",
-              weight: 22,
+              type: "row",
+              id: "panel.top",
+              weight: 78,
               children: [
                 {
-                  type: "tab",
-                  id: "tab.left",
-                  component: "left",
-                  name: "Scene"
+                  type: "tabset",
+                  id: "panel.left",
+                  weight: 26,
+                  children: [
+                    {
+                      type: "tab",
+                      id: "tab.left",
+                      component: "left",
+                      name: "Scene"
+                    }
+                  ]
+                },
+                {
+                  type: "tabset",
+                  id: "panel.center",
+                  weight: 74,
+                  children: [
+                    {
+                      type: "tab",
+                      id: "tab.viewport",
+                      component: "center",
+                      name: "Viewport"
+                    }
+                  ]
                 }
               ]
             },
             {
               type: "tabset",
-              id: "panel.center",
-              weight: 56,
-              children: [
-                {
-                  type: "tab",
-                  id: "tab.viewport",
-                  component: "center",
-                  name: "Viewport"
-                }
-              ]
-            },
-            {
-              type: "tabset",
-              id: "panel.right",
+              id: "panel.console",
               weight: 22,
+              enableClose: false,
               children: [
                 {
                   type: "tab",
-                  id: "tab.right",
-                  component: "right",
-                  name: "Inspector"
+                  id: "tab.console",
+                  component: "console",
+                  name: "Console"
                 }
               ]
             }
@@ -76,15 +86,14 @@ function defaultLayoutConfig(): IJsonModel {
         },
         {
           type: "tabset",
-          id: "panel.console",
-          weight: 22,
-          enableClose: false,
+          id: "panel.right",
+          weight: 20,
           children: [
             {
               type: "tab",
-              id: "tab.console",
-              component: "console",
-              name: "Console"
+              id: "tab.right",
+              component: "right",
+              name: "Inspector"
             }
           ]
         }
@@ -547,6 +556,50 @@ function syncProfileResultsTab(
   model.doAction(Actions.selectTab(PROFILE_RESULTS_TAB_ID));
 }
 
+function findHdrPreviewTab(model: Model): TabNode | null {
+  let found: TabNode | null = null;
+  model.visitNodes((node) => {
+    if (found || node.getType() !== "tab") {
+      return;
+    }
+    const tabNode = node as TabNode;
+    if (tabNode.getId() === HDR_PREVIEW_TAB_ID || tabNode.getComponent() === "hdr-preview") {
+      found = tabNode;
+    }
+  });
+  return found;
+}
+
+function syncHdrPreviewTab(model: Model, open: boolean, targetTabsetId: string | null): void {
+  const existing = findHdrPreviewTab(model);
+  if (!open) {
+    if (existing) {
+      model.doAction(Actions.deleteTab(existing.getId()));
+    }
+    return;
+  }
+  if (existing) {
+    // Already open: focus it (re-open requests bump the focus token to re-run this).
+    model.doAction(Actions.selectTab(existing.getId()));
+    return;
+  }
+  model.doAction(
+    Actions.addNode(
+      {
+        type: "tab",
+        id: HDR_PREVIEW_TAB_ID,
+        component: "hdr-preview",
+        name: "HDR Preview",
+        enableClose: true
+      },
+      targetTabsetId ?? "panel.center",
+      DockLocation.CENTER,
+      -1
+    )
+  );
+  model.doAction(Actions.selectTab(HDR_PREVIEW_TAB_ID));
+}
+
 const StableFlexLayoutSurface = memo(function StableFlexLayoutSurface(props: {
   model: Model;
   factory: (node: TabNode) => React.ReactNode;
@@ -559,6 +612,8 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
   const kernel = useKernel();
   const pluginViewMap = useAppStore((store) => store.state.pluginViews);
   const focusedPluginViewId = useAppStore((store) => store.state.focusedPluginViewId);
+  const hdrPreviewOpen = useAppStore((store) => store.state.hdrPreviewOpen);
+  const hdrPreviewFocusToken = useAppStore((store) => store.state.hdrPreviewFocusToken);
   const pluginViews = useMemo(() => sortOpenPluginViews(pluginViewMap), [pluginViewMap]);
   const viewerConfig = kernel.viewerConfig ?? null;
   const layoutStorageKey = viewerConfig ? VIEWER_LAYOUT_STORAGE_KEY : LAYOUT_STORAGE_KEY;
@@ -596,6 +651,13 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
     focusPluginViewTab(model, focusedPluginViewId);
   }, [focusedPluginViewId, model]);
 
+  // Dock the HDR Preview into the viewport tabset (not the inspector tabset) so it can be
+  // seen alongside the inspector. `hdrPreviewFocusToken` is a dependency so re-opening an
+  // already-open panel re-runs this effect and re-focuses it.
+  useEffect(() => {
+    syncHdrPreviewTab(model, hdrPreviewOpen, viewportTabsetId);
+  }, [model, hdrPreviewOpen, hdrPreviewFocusToken, viewportTabsetId]);
+
   const handleModelChange = useCallback(
     (nextModel: Model) => {
       persistLayoutConfig(nextModel, layoutStorageKey);
@@ -614,6 +676,10 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
       }
       if (props.profileResultsOpen && !findProfileResultsTab(nextModel)) {
         props.onCloseProfileResults();
+      }
+      // Keep store state in sync when the user closes the HDR Preview tab via its X.
+      if (kernel.store.getState().state.hdrPreviewOpen && !findHdrPreviewTab(nextModel)) {
+        actions.setHdrPreviewOpen(false);
       }
     },
     [kernel, layoutStorageKey, pluginViews, props.onCloseProfileResults, props.profileResultsOpen]
@@ -653,6 +719,8 @@ export function FlexLayoutHost(props: FlexLayoutHostProps) {
         }
         case "profiling-results":
           return props.profileResults ? <ProfilingResultsPanel result={props.profileResults} /> : null;
+        case "hdr-preview":
+          return <HdrPreview />;
         default:
           return null;
       }

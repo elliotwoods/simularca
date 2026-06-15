@@ -17,9 +17,11 @@ import {
   clamp,
   float,
   fract,
+  mat3,
   mix,
   renderOutput,
   screenCoordinate,
+  toneMappingExposure,
   vec2,
   vec3,
   vec4,
@@ -212,12 +214,57 @@ export interface WebGpuAoSourceNodes {
   camera: Camera;
 }
 
+// Three's exact ACES filmic chain (matrices + RRTAndODTFit), mirrored here so the
+// HDR variant matches the SDR `renderOutput` ACES below the knee.
+const ACES_INPUT_MAT = mat3(
+  0.59719, 0.35458, 0.04823,
+  0.07600, 0.90834, 0.01566,
+  0.02840, 0.13383, 0.83777
+);
+const ACES_OUTPUT_MAT = mat3(
+  1.60475, -0.53108, -0.07367,
+  -0.10208, 1.10813, -0.00605,
+  -0.00327, -0.07276, 1.07602
+);
+// RRTAndODTFit asymptotes to 1/0.983729 ≈ 1.0165 (the SDR highlight ceiling). For HDR
+// we leave its output untouched up to ACES_HDR_KNEE — so midtones and paper-white are
+// byte-identical to SDR ACES — then roll the remaining highlight range off to `peak`
+// with a C1-continuous cubic (slope-matched at the knee, flat at the peak).
+const RRT_ASYMPTOTE = 1 / 0.983729;
+const ACES_HDR_KNEE = 0.8;
+
+function rrtAndOdtFit(color: any): any {
+  const a = color.mul(color.add(0.0245786)).sub(0.000090537);
+  const b = color.mul(color.add(0.4329510).mul(0.983729)).add(0.238081);
+  return a.div(b);
+}
+
+function acesFilmicHdr(rgb: any, peak: number): any {
+  const safePeak = Math.max(peak, RRT_ASYMPTOTE);
+  // Cubic S(t) = cA·t³ + cB·t² + cC·t with S(0)=0, S(1)=1, S'(0)=m0, S'(1)=0.
+  const m0 = (RRT_ASYMPTOTE - ACES_HDR_KNEE) / (safePeak - ACES_HDR_KNEE);
+  const cA = m0 - 2;
+  const cB = 3 - 2 * m0;
+  const cC = m0;
+
+  let color = rgb.mul(toneMappingExposure).div(0.6);
+  color = ACES_INPUT_MAT.mul(color);
+  const v = rrtAndOdtFit(color);
+  const t = clamp(v.sub(ACES_HDR_KNEE).div(RRT_ASYMPTOTE - ACES_HDR_KNEE), 0.0, 1.0);
+  const shaped = t.mul(t.mul(t.mul(cA).add(cB)).add(cC));
+  const extended = float(ACES_HDR_KNEE).add(shaped.mul(safePeak - ACES_HDR_KNEE));
+  const toned = mix(v, extended, step(ACES_HDR_KNEE, v));
+  color = ACES_OUTPUT_MAT.mul(toned);
+  return clamp(color, 0.0, safePeak);
+}
+
 export function buildWebGpuToneMappedOutputNode(
   inputNode: any,
   outputColorSpace: string,
   tonemapping: SceneTonemappingSettings,
   postProcessing: ScenePostProcessingSettings,
-  aoSources: WebGpuAoSourceNodes | null
+  aoSources: WebGpuAoSourceNodes | null,
+  hdrActive: boolean
 ): any {
   let linearNode = inputNode;
 
@@ -241,7 +288,16 @@ export function buildWebGpuToneMappedOutputNode(
     );
   }
 
-  let outputNode = renderOutput(linearNode, threeToneMappingForMode(tonemapping.mode), outputColorSpace);
+  // HDR + ACES: apply the extended-range ACES curve ourselves (so highlights roll off
+  // to `hdrPeak` instead of clamping at 1.0), then let renderOutput handle only the
+  // output color-space transform. Every other case uses Three's built-in tone mapping.
+  let outputNode;
+  if (hdrActive && tonemapping.mode === "aces") {
+    const toned = vec4(acesFilmicHdr(linearNode.rgb, tonemapping.hdrPeak), linearNode.a);
+    outputNode = renderOutput(toned, NoToneMapping, outputColorSpace);
+  } else {
+    outputNode = renderOutput(linearNode, threeToneMappingForMode(tonemapping.mode), outputColorSpace);
+  }
 
   if (postProcessing.chromaticAberration.enabled && postProcessing.chromaticAberration.offset > 0) {
     outputNode = rgbShift(outputNode, postProcessing.chromaticAberration.offset, 0);
@@ -250,7 +306,12 @@ export function buildWebGpuToneMappedOutputNode(
   outputNode = applyWebGpuVignette(outputNode, postProcessing.vignette);
   outputNode = applyWebGpuGrain(outputNode, postProcessing.grain);
 
-  if (!tonemapping.dither) {
+  // Dither breaks up 8-bit banding by adding sub-LSB noise then clamping to the
+  // displayable [0,1] range. On a float16 HDR target (extended range, brighter-than-
+  // white) it is both pointless and destructive: the clamp would cap every pixel at 1.0
+  // and defeat HDR output entirely. Skip it when HDR is active and pass the extended-
+  // range color straight through.
+  if (!tonemapping.dither || hdrActive) {
     return outputNode;
   }
 

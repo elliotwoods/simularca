@@ -14,6 +14,7 @@ import {
   faToggleOff,
   faToggleOn,
   faTrashCan,
+  faUpRightFromSquare,
   faXmark
 } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
@@ -115,6 +116,7 @@ import {
   SCENE_COLOR_BUFFER_PRECISION_OPTIONS,
   sceneColorBufferPrecisionLabel
 } from "@/render/colorBufferPrecision";
+import { isHdrOutputSupported } from "@/render/hdrSupport";
 
 type BindingValue = ParameterValue;
 const RAD_TO_DEG = 180 / Math.PI;
@@ -847,6 +849,30 @@ interface SceneInspectorViewProps {
 
 type SceneInspectorRoute = "root" | "engine" | "helpers" | "camera" | "post-processing" | "diagnostics";
 
+// Parent route for nested submenus; absent entries are top-level (parent = "root").
+const SCENE_ROUTE_PARENT: Partial<Record<SceneInspectorRoute, SceneInspectorRoute>> = {};
+
+const SCENE_ROUTE_LABEL: Record<Exclude<SceneInspectorRoute, "root">, string> = {
+  engine: "Engine",
+  helpers: "Helpers",
+  camera: "Camera",
+  "post-processing": "Post Processing",
+  diagnostics: "Diagnostics"
+};
+
+// Walk the parent chain to build the breadcrumb trail (excluding the implicit "Scene"
+// root). Generalizes to nested submenus via SCENE_ROUTE_PARENT; currently all routes are
+// top-level so the trail is a single segment, e.g. "engine" -> ["engine"].
+function sceneRouteTrail(route: SceneInspectorRoute): Exclude<SceneInspectorRoute, "root">[] {
+  const trail: Exclude<SceneInspectorRoute, "root">[] = [];
+  let current: SceneInspectorRoute | undefined = route;
+  while (current && current !== "root") {
+    trail.unshift(current);
+    current = SCENE_ROUTE_PARENT[current];
+  }
+  return trail;
+}
+
 function cloneInspectorView<T>(view: T): T {
   return { ...view };
 }
@@ -880,6 +906,10 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
   const canResetBackground = props.appState.scene.backgroundColor.toLowerCase() !== DEFAULT_SCENE_BACKGROUND;
   const canResetEngine = props.appState.scene.renderEngine !== DEFAULT_RENDER_ENGINE;
   const canResetAntialiasing = props.appState.scene.antialiasing !== true;
+  const hdrOutputSupported =
+    props.appState.scene.renderEngine === "webgpu" && isHdrOutputSupported();
+  const canResetHdrOutput = props.appState.scene.hdrOutput !== true;
+  const canResetHdrPeak = Math.abs(props.appState.scene.tonemapping.hdrPeak - 4) > 1e-9;
   const canResetColorBufferPrecision =
     props.appState.scene.colorBufferPrecision !== DEFAULT_SCENE_COLOR_BUFFER_PRECISION;
   const canResetGridVisible = props.appState.scene.helpers.grid.visible !== DEFAULT_SCENE_HELPERS.grid.visible;
@@ -1310,6 +1340,11 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
       bindings.push(createRotoBooleanBinding("antialiasing", "Anti-Alias", props.appState.scene.antialiasing, (next) => actions.setSceneRenderSettings({ antialiasing: next }), "toggle", props.readOnly));
       bindings.push(createRotoEnumBinding("tonemapping", "Tonemapping", SCENE_TONEMAPPING_OPTIONS.map((option) => option.value), props.appState.scene.tonemapping.mode, (next) => actions.setSceneRenderSettings({ tonemapping: { mode: next as SceneToneMappingMode } }), "enum", props.readOnly));
       bindings.push(createRotoBooleanBinding("tonemap-dither", "Dither", props.appState.scene.tonemapping.dither, (next) => actions.setSceneRenderSettings({ tonemapping: { dither: next } }), "toggle", props.readOnly));
+      const hdrSupported = props.appState.scene.renderEngine === "webgpu" && isHdrOutputSupported();
+      bindings.push(createRotoBooleanBinding("hdr-output", "HDR Output", props.appState.scene.hdrOutput, (next) => actions.setSceneRenderSettings({ hdrOutput: next }), "toggle", props.readOnly || !hdrSupported));
+      if (props.appState.scene.tonemapping.mode === "aces") {
+        bindings.push(createRotoNumberBinding({ id: "hdr-peak", label: "HDR Peak", colorRole: "default", value: props.appState.scene.tonemapping.hdrPeak, min: 1, step: 0.25, precision: 2, unit: "×", disabled: props.readOnly || !(hdrSupported && props.appState.scene.hdrOutput), onChange: (next) => actions.setSceneRenderSettings({ tonemapping: { hdrPeak: next } }) }, enterRotoZoom));
+      }
       return bindings;
     }
     if (sceneInspectorView === "helpers") {
@@ -1422,23 +1457,34 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
     <div className="inspector-pane-root custom-inspector">
       {sceneInspectorView !== "root" ? (
         <div className="inspector-nav-header">
-          <button className="inspector-nav-back" onClick={() => setSceneInspectorView("root")}>‹</button>
+          <button
+            className="inspector-nav-back"
+            onClick={() => setSceneInspectorView(SCENE_ROUTE_PARENT[sceneInspectorView] ?? "root")}
+          >
+            ‹
+          </button>
           <nav className="inspector-breadcrumb">
             <button className="inspector-breadcrumb-segment" onClick={() => setSceneInspectorView("root")}>
               Scene
             </button>
-            <span className="inspector-breadcrumb-sep">›</span>
-            <span className="inspector-breadcrumb-current">
-              {sceneInspectorView === "engine"
-                ? "Engine"
-                : sceneInspectorView === "helpers"
-                  ? "Helpers"
-                : sceneInspectorView === "camera"
-                  ? "Camera"
-                  : sceneInspectorView === "post-processing"
-                    ? "Post Processing"
-                    : "Diagnostics"}
-            </span>
+            {sceneRouteTrail(sceneInspectorView).map((route, index, trail) => {
+              const isCurrent = index === trail.length - 1;
+              return (
+                <span key={route} style={{ display: "contents" }}>
+                  <span className="inspector-breadcrumb-sep">›</span>
+                  {isCurrent ? (
+                    <span className="inspector-breadcrumb-current">{SCENE_ROUTE_LABEL[route]}</span>
+                  ) : (
+                    <button
+                      className="inspector-breadcrumb-segment"
+                      onClick={() => setSceneInspectorView(route)}
+                    >
+                      {SCENE_ROUTE_LABEL[route]}
+                    </button>
+                  )}
+                </span>
+              );
+            })}
           </nav>
         </div>
       ) : null}
@@ -1752,7 +1798,82 @@ function SceneInspectorView(props: SceneInspectorViewProps) {
               </button>
             </div>
           </div>
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">HDR Output</span>
+            <div className="inspector-common-control-wrap">
+              <ToggleField
+                label=""
+                checked={hdrOutputSupported && props.appState.scene.hdrOutput}
+                disabled={props.readOnly || !hdrOutputSupported}
+                embedded
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    hdrOutput: next
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetHdrOutput ? "" : " is-hidden"}`}
+                title="Reset HDR Output"
+                disabled={props.readOnly || !canResetHdrOutput}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    hdrOutput: true
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          {props.appState.scene.tonemapping.mode === "aces" ? (
+          <div className="inspector-common-row">
+            <span className="inspector-common-label">HDR Peak (×white)</span>
+            <div className="inspector-common-control-wrap">
+              <NumberField
+                label=""
+                value={props.appState.scene.tonemapping.hdrPeak}
+                min={1}
+                step={0.25}
+                precision={2}
+                disabled={props.readOnly || !(hdrOutputSupported && props.appState.scene.hdrOutput)}
+                onChange={(next) => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    tonemapping: {
+                      hdrPeak: next
+                    }
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className={`widget-reset-button${canResetHdrPeak ? "" : " is-hidden"}`}
+                title="Reset HDR Peak"
+                disabled={props.readOnly || !canResetHdrPeak}
+                onClick={() => {
+                  props.kernel.store.getState().actions.setSceneRenderSettings({
+                    tonemapping: {
+                      hdrPeak: 4
+                    }
+                  });
+                }}
+              >
+                <FontAwesomeIcon icon={faRotateLeft} />
+              </button>
+            </div>
+          </div>
+          ) : null}
         </div>
+        <button
+          type="button"
+          className="inspector-panel-open-row"
+          onClick={() => props.kernel.store.getState().actions.setHdrPreviewOpen(true)}
+        >
+          <span className="inspector-drill-label">HDR Preview</span>
+          <span className="inspector-drill-summary">Open dockable test pattern</span>
+          <FontAwesomeIcon icon={faUpRightFromSquare} className="inspector-panel-open-icon" />
+        </button>
       </section>
       ) : null}
       {sceneInspectorView === "post-processing" ? (

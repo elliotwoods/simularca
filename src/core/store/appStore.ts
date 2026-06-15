@@ -58,11 +58,13 @@ export interface AppActions {
       settings: Partial<{
         renderEngine: RenderEngine;
         antialiasing: boolean;
+        hdrOutput: boolean;
         colorBufferPrecision: SceneColorBufferPrecision;
         framePacing: Partial<SceneFramePacingSettings>;
         tonemapping: Partial<{
           mode: SceneToneMappingMode;
           dither: boolean;
+          hdrPeak: number;
         }>;
         helpers: Partial<{
           grid: Partial<SceneHelpersSettings["grid"]>;
@@ -124,6 +126,7 @@ export interface AppActions {
   closePluginView(viewId: string): void;
   focusPluginView(viewId: string): void;
   setPluginViewTabset(viewId: string, tabsetId: string | null): void;
+  setHdrPreviewOpen(open: boolean): void;
   requestCameraState(camera: AppState["camera"], options?: CameraTransitionRequestOptions): void;
   cancelCameraTransition(): void;
   setCameraState(
@@ -471,6 +474,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
             if (typeof settings.antialiasing === "boolean") {
               draft.scene.antialiasing = settings.antialiasing;
             }
+            if (typeof settings.hdrOutput === "boolean") {
+              draft.scene.hdrOutput = settings.hdrOutput;
+            }
             if (settings.colorBufferPrecision) {
               draft.scene.colorBufferPrecision = settings.colorBufferPrecision;
             }
@@ -488,6 +494,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               }
               if (typeof settings.tonemapping.dither === "boolean") {
                 draft.scene.tonemapping.dither = settings.tonemapping.dither;
+              }
+              if (typeof settings.tonemapping.hdrPeak === "number" && Number.isFinite(settings.tonemapping.hdrPeak)) {
+                draft.scene.tonemapping.hdrPeak = Math.max(1, settings.tonemapping.hdrPeak);
               }
             }
             if (settings.postProcessing) {
@@ -995,6 +1004,19 @@ export function createAppStore(mode: AppMode): AppStoreApi {
               return;
             }
             draft.focusedPluginViewId = viewId;
+          })
+        });
+      },
+      setHdrPreviewOpen(open) {
+        set({
+          state: produce(get().state, (draft) => {
+            draft.hdrPreviewOpen = open;
+            // Bump the focus token on every open request so re-opening focuses the
+            // existing panel even when it is already open. Ephemeral UI state — does
+            // not mark the project dirty.
+            if (open) {
+              draft.hdrPreviewFocusToken += 1;
+            }
           })
         });
       },

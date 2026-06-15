@@ -4915,6 +4915,84 @@ body.is-dragging-viewport-axes * {
 .inspector-drill-row:hover .inspector-drill-chevron { opacity: 1; }
 .inspector-drill-row:hover .inspector-drill-label { color: var(--text); opacity: 1; }
 .inspector-component-list { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+
+.inspector-panel-open-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  width: 100%;
+  padding: 8px 10px;
+  gap: 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  text-align: left;
+}
+.inspector-panel-open-row:hover { background: var(--fill); }
+.inspector-panel-open-row:hover .inspector-drill-label { color: var(--text); opacity: 1; }
+.inspector-panel-open-icon { font-size: 12px; color: var(--text); opacity: 0.7; }
+.inspector-panel-open-row:hover .inspector-panel-open-icon { opacity: 1; }
+
+.hdr-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 12px;
+  height: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.hdr-preview-block,
+.hdr-histogram {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 240px;
+  min-width: 200px;
+  min-height: 160px;
+}
+.hdr-preview-canvas-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 120px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.hdr-preview-canvas,
+.hdr-histogram-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.hdr-preview-ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 16px;
+  pointer-events: none;
+}
+.hdr-preview-tick {
+  position: absolute;
+  bottom: 2px;
+  transform: translateX(-50%);
+  padding: 1px 3px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: #000;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.hdr-preview-status,
+.hdr-preview-message {
+  margin: 8px 2px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
 .inspector-section { border-top: 1px solid var(--line); margin-top: 4px; padding: 4px 8px 8px; }
 .inspector-section-label {
   font-size: 10px;
