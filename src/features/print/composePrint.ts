@@ -47,6 +47,29 @@ function formatRulerLabel(meters: number): string {
   return Number.isInteger(meters) ? `${meters}m` : `${meters.toFixed(1)}m`;
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+/** Snap a coordinate to a half-pixel so 1px strokes render crisply. */
+function snapHalf(value: number): number {
+  return Math.round(value) + 0.5;
+}
+
+/** Invert a `#rrggbb` hex colour (for grid lines under full-image invert). */
+export function invertHex(hex: string): string {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  const hexPart = match?.[1];
+  if (!hexPart) {
+    return hex;
+  }
+  const n = parseInt(hexPart, 16);
+  const r = 255 - ((n >> 16) & 0xff);
+  const g = 255 - ((n >> 8) & 0xff);
+  const b = 255 - (n & 0xff);
+  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+}
+
 function invertInPlace(context: CanvasRenderingContext2D, width: number, height: number): void {
   const image = context.getImageData(0, 0, width, height);
   const data = image.data;
@@ -307,11 +330,111 @@ function drawWorldRuler(
 }
 
 /**
+ * Draw the scene grid as crisp 1px vector hairlines, aligned to the same world↔
+ * pixel mapping as the ruler so grid lines and ruler ticks coincide exactly.
+ * Used in place of the rasterised 3D grid for axis-aligned ortho prints, where
+ * the GL grid would be sub-pixel/faint at print DPI.
+ */
+function drawVectorGrid(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  ruler: OrthoEdgeMapping,
+  majorPitch: number,
+  minorPitch: number,
+  majorColor: string,
+  minorColor: string,
+  opacity: number,
+  invert: boolean
+): void {
+  const minor = Number.isFinite(minorPitch) && minorPitch > 0 ? minorPitch : 1;
+  const major = Number.isFinite(majorPitch) && majorPitch > 0 ? Math.max(minor, majorPitch) : minor;
+  const majorInk = invert ? invertHex(majorColor) : majorColor;
+  const minorInk = invert ? invertHex(minorColor) : minorColor;
+
+  context.save();
+  context.globalAlpha = clamp01(opacity);
+  context.lineWidth = 1; // hairline
+
+  const drawSet = (worldLow: number, worldHigh: number, toPixel: (coord: number) => number, pixelExtent: number, vertical: boolean): void => {
+    const span = Math.abs(worldHigh - worldLow);
+    if (!(span > 1e-9)) {
+      return;
+    }
+    const pxPerMeter = pixelExtent / span;
+    const drawMinor = minor * pxPerMeter >= MIN_MINOR_PIXEL_SPACING;
+    const stepMeters = drawMinor ? minor : major;
+    const start = Math.ceil(worldLow / stepMeters - 1e-6);
+    const end = Math.floor(worldHigh / stepMeters + 1e-6);
+    for (let i = start; i <= end; i += 1) {
+      const coord = i * stepMeters;
+      const isMajor = isMajorTick(coord, major);
+      context.strokeStyle = isMajor ? majorInk : minorInk;
+      const p = snapHalf(toPixel(coord));
+      context.beginPath();
+      if (vertical) {
+        context.moveTo(p, 0);
+        context.lineTo(p, height);
+      } else {
+        context.moveTo(0, p);
+        context.lineTo(width, p);
+      }
+      context.stroke();
+    }
+  };
+
+  // Horizontal axis → vertical grid lines (constant x); vertical axis → horizontal lines.
+  const hLow = Math.min(ruler.worldAtLeft, ruler.worldAtRight);
+  const hHigh = Math.max(ruler.worldAtLeft, ruler.worldAtRight);
+  drawSet(hLow, hHigh, (c) => ((c - ruler.worldAtLeft) / (ruler.worldAtRight - ruler.worldAtLeft)) * width, width, true);
+  const vLow = Math.min(ruler.worldAtTop, ruler.worldAtBottom);
+  const vHigh = Math.max(ruler.worldAtTop, ruler.worldAtBottom);
+  drawSet(vLow, vHigh, (c) => ((c - ruler.worldAtTop) / (ruler.worldAtBottom - ruler.worldAtTop)) * height, height, false);
+
+  context.restore();
+}
+
+/** Draw the title block (Simularca · version · project · snapshot) bottom-right. */
+function drawInfoBlock(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  invert: boolean,
+  info: { version: string; project: string; snapshot: string },
+  bottomInset: number
+): void {
+  const parts = [`Simularca v${info.version}`];
+  if (info.project.trim()) {
+    parts.push(info.project.trim());
+  }
+  if (info.snapshot.trim()) {
+    parts.push(info.snapshot.trim());
+  }
+  const text = parts.join("  ·  ");
+  const scale = Math.min(width, height);
+  const fontSize = Math.max(11, Math.round(scale * 0.013));
+  const pad = Math.max(4, Math.round(fontSize * 0.5));
+  const margin = Math.max(6, Math.round(scale * 0.01));
+
+  context.save();
+  context.font = `${fontSize}px sans-serif`;
+  context.textAlign = "right";
+  context.textBaseline = "bottom";
+  const x = width - bottomInset - margin;
+  const y = height - bottomInset - margin;
+  const textW = context.measureText(text).width;
+  context.fillStyle = invert ? "rgba(255,255,255,0.78)" : "rgba(10,14,22,0.78)";
+  context.fillRect(x - textW - pad, y - fontSize - pad, textW + pad * 2, fontSize + pad * 2);
+  context.fillStyle = invert ? "#101010" : "#f2f2f2";
+  context.fillText(text, x - pad, y - pad);
+  context.restore();
+}
+
+/**
  * Composite a rendered frame into a print-ready canvas: optional full-image
- * colour invert (dark editor background → white paper) and an optional edge
- * ruler labelled in metres (drawn only when `pixelsPerMeter` is known). The
- * ruler tick pitch follows the scene grid when `gridMajorPitch`/`gridMinorPitch`
- * are supplied.
+ * colour invert (dark editor background → white paper), an optional grid-aligned
+ * edge ruler, a crisp vector grid, and a title block. The ruler/grid pitch
+ * follows the scene grid when `gridMajorPitch`/`gridMinorPitch` are supplied.
  */
 export function composePrintCanvas(args: {
   source: HTMLCanvasElement;
@@ -319,7 +442,11 @@ export function composePrintCanvas(args: {
   pixelsPerMeter: number | null;
   gridMajorPitch?: number;
   gridMinorPitch?: number;
+  gridMajorColor?: string;
+  gridMinorColor?: string;
+  gridOpacity?: number;
   ruler?: OrthoEdgeMapping | null;
+  info?: { version: string; project: string; snapshot: string };
 }): HTMLCanvasElement {
   const { source, settings } = args;
   const width = Math.max(1, source.width);
@@ -338,6 +465,22 @@ export function composePrintCanvas(args: {
     invertInPlace(context, width, height);
   }
 
+  // Crisp vector grid (axis-aligned ortho) — replaces the faint rasterised 3D grid.
+  if (settings.showGrid && args.ruler) {
+    drawVectorGrid(
+      context,
+      width,
+      height,
+      args.ruler,
+      args.gridMajorPitch ?? 1,
+      args.gridMinorPitch ?? 0.1,
+      args.gridMajorColor ?? "#2f8f9d",
+      args.gridMinorColor ?? "#1f2430",
+      args.gridOpacity ?? 0.35,
+      settings.invert
+    );
+  }
+
   if (settings.showRuler && args.ruler) {
     // World-coordinate ruler aligned to the grid (axis-aligned ortho views).
     drawWorldRuler(
@@ -352,6 +495,12 @@ export function composePrintCanvas(args: {
   } else if (settings.showRuler && args.pixelsPerMeter) {
     // Fallback relative ruler (non-axis-aligned ortho).
     drawEdgeRuler(context, width, height, args.pixelsPerMeter, settings.invert, args.gridMajorPitch, args.gridMinorPitch);
+  }
+
+  if (settings.showInfo && args.info) {
+    // Sit the title block above the bottom ruler band when the 4-edge ruler is on.
+    const band = settings.showRuler && args.ruler ? Math.max(18, Math.round(Math.min(width, height) * 0.022)) : 0;
+    drawInfoBlock(context, width, height, settings.invert, args.info, band);
   }
 
   return canvas;

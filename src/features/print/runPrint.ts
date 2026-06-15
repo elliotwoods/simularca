@@ -1,3 +1,4 @@
+import { BUILD_INFO } from "@/app/buildInfo";
 import type { AppKernel } from "@/app/kernel";
 import type { CameraState, RenderEngine, SceneColorBufferPrecision } from "@/core/types";
 import { computeOrthoEdgeMapping, type OrthoEdgeMapping } from "@/features/camera/viewUtils";
@@ -40,9 +41,14 @@ export interface PrintFrameResult {
   pixelsPerMeter: number | null;
   gridMajorPitch: number;
   gridMinorPitch: number;
+  gridMajorColor: string;
+  gridMinorColor: string;
+  gridOpacity: number;
   mostlyDark: boolean;
   /** World↔edge mapping for the grid-aligned ruler (null for non-aligned views). */
   ruler: OrthoEdgeMapping | null;
+  /** Title-block strings (version/project/snapshot). */
+  info: { version: string; project: string; snapshot: string };
 }
 
 function hasOpaquePixel(rgba: Uint8ClampedArray): boolean {
@@ -175,7 +181,10 @@ export async function renderPrintFrame(
       // the per-viewport overrides so they appear without other debug clutter.
       showDebugHelpers: false,
       editorOverlays: settings.showOverlays,
-      gridVisibleOverride: settings.showGrid,
+      // Axis-aligned ortho (ruler present) draws a crisp vector grid in the
+      // compositor, so suppress the 3D grid there to avoid a faint double grid;
+      // keep the 3D grid only as the non-aligned fallback.
+      gridVisibleOverride: settings.showGrid && ruler === null,
       axesVisibleOverride: settings.showOrigin,
       viewportSize: { width, height }
     };
@@ -215,14 +224,23 @@ export async function renderPrintFrame(
     }
     // Copy out before the viewport is torn down (which disposes the GL canvas).
     const out = copyCanvas(canvas);
-    const grid = store.getState().state.scene.helpers.grid;
+    const appState = store.getState().state;
+    const grid = appState.scene.helpers.grid;
     return {
       canvas: out,
       pixelsPerMeter: ppm,
       gridMajorPitch: grid.majorPitch,
       gridMinorPitch: grid.minorPitch,
+      gridMajorColor: grid.majorColor,
+      gridMinorColor: grid.minorColor,
+      gridOpacity: grid.opacity,
       mostlyDark: isCanvasMostlyDark(out),
-      ruler
+      ruler,
+      info: {
+        version: BUILD_INFO.version,
+        project: appState.activeProject?.name ?? "",
+        snapshot: appState.activeSnapshotName
+      }
     };
   } finally {
     if (viewport) {
@@ -250,7 +268,11 @@ export async function runPrint(settings: PrintSettings, deps: RunPrintDeps): Pro
       pixelsPerMeter: frame.pixelsPerMeter,
       gridMajorPitch: frame.gridMajorPitch,
       gridMinorPitch: frame.gridMinorPitch,
-      ruler: frame.ruler
+      gridMajorColor: frame.gridMajorColor,
+      gridMinorColor: frame.gridMinorColor,
+      gridOpacity: frame.gridOpacity,
+      ruler: frame.ruler,
+      info: frame.info
     });
     const pngBytes = await canvasToPngBytes(composed);
     const baseName = (deps.projectName ?? "print").replace(/[^\w.-]+/g, "_") || "print";

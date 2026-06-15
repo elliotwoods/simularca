@@ -138,7 +138,11 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
         pixelsPerMeter: base.frame.pixelsPerMeter,
         gridMajorPitch: base.frame.gridMajorPitch,
         gridMinorPitch: base.frame.gridMinorPitch,
-        ruler: base.frame.ruler
+        gridMajorColor: base.frame.gridMajorColor,
+        gridMinorColor: base.frame.gridMinorColor,
+        gridOpacity: base.frame.gridOpacity,
+        ruler: base.frame.ruler,
+        info: base.frame.info
       });
       setPreviewUrl(composed.toDataURL("image/png"));
     } catch {
@@ -296,6 +300,14 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
                 type="checkbox"
                 checked={draft.showOverlays}
                 onChange={(event) => setDraft((prev) => ({ ...prev, showOverlays: event.target.checked }))}
+              />
+            </label>
+            <label className="print-modal-checkbox">
+              <span>Title Block</span>
+              <input
+                type="checkbox"
+                checked={draft.showInfo}
+                onChange={(event) => setDraft((prev) => ({ ...prev, showInfo: event.target.checked }))}
               />
             </label>
             <label>

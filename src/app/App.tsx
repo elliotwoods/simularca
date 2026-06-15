@@ -907,12 +907,13 @@ export function App() {
       paper: "a4",
       orientation: "landscape",
       dpi: 300,
-      invert: false,
-      showRuler: false,
+      invert: true,
+      showRuler: true,
       // Match the live viewport by default so the print looks like what's on screen.
       showGrid: sceneGridVisible,
       showOrigin: sceneAxesVisible,
       showOverlays: false,
+      showInfo: true,
       scaleMode: "fit",
       scaleRatio: 100,
       output: window.electronAPI ? "dialog" : "png"

@@ -23,6 +23,8 @@ export interface PrintSettings {
   showOrigin: boolean;
   /** Include editing gizmos & handles (transform gizmo, curve/dimension overlays). */
   showOverlays: boolean;
+  /** Stamp a title block (Simularca, version, project, snapshot) on the print. */
+  showInfo: boolean;
   scaleMode: PrintScaleMode;
   /** Real:printed ratio used when `scaleMode === "ratio"` (e.g. 100 = 1:100). */
   scaleRatio: number;
