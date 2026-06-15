@@ -46,7 +46,8 @@
       "Bash(Select-Object -First 20)",
       "Bash(Format-Table Name, FullName)",
       "Bash(Get-ChildItem -Path \"C:\\\\dev\\\\simularca\" -Recurse -Filter \"*.ts\" -o -Filter \"*.tsx\")",
-      "Bash(Select-Object -First 20 FullName)"
+      "Bash(Select-Object -First 20 FullName)",
+      "Bash(node scripts/debug-session.mjs renderer --eval \"\\(async\\(\\)=>{ const m = await import\\('/src/core/store/appStore.ts'\\); const s = m.useAppStore.getState\\(\\); return { project: s.activeProject?.name, mode: s.scene.tonemapping.mode, hdrPeak: s.scene.tonemapping.hdrPeak, dither: s.scene.tonemapping.dither, hdrOutput: s.scene.hdrOutput, hdrPreviewOpen: s.hdrPreviewOpen }; }\\)\\(\\)\")"
     ]
   }
 }
