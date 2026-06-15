@@ -1,4 +1,10 @@
 export type CurveKind = "spline" | "circle" | "arc" | "helix" | "mesh-projection";
+
+// Analytic kinds are sampled directly from radius/params (no per-point polyline walk).
+export function isAnalyticCurveKind(kind: CurveKind | undefined): boolean {
+  return kind === "circle" || kind === "arc" || kind === "helix";
+}
+
 export type CurveHandleMode = "normal" | "mirrored" | "auto" | "hard";
 export type CurveHandleWeightMode = "normal" | "hard";
 

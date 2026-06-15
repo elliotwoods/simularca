@@ -3,6 +3,7 @@ import type { AppKernel } from "@/app/kernel";
 import type { ActorNode, AppState, MistVolumeResource, VolumetricRayFieldResource } from "@/core/types";
 import { curveDataWithOverrides, getCurveSamplesPerSegmentFromActor } from "@/features/curves/model";
 import { getProjectedPolyline } from "@/features/curves/projectionCache";
+import { isAnalyticCurveKind } from "@/features/curves/types";
 
 export type MistVolumeQualityMode = "interactive" | "export";
 type MistPreviewMode = "volume" | "bounds" | "slice-x" | "slice-y" | "slice-z" | "off";
@@ -2442,7 +2443,7 @@ export class MistVolumeController {
         continue;
       }
       const curveData = curveDataWithOverrides(sourceActor);
-      const isAnalyticKind = curveData.kind === "circle" || curveData.kind === "arc" || curveData.kind === "helix";
+      const isAnalyticKind = isAnalyticCurveKind(curveData.kind);
       const pointCount = isAnalyticKind ? 1
         : curveData.kind === "mesh-projection" ? (getProjectedPolyline(sourceActor.id)?.hitCount ?? 0)
         : curveData.points.filter((point) => point.enabled !== false).length;

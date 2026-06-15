@@ -47,6 +47,7 @@ import {
   type ProjectedPolyline
 } from "@/features/curves/projectionCache";
 import { estimateCurveLength, sampleCurvePositionAndTangent } from "@/features/curves/sampler";
+import { isAnalyticCurveKind } from "@/features/curves/types";
 import { parseDxf } from "@/features/dxf/parseDxf";
 import { buildDxfScene, createDxfObject, disposeDxfObject, syncDxfAppearance } from "@/features/dxf/dxfToScene";
 import type { BuiltDxfScene, ParsedDxfDocument } from "@/features/dxf/dxfTypes";
@@ -3602,7 +3603,7 @@ export class SceneController {
     const activePoints = curveData.points.filter((point) => point.enabled !== false);
     const pointCount = activePoints.length;
     const skippedPointCount = Math.max(0, curveData.points.length - activePoints.length);
-    const segmentCount = curveType === "circle" ? 1 : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
+    const segmentCount = isAnalyticCurveKind(curveType) ? 1 : pointCount < 2 ? 0 : (curveData.closed ? pointCount : pointCount - 1);
     const signature = JSON.stringify({
       curveData,
       samplesPerSegment
@@ -3613,8 +3614,13 @@ export class SceneController {
     this.curveSignatureByActorId.set(actor.id, signature);
 
     const sampled: any[] = [];
-    if (curveType === "circle") {
-      const totalSamples = Math.max(8, samplesPerSegment);
+    if (isAnalyticCurveKind(curveType)) {
+      // Helix spans multiple turns, so scale the sample budget by turn count to avoid faceting.
+      const turns = curveData.helixTurns ?? 1;
+      const totalSamples = Math.max(
+        8,
+        Math.ceil(samplesPerSegment * (curveType === "helix" ? Math.max(1, turns) : 1))
+      );
       for (let sampleIndex = 0; sampleIndex <= totalSamples; sampleIndex += 1) {
         const t = sampleIndex / totalSamples;
         const sample = sampleCurvePositionAndTangent(curveData, t);
@@ -3670,7 +3676,7 @@ export class SceneController {
         skippedPointCount,
         segmentCount,
         curveType,
-        radius: curveType === "circle" ? curveData.radius ?? 1 : null,
+        radius: isAnalyticCurveKind(curveType) ? curveData.radius ?? 1 : null,
         closed: curveData.closed,
         samplesPerSegment,
         length,

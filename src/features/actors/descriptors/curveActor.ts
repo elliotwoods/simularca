@@ -12,6 +12,7 @@ import {
   getCurveTypeFromActor
 } from "@/features/curves/model";
 import { estimateCurveLength } from "@/features/curves/sampler";
+import { isAnalyticCurveKind } from "@/features/curves/types";
 
 function formatRaycastLodSummary(actor: ActorNode, state: AppState): string {
   const targetIds = Array.isArray(actor.params.targetActorIds)
@@ -113,7 +114,7 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
         : 0,
       resolution: Math.max(3, Math.floor(Number(params.resolution ?? 64))),
       targetCount,
-      radius: curveType === "circle" || curveType === "arc" || curveType === "helix"
+      radius: isAnalyticCurveKind(curveType)
         ? readNumber((params as { radius?: unknown }).radius, 0, 1)
         : undefined,
       arcFraction,
@@ -137,7 +138,7 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
     runtime.targetCount = Array.isArray(params.targetActorIds)
       ? (params.targetActorIds as unknown[]).filter((entry) => typeof entry === "string").length
       : 0;
-    if (runtime.curveType === "circle" || runtime.curveType === "arc" || runtime.curveType === "helix") {
+    if (isAnalyticCurveKind(runtime.curveType)) {
       runtime.radius = readNumber((params as { radius?: unknown }).radius, 0, runtime.radius ?? 1);
     } else {
       runtime.radius = undefined;
@@ -175,12 +176,12 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
       const hardCount = curve.points.filter((point) => point.mode === "hard").length;
       const normalCount = curve.points.length - autoCount - mirroredCount - hardCount;
       const defaultSegmentCount =
-        curveType === "circle" || curveType === "arc" || curveType === "helix" ? 1
+        isAnalyticCurveKind(curveType) ? 1
           : curveType === "mesh-projection" ? 0
           : curve.points.length < 2 ? 0
           : (curve.closed ? curve.points.length : curve.points.length - 1);
 
-      const isAnalyticRadius = curveType === "circle" || curveType === "arc" || curveType === "helix";
+      const isAnalyticRadius = isAnalyticCurveKind(curveType);
       const baseRows: ActorStatusEntry[] = [
         { label: "Type", value: "Curve" },
         { label: "Curve Type", value: curveType },
