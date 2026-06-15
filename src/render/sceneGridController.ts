@@ -99,7 +99,8 @@ export class SceneGridController {
 
   public update(): void {
     const grid = this.kernel.store.getState().state.scene.helpers.grid;
-    const visible = this.sceneController.getDebugHelpersVisible() && grid.visible;
+    const override = this.sceneController.getGridVisibleOverride();
+    const visible = override ?? (this.sceneController.getDebugHelpersVisible() && grid.visible);
     this.root.visible = visible;
     if (!visible) {
       return;

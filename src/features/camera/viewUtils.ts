@@ -131,6 +131,75 @@ export function projectWorldDirectionsAtViewportCenter(
   });
 }
 
+// Mirrors sceneGridController.ts: a camera forward whose dominant axis component
+// is at least this is treated as looking straight down a world axis.
+const AXIS_ALIGNED_DOT = 0.9995;
+
+/** In-plane world axes (screen H, screen V) for a grid whose normal is `axis`. */
+function inPlaneAxes(normalAxis: 0 | 1 | 2): [0 | 1 | 2, 0 | 1 | 2] {
+  switch (normalAxis) {
+    case 0:
+      return [1, 2]; // looking down X: screen H = Y, screen V = Z
+    case 1:
+      return [0, 2]; // looking down Y (top): screen H = X, screen V = Z
+    case 2:
+      return [0, 1]; // looking down Z (front): screen H = X, screen V = Y
+  }
+}
+
+export interface OrthoEdgeMapping {
+  /** World axis (0=X,1=Y,2=Z) mapped to the screen horizontal / vertical. */
+  axisU: 0 | 1 | 2;
+  axisV: 0 | 1 | 2;
+  /** World `axisU` value at the canvas left (x=0) / right (x=width) edges. */
+  worldAtLeft: number;
+  worldAtRight: number;
+  /** World `axisV` value at the canvas top (y=0) / bottom (y=height) edges. */
+  worldAtTop: number;
+  worldAtBottom: number;
+}
+
+/**
+ * For an axis-aligned orthographic view (top/front/side), report the world
+ * coordinate visible at each canvas edge and which world axis maps to the screen
+ * horizontal/vertical. Reuses the same projection + corner-unproject the scene
+ * grid uses (sceneGridController.computeFillRequest), so a ruler built from this
+ * lines up exactly with the grid. Returns null for perspective or non-aligned
+ * orthographic views.
+ */
+export function computeOrthoEdgeMapping(camera: CameraState, viewportAspect: number): OrthoEdgeMapping | null {
+  if (camera.mode !== "orthographic") {
+    return null;
+  }
+  const proj = createProjectionCamera(camera, viewportAspect);
+  const forward = new THREE.Vector3();
+  proj.getWorldDirection(forward);
+  const abs: [number, number, number] = [Math.abs(forward.x), Math.abs(forward.y), Math.abs(forward.z)];
+  let normalAxis: 0 | 1 | 2 = 0;
+  if (abs[1] > abs[normalAxis]) {
+    normalAxis = 1;
+  }
+  if (abs[2] > abs[normalAxis]) {
+    normalAxis = 2;
+  }
+  if (abs[normalAxis] < AXIS_ALIGNED_DOT) {
+    return null;
+  }
+  const [axisU, axisV] = inPlaneAxes(normalAxis);
+  const corner = new THREE.Vector3();
+  const bl = corner.set(-1, -1, 0).unproject(proj).clone();
+  const br = corner.set(1, -1, 0).unproject(proj).clone();
+  const tl = corner.set(-1, 1, 0).unproject(proj).clone();
+  return {
+    axisU,
+    axisV,
+    worldAtLeft: bl.getComponent(axisU),
+    worldAtRight: br.getComponent(axisU),
+    worldAtBottom: bl.getComponent(axisV),
+    worldAtTop: tl.getComponent(axisV)
+  };
+}
+
 export function isCameraFacingDirection(
   camera: CameraState,
   direction: CameraViewDirection,

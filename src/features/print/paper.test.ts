@@ -4,7 +4,9 @@ import {
   paperPixelSize,
   pixelsPerMeter,
   scaleToWorldViewHeight,
+  worldViewHeightFromZoom,
   zoomForPrintScale,
+  zoomForWorldViewHeight,
   PAPER_SIZES_MM
 } from "@/features/print/paper";
 
@@ -44,5 +46,23 @@ describe("print paper math", () => {
     // At 1:100, one printed metre should measure 10mm on paper.
     const mmPerMeter = (ppm / dpi) * 25.4;
     expect(mmPerMeter).toBeCloseTo(10, 1);
+  });
+
+  it("inverts zoom <-> world view height", () => {
+    // worldViewHeightFromZoom is the inverse of zoomForWorldViewHeight.
+    expect(worldViewHeightFromZoom(zoomForWorldViewHeight(29.7))).toBeCloseTo(29.7, 5);
+    expect(zoomForWorldViewHeight(worldViewHeightFromZoom(0.75))).toBeCloseTo(0.75, 5);
+    // zoom 2 ⇒ 16/2 = 8m spans the page height.
+    expect(worldViewHeightFromZoom(2)).toBeCloseTo(8, 5);
+  });
+
+  it("derives a fit-mode ruler scale directly from the camera zoom", () => {
+    // In Fit to page the camera zoom is untouched; the ruler scale comes from it.
+    const dpi = 300;
+    const { height } = paperPixelSize("a4", "portrait", dpi);
+    const zoom = 0.5; // 16/0.5 = 32m across the page height
+    const ppm = pixelsPerMeter(height, worldViewHeightFromZoom(zoom));
+    // 3508 px / 32 m ≈ 109.6 px per metre.
+    expect(ppm).toBeCloseTo(height / 32, 4);
   });
 });

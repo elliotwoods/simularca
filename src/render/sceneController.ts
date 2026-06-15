@@ -32,6 +32,7 @@ import type {
   DxfInputUnits,
   DxfLayerStateMap,
   DxfSourcePlane,
+  ParameterValues,
   SceneAxesSettings
 } from "@/core/types";
 import type { ReloadableDescriptor } from "@/core/hotReload/types";
@@ -275,6 +276,14 @@ function buildActorProfileMeta(actor: ActorNode): ActorProfileMeta {
 export interface SceneControllerOptions {
   qualityMode?: MistVolumeQualityMode;
   showDebugHelpers?: boolean;
+  /**
+   * When set (non-null), forces the scene grid / origin-axes visibility
+   * regardless of `showDebugHelpers`. Used by the offscreen print viewport so
+   * the grid/origin can be included in a print without revealing other
+   * debug-only helpers. `null`/undefined ⇒ follow the normal store-driven rule.
+   */
+  gridVisibleOverride?: boolean | null;
+  axesVisibleOverride?: boolean | null;
 }
 
 function isDebugOnlyActor(actor: Pick<ActorNode, "actorType">): boolean {
@@ -727,6 +736,8 @@ export class SceneController {
   private readonly pluginActorRuntimeController: PluginActorRuntimeController;
   private readonly showDebugHelpers: boolean;
   private debugHelpersVisible: boolean;
+  private readonly gridVisibleOverride: boolean | null;
+  private readonly axesVisibleOverride: boolean | null;
   private renderer: SupportedRenderer | null = null;
   private pmremGenerator: SupportedPmremGenerator | null = null;
 
@@ -790,6 +801,8 @@ export class SceneController {
   public constructor(private readonly kernel: AppKernel, options: SceneControllerOptions = {}) {
     this.showDebugHelpers = options.showDebugHelpers ?? true;
     this.debugHelpersVisible = this.showDebugHelpers;
+    this.gridVisibleOverride = options.gridVisibleOverride ?? null;
+    this.axesVisibleOverride = options.axesVisibleOverride ?? null;
     this.qualityMode = options.qualityMode ?? "interactive";
     const initialState = this.kernel.store.getState().state;
     const initialBackground = normalizeBackgroundColor(initialState.scene.backgroundColor);
@@ -828,6 +841,10 @@ export class SceneController {
     return this.debugHelpersVisible;
   }
 
+  public getGridVisibleOverride(): boolean | null {
+    return this.gridVisibleOverride;
+  }
+
   public setDebugHelpersVisible(visible: boolean): void {
     this.debugHelpersVisible = visible;
     this.applySceneHelperVisibility();
@@ -845,7 +862,7 @@ export class SceneController {
   private applySceneHelperVisibility(): void {
     const helperSettings = this.kernel.store.getState().state.scene.helpers;
     if (this.axesHelper) {
-      this.axesHelper.visible = this.debugHelpersVisible && helperSettings.axes.visible;
+      this.axesHelper.visible = this.axesVisibleOverride ?? (this.debugHelpersVisible && helperSettings.axes.visible);
     }
   }
 
@@ -5000,6 +5017,14 @@ export class SceneController {
           profileChunk: <T,>(label: string, run: () => T): T => this.kernel.profiler.withChunk(label, run),
           setActorStatus: (status: ActorRuntimeStatus | null) => {
             this.kernel.store.getState().actions.setActorStatus(actor.id, status);
+          },
+          updateActorParams: (actorId: string, partial: ParameterValues, options?: { history?: boolean }) => {
+            const actions = this.kernel.store.getState().actions;
+            if (options?.history === false) {
+              actions.updateActorParamsNoHistory(actorId, partial);
+            } else {
+              actions.updateActorParams(actorId, partial);
+            }
           },
           readAssetBytes: (assetId: string): Promise<Uint8Array> => {
             const asset = state.assets.find(a => a.id === assetId);

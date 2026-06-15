@@ -91,7 +91,16 @@ class DxfDrawingController extends THREE.Group {
       return;
     }
 
-    if (assetId !== this.loadedAssetId || reloadToken !== this.assetReloadToken) {
+    // Fire a load only when the requested asset/token differs from what we have
+    // already loaded OR already have in flight. The pendingAssetId guard is
+    // essential: loadedAssetId is not set until the async read resolves, so
+    // without it every frame would re-trigger loadAsset() while the first read is
+    // still pending -- and each new load supersedes the previous one's loadToken,
+    // so the completing read bails on its `localToken === this.loadToken` check
+    // and none ever wins. That race left the actor stuck on "loading" forever.
+    const reloadRequested = reloadToken !== this.assetReloadToken;
+    const alreadyHandled = assetId === this.loadedAssetId || assetId === this.pendingAssetId;
+    if (reloadRequested || !alreadyHandled) {
       this.pendingAssetId = assetId;
       this.assetReloadToken = reloadToken;
       void this.loadAsset(assetId, context);
@@ -139,7 +148,16 @@ class DxfDrawingController extends THREE.Group {
       return;
     }
 
-    const layerStates = this.mergeLayerStates(parseLayerStates(params), this.builtScene);
+    const existingLayerStates = parseLayerStates(params);
+    const layerStates = this.mergeLayerStates(existingLayerStates, this.builtScene);
+    // Persist the discovered layer set back to the actor params so the inspector's
+    // "Layers" field can list and edit them. Mirrors the built-in dxf-reference actor's
+    // mergeDxfLayerStates(). Guarded by a diff so we only write when the set changes,
+    // which avoids a re-render/re-sync loop (buildSignature ignores layerStates, so this
+    // never triggers a rebuild; appearanceSignature recomputes once, then converges).
+    if (JSON.stringify(layerStates) !== JSON.stringify(existingLayerStates)) {
+      context.updateActorParams(context.actor.id, { layerStates }, { history: false });
+    }
     const nextAppearanceSignature = JSON.stringify({
       layerStates,
       invertColors: params.invertColors === true,
@@ -230,7 +248,21 @@ class DxfDrawingController extends THREE.Group {
       if (localToken !== this.loadToken) {
         return;
       }
-      this.resetState();
+      // Tear down any stale render output but keep pendingAssetId/assetReloadToken
+      // intact so sync()'s guard treats this asset as already handled and does not
+      // re-fire the failing load every frame. A genuine retry happens when the
+      // asset id changes or the reload token is bumped.
+      this.parsedDocument = null;
+      this.builtScene = null;
+      this.loadedAssetId = "";
+      this.buildSignature = "";
+      this.appearanceSignature = "";
+      this.statusSignature = "";
+      const renderRoot = this.getObjectByName(RENDER_ROOT_NAME);
+      if (renderRoot) {
+        disposeDxfObject(renderRoot);
+        this.remove(renderRoot);
+      }
       context.setActorStatus({
         values: {
           loadState: "failed"

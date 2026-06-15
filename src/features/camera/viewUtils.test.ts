@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   cameraStateForHomeView,
   cameraStateForViewDirection,
+  computeOrthoEdgeMapping,
   getCameraDistance,
   getCameraForward,
   getCameraViewHeight,
@@ -33,6 +34,69 @@ const ORTHOGRAPHIC_CAMERA: CameraState = {
   near: 0.01,
   far: 1000
 };
+
+describe("computeOrthoEdgeMapping", () => {
+  const ASPECT = 1.5;
+
+  it("maps a top view to world X (horizontal) and Z (vertical) centred on the target", () => {
+    const top: CameraState = {
+      mode: "orthographic",
+      position: [1, 12, 3],
+      target: [1, 2, 3],
+      fov: 50,
+      zoom: 1.75,
+      near: 0.01,
+      far: 1000
+    };
+    const mapping = computeOrthoEdgeMapping(top, ASPECT);
+    expect(mapping).not.toBeNull();
+    if (!mapping) {
+      return;
+    }
+    expect(mapping.axisU).toBe(0); // X → horizontal
+    expect(mapping.axisV).toBe(2); // Z → vertical
+    const viewHeight = 16 / 1.75;
+    // Centre of each axis is ~the camera target; spans match the ortho frustum.
+    // (An exact top-down view has up∥forward, so three.js lookAt applies a tiny
+    // nudge — the same one the renderer's grid camera gets, so they stay aligned.
+    // That nudge shifts the centre by <0.1, which is why the tolerance is loose.)
+    expect(Math.abs((mapping.worldAtLeft + mapping.worldAtRight) / 2 - 1)).toBeLessThan(0.1);
+    expect(Math.abs((mapping.worldAtTop + mapping.worldAtBottom) / 2 - 3)).toBeLessThan(0.1);
+    expect(Math.abs(mapping.worldAtRight - mapping.worldAtLeft)).toBeCloseTo(viewHeight * ASPECT, 2);
+    expect(Math.abs(mapping.worldAtTop - mapping.worldAtBottom)).toBeCloseTo(viewHeight, 2);
+  });
+
+  it("maps a front view to world X (horizontal) and Y (vertical)", () => {
+    const front: CameraState = {
+      mode: "orthographic",
+      position: [1, 2, 13],
+      target: [1, 2, 3],
+      fov: 50,
+      zoom: 2,
+      near: 0.01,
+      far: 1000
+    };
+    const mapping = computeOrthoEdgeMapping(front, ASPECT);
+    expect(mapping?.axisU).toBe(0); // X
+    expect(mapping?.axisV).toBe(1); // Y
+    expect(mapping ? (mapping.worldAtLeft + mapping.worldAtRight) / 2 : NaN).toBeCloseTo(1, 4);
+    expect(mapping ? (mapping.worldAtTop + mapping.worldAtBottom) / 2 : NaN).toBeCloseTo(2, 4);
+  });
+
+  it("returns null for perspective and non-axis-aligned orthographic views", () => {
+    expect(computeOrthoEdgeMapping(PERSPECTIVE_CAMERA, ASPECT)).toBeNull();
+    const iso: CameraState = {
+      mode: "orthographic",
+      position: [8, 8, 8],
+      target: [0, 0, 0],
+      fov: 50,
+      zoom: 1,
+      near: 0.01,
+      far: 1000
+    };
+    expect(computeOrthoEdgeMapping(iso, ASPECT)).toBeNull();
+  });
+});
 
 describe("viewUtils", () => {
   it("builds the fixed isometric home camera view", () => {

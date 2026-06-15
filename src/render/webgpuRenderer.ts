@@ -149,6 +149,8 @@ export class WebGpuViewport {
       qualityMode?: MistVolumeQualityMode;
       showDebugHelpers?: boolean;
       editorOverlays?: boolean;
+      gridVisibleOverride?: boolean | null;
+      axesVisibleOverride?: boolean | null;
       viewportSize?: { width: number; height: number };
       manualFrameControl?: boolean;
       colorBufferPrecision?: SceneColorBufferPrecision;
@@ -169,7 +171,9 @@ export class WebGpuViewport {
       : null;
     this.sceneController = new SceneController(kernel, {
       qualityMode: options.qualityMode ?? "interactive",
-      showDebugHelpers: options.showDebugHelpers ?? true
+      showDebugHelpers: options.showDebugHelpers ?? true,
+      gridVisibleOverride: options.gridVisibleOverride ?? null,
+      axesVisibleOverride: options.axesVisibleOverride ?? null
     });
     this.framePacer = new FramePacer(kernel.store.getState().state.scene.framePacing);
     this.colorBufferPrecision = resolveSceneColorBufferPrecision(

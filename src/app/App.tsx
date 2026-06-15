@@ -170,6 +170,8 @@ export function App() {
   const sceneAntialiasing = useAppStore((store) => store.state.scene.antialiasing);
   const sceneColorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
   const cameraMode = useAppStore((store) => store.state.camera.mode);
+  const sceneGridVisible = useAppStore((store) => store.state.scene.helpers.grid.visible);
+  const sceneAxesVisible = useAppStore((store) => store.state.scene.helpers.axes.visible);
   const actors = useAppStore((store) => store.state.actors);
   const selection = useAppStore((store) => store.state.selection);
   const dirty = useAppStore((store) => store.state.dirty);
@@ -907,11 +909,15 @@ export function App() {
       dpi: 300,
       invert: false,
       showRuler: false,
+      // Match the live viewport by default so the print looks like what's on screen.
+      showGrid: sceneGridVisible,
+      showOrigin: sceneAxesVisible,
+      showOverlays: false,
       scaleMode: "fit",
       scaleRatio: 100,
       output: window.electronAPI ? "dialog" : "png"
     }),
-    []
+    [sceneGridVisible, sceneAxesVisible]
   );
 
   useEffect(() => {

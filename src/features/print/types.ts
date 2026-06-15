@@ -17,6 +17,12 @@ export interface PrintSettings {
   dpi: number;
   invert: boolean;
   showRuler: boolean;
+  /** Include the scene grid (matching the viewport grid) in the print. */
+  showGrid: boolean;
+  /** Include the world origin / axes helper in the print. */
+  showOrigin: boolean;
+  /** Include editing gizmos & handles (transform gizmo, curve/dimension overlays). */
+  showOverlays: boolean;
   scaleMode: PrintScaleMode;
   /** Real:printed ratio used when `scaleMode === "ratio"` (e.g. 100 = 1:100). */
   scaleRatio: number;

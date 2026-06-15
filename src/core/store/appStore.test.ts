@@ -123,7 +123,8 @@ describe("appStore undo/redo", () => {
 
     expect(store.getState().state.scene.tonemapping).toEqual({
       mode: "aces",
-      dither: false
+      dither: false,
+      hdrPeak: 4
     });
 
     store.getState().actions.setSceneRenderSettings({
@@ -134,7 +135,8 @@ describe("appStore undo/redo", () => {
 
     expect(store.getState().state.scene.tonemapping).toEqual({
       mode: "off",
-      dither: false
+      dither: false,
+      hdrPeak: 4
     });
   });
 
@@ -175,7 +177,8 @@ describe("appStore undo/redo", () => {
     expect(store.getState().state.scene.renderEngine).toBe("webgpu");
     expect(store.getState().state.scene.tonemapping).toEqual({
       mode: "aces",
-      dither: true
+      dither: true,
+      hdrPeak: 4
     });
   });
 

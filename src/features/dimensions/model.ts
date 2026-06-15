@@ -41,6 +41,22 @@ export function readLandmark(value: unknown): Landmark | null {
     }
     return null;
   }
+  if (candidate.kind === "line") {
+    const actorId = (value as { actorId?: unknown }).actorId;
+    const a = (value as { a?: unknown }).a;
+    const b = (value as { b?: unknown }).b;
+    if (typeof actorId === "string" && isVec3(a) && isVec3(b)) {
+      const label = (value as { label?: unknown }).label;
+      return {
+        kind: "line",
+        actorId,
+        a: [a[0], a[1], a[2]],
+        b: [b[0], b[1], b[2]],
+        label: typeof label === "string" ? label : undefined
+      };
+    }
+    return null;
+  }
   if (candidate.kind === "actor") {
     const actorId = (value as { actorId?: unknown }).actorId;
     const localOffset = (value as { localOffset?: unknown }).localOffset;
@@ -82,5 +98,8 @@ export function describeLandmark(landmark: Landmark | null, state: AppState): st
   }
   const actor = state.actors[landmark.actorId];
   const base = actor ? actor.name : "missing actor";
+  if (landmark.kind === "line") {
+    return `${base} · ${landmark.label ?? "Line"}`;
+  }
   return landmark.label ? `${base} · ${landmark.label}` : base;
 }

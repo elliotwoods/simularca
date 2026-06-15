@@ -31,7 +31,15 @@ function formatMeters(value: number): string {
 /** Settings that change the offscreen 3D render (aspect / zoom), so the base
  *  frame must be regenerated. Invert / ruler / output recompose instantly. */
 function renderKey(settings: PrintSettings): string {
-  return [settings.paper, settings.orientation, settings.scaleMode, settings.scaleRatio].join("|");
+  return [
+    settings.paper,
+    settings.orientation,
+    settings.scaleMode,
+    settings.scaleRatio,
+    settings.showGrid,
+    settings.showOrigin,
+    settings.showOverlays
+  ].join("|");
 }
 
 export function PrintPreviewModal(props: PrintPreviewModalProps) {
@@ -41,6 +49,10 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
   const [error, setError] = useState<string>("");
   const baseRef = useRef<{ key: string; frame: PrintFrameResult } | null>(null);
   const requestSeqRef = useRef(0);
+  // Auto-invert: default invert on for dark scenes, but only until the user
+  // touches the toggle (and only apply the auto-default once per open).
+  const invertUserTouchedRef = useRef(false);
+  const invertAutoSetRef = useRef(false);
 
   // Reset the draft each time the modal opens; perspective forces fit mode.
   useEffect(() => {
@@ -52,6 +64,8 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
     setError("");
     setPreviewUrl("");
     baseRef.current = null;
+    invertUserTouchedRef.current = false;
+    invertAutoSetRef.current = false;
   }, [props.open, props.defaults, props.isOrthographic]);
 
   // Regenerate the base 3D frame (debounced) when render-affecting settings change.
@@ -74,6 +88,13 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
           }
           baseRef.current = { key, frame };
           setError("");
+          // Default invert on for dark scenes (once, unless the user has chosen).
+          if (!invertUserTouchedRef.current && !invertAutoSetRef.current) {
+            invertAutoSetRef.current = true;
+            if (frame.mostlyDark) {
+              setDraft((prev) => ({ ...prev, invert: true }));
+            }
+          }
         })
         .catch((err: unknown) => {
           if (seq !== requestSeqRef.current) {
@@ -90,7 +111,16 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
     }, PREVIEW_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, draft.paper, draft.orientation, draft.scaleMode, draft.scaleRatio]);
+  }, [
+    props.open,
+    draft.paper,
+    draft.orientation,
+    draft.scaleMode,
+    draft.scaleRatio,
+    draft.showGrid,
+    draft.showOrigin,
+    draft.showOverlays
+  ]);
 
   // Recompose invert + ruler whenever the draft or base frame changes.
   useEffect(() => {
@@ -105,7 +135,10 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
       const composed = composePrintCanvas({
         source: base.frame.canvas,
         settings: draft,
-        pixelsPerMeter: base.frame.pixelsPerMeter
+        pixelsPerMeter: base.frame.pixelsPerMeter,
+        gridMajorPitch: base.frame.gridMajorPitch,
+        gridMinorPitch: base.frame.gridMinorPitch,
+        ruler: base.frame.ruler
       });
       setPreviewUrl(composed.toDataURL("image/png"));
     } catch {
@@ -226,7 +259,10 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
               <input
                 type="checkbox"
                 checked={draft.invert}
-                onChange={(event) => setDraft((prev) => ({ ...prev, invert: event.target.checked }))}
+                onChange={(event) => {
+                  invertUserTouchedRef.current = true;
+                  setDraft((prev) => ({ ...prev, invert: event.target.checked }));
+                }}
               />
             </label>
             <label className="print-modal-checkbox">
@@ -234,8 +270,32 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
               <input
                 type="checkbox"
                 checked={draft.showRuler}
-                disabled={!usesScale}
+                disabled={!props.isOrthographic}
                 onChange={(event) => setDraft((prev) => ({ ...prev, showRuler: event.target.checked }))}
+              />
+            </label>
+            <label className="print-modal-checkbox">
+              <span>Grid</span>
+              <input
+                type="checkbox"
+                checked={draft.showGrid}
+                onChange={(event) => setDraft((prev) => ({ ...prev, showGrid: event.target.checked }))}
+              />
+            </label>
+            <label className="print-modal-checkbox">
+              <span>Origin / Axes</span>
+              <input
+                type="checkbox"
+                checked={draft.showOrigin}
+                onChange={(event) => setDraft((prev) => ({ ...prev, showOrigin: event.target.checked }))}
+              />
+            </label>
+            <label className="print-modal-checkbox">
+              <span>Editing Gizmos &amp; Handles</span>
+              <input
+                type="checkbox"
+                checked={draft.showOverlays}
+                onChange={(event) => setDraft((prev) => ({ ...prev, showOverlays: event.target.checked }))}
               />
             </label>
             <label>
@@ -254,7 +314,10 @@ export function PrintPreviewModal(props: PrintPreviewModalProps) {
               </select>
             </label>
             {!props.isOrthographic ? (
-              <p className="print-modal-note">Scale &amp; ruler are only available in orthographic view (press 5).</p>
+              <p className="print-modal-note">
+                Scale &amp; ruler need an orthographic view (press 5). A fixed scale ratio (e.g. 1:100) also requires it;
+                the ruler works in any orthographic view, including Fit to page.
+              </p>
             ) : null}
           </div>
           <div className="print-preview">

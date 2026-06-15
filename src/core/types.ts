@@ -33,11 +33,14 @@ export type ActorType =
  *    mesh vertex or beam-emitter position). `localOffset` is in the actor's local space.
  *  - `origin`: the world origin (0,0,0).
  *  - `world`: a fixed world-space coordinate (arbitrary free-space point).
+ *  - `line`: a straight line segment fixed in a referenced actor's local space
+ *    (e.g. a snapped DXF line). Dimensions measure the orthogonal distance to it.
  */
 export type Landmark =
   | { kind: "actor"; actorId: string; localOffset: [number, number, number]; label?: string }
   | { kind: "origin" }
-  | { kind: "world"; point: [number, number, number] };
+  | { kind: "world"; point: [number, number, number] }
+  | { kind: "line"; actorId: string; a: [number, number, number]; b: [number, number, number]; label?: string };
 
 /** Measurement axis for a dimension. "direct" = point-to-point Euclidean distance. */
 export type DimensionAxis = "direct" | "x" | "y" | "z";

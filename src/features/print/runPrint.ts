@@ -1,12 +1,14 @@
 import type { AppKernel } from "@/app/kernel";
 import type { CameraState, RenderEngine, SceneColorBufferPrecision } from "@/core/types";
+import { computeOrthoEdgeMapping, type OrthoEdgeMapping } from "@/features/camera/viewUtils";
 import { canvasToPngBytes } from "@/features/render/exporters";
-import { composePrintCanvas } from "@/features/print/composePrint";
+import { composePrintCanvas, isCanvasMostlyDark } from "@/features/print/composePrint";
 import {
   paperDimensionsMm,
   paperPixelSize,
   pixelsPerMeter,
   scaleToWorldViewHeight,
+  worldViewHeightFromZoom,
   zoomForPrintScale
 } from "@/features/print/paper";
 import type { PrintSettings } from "@/features/print/types";
@@ -36,6 +38,11 @@ export interface RunPrintDeps extends PrintRenderContext {
 export interface PrintFrameResult {
   canvas: HTMLCanvasElement;
   pixelsPerMeter: number | null;
+  gridMajorPitch: number;
+  gridMinorPitch: number;
+  mostlyDark: boolean;
+  /** World↔edge mapping for the grid-aligned ruler (null for non-aligned views). */
+  ruler: OrthoEdgeMapping | null;
 }
 
 function hasOpaquePixel(rgba: Uint8ClampedArray): boolean {
@@ -62,6 +69,21 @@ function canvasIsBlank(canvas: HTMLCanvasElement): boolean {
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/**
+ * True while any actor reports an in-progress async load (e.g. the DXF plugin
+ * reading its asset). The offscreen print viewport builds its own actor
+ * controllers, so their loads must settle before we capture the frame.
+ */
+function anyActorLoading(store: AppKernel["store"]): boolean {
+  const statuses = store.getState().state.actorStatusByActorId;
+  for (const status of Object.values(statuses)) {
+    if (status.values.loadState === "loading") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function copyCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
@@ -116,14 +138,24 @@ export async function renderPrintFrame(
     height = Math.max(1, Math.round(height * scale));
   }
 
-  const useScale = settings.scaleMode === "ratio" && previousCamera.mode === "orthographic";
+  const orthographic = previousCamera.mode === "orthographic";
+  const useScale = settings.scaleMode === "ratio" && orthographic;
   const printCamera: CameraState = useScale
     ? { ...previousCamera, zoom: zoomForPrintScale(hmm, settings.scaleRatio) }
     : previousCamera;
-  const ppm =
-    settings.showRuler && useScale
-      ? pixelsPerMeter(height, scaleToWorldViewHeight(hmm, settings.scaleRatio))
-      : null;
+  // The ruler scale is known for any orthographic view: in ratio mode it comes
+  // from the chosen scale, in fit mode from the (untouched) camera zoom. Compute
+  // it regardless of `showRuler` so toggling the ruler needs no 3D re-render.
+  const worldViewHeight = !orthographic
+    ? null
+    : useScale
+      ? scaleToWorldViewHeight(hmm, settings.scaleRatio)
+      : worldViewHeightFromZoom(previousCamera.zoom);
+  const ppm = worldViewHeight === null ? null : pixelsPerMeter(height, worldViewHeight);
+  // World↔edge mapping for the grid-aligned ruler. Uses the same projection the
+  // offscreen viewport will (paper aspect + print camera), so ticks line up with
+  // the grid. Null for non-axis-aligned ortho → the relative ruler is used.
+  const ruler = computeOrthoEdgeMapping(printCamera, width / height);
 
   if (opts?.suspendMain) {
     ctx.setMainViewportSuspended(true);
@@ -139,8 +171,12 @@ export async function renderPrintFrame(
       colorBufferPrecision: ctx.colorBufferPrecision,
       qualityMode: "export" as const,
       manualFrameControl: true,
+      // Keep generic debug helpers off; the grid/origin are driven explicitly by
+      // the per-viewport overrides so they appear without other debug clutter.
       showDebugHelpers: false,
-      editorOverlays: false,
+      editorOverlays: settings.showOverlays,
+      gridVisibleOverride: settings.showGrid,
+      axesVisibleOverride: settings.showOrigin,
       viewportSize: { width, height }
     };
     viewport =
@@ -150,19 +186,44 @@ export async function renderPrintFrame(
 
     store.getState().actions.setCameraState(printCamera, false, { rememberPerspective: false });
     await viewport.start();
+    // First frame triggers each actor's sync()/async asset load (e.g. DXF).
     await viewport.renderOnce();
 
+    // Settle: keep rendering until async actor loads resolve and the canvas has
+    // content. Bounded by a deadline so a stuck/failed load can never hang us.
+    const SETTLE_DEADLINE_MS = 2500;
+    const SETTLE_MAX_ITERATIONS = 60;
+    const deadline = Date.now() + SETTLE_DEADLINE_MS;
     let canvas = hostEl.querySelector("canvas");
-    if (canvas instanceof HTMLCanvasElement && canvasIsBlank(canvas)) {
+    for (let i = 0; i < SETTLE_MAX_ITERATIONS; i += 1) {
+      const loading = anyActorLoading(store);
+      const blank = !(canvas instanceof HTMLCanvasElement) || canvasIsBlank(canvas);
+      if ((!loading && !blank) || Date.now() > deadline) {
+        break;
+      }
       await nextFrame();
       await viewport.renderOnce();
       canvas = hostEl.querySelector("canvas");
     }
+    // One more frame so geometry built on the sync() that follows a just-completed
+    // async load (e.g. parsed DXF) is actually drawn before we copy the canvas.
+    await viewport.renderOnce();
+    canvas = hostEl.querySelector("canvas");
+
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("Print render canvas is unavailable.");
     }
     // Copy out before the viewport is torn down (which disposes the GL canvas).
-    return { canvas: copyCanvas(canvas), pixelsPerMeter: ppm };
+    const out = copyCanvas(canvas);
+    const grid = store.getState().state.scene.helpers.grid;
+    return {
+      canvas: out,
+      pixelsPerMeter: ppm,
+      gridMajorPitch: grid.majorPitch,
+      gridMinorPitch: grid.minorPitch,
+      mostlyDark: isCanvasMostlyDark(out),
+      ruler
+    };
   } finally {
     if (viewport) {
       await viewport.stop();
@@ -182,8 +243,15 @@ export async function renderPrintFrame(
 export async function runPrint(settings: PrintSettings, deps: RunPrintDeps): Promise<void> {
   deps.setStatus("Preparing print...");
   try {
-    const { canvas, pixelsPerMeter: ppm } = await renderPrintFrame(settings, deps, { suspendMain: true });
-    const composed = composePrintCanvas({ source: canvas, settings, pixelsPerMeter: ppm });
+    const frame = await renderPrintFrame(settings, deps, { suspendMain: true });
+    const composed = composePrintCanvas({
+      source: frame.canvas,
+      settings,
+      pixelsPerMeter: frame.pixelsPerMeter,
+      gridMajorPitch: frame.gridMajorPitch,
+      gridMinorPitch: frame.gridMinorPitch,
+      ruler: frame.ruler
+    });
     const pngBytes = await canvasToPngBytes(composed);
     const baseName = (deps.projectName ?? "print").replace(/[^\w.-]+/g, "_") || "print";
 

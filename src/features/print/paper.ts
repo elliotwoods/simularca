@@ -63,6 +63,15 @@ export function zoomForPrintScale(paperHmm: number, ratio: number): number {
   return zoomForWorldViewHeight(scaleToWorldViewHeight(paperHmm, ratio));
 }
 
+/**
+ * World-space height (metres) spanned by an orthographic camera at the given
+ * `zoom`. Inverse of {@link zoomForWorldViewHeight}; lets the edge ruler be
+ * computed in "fit to page" mode where the camera zoom is left untouched.
+ */
+export function worldViewHeightFromZoom(zoom: number): number {
+  return ORTHOGRAPHIC_VIEW_SPAN / Math.max(1e-6, zoom);
+}
+
 export function pixelsPerMeter(pixelHeight: number, worldViewHeight: number): number {
   return pixelHeight / Math.max(1e-6, worldViewHeight);
 }

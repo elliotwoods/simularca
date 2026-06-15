@@ -12,7 +12,7 @@ import { computeActorObjectVisibility, type SceneController } from "@/render/sce
 
 const OVERLAY_RENDER_ORDER = 999;
 const LABEL_RENDER_ORDER = 1000;
-const SNAP_PIXEL_THRESHOLD = 14;
+const SNAP_PIXEL_THRESHOLD = 18;
 const HANDLE_PIXEL_THRESHOLD = 12;
 const STATUS_THROTTLE_FRAMES = 15;
 // Snap-point dot overlay: bound the candidate pool and how many dots show.
@@ -35,6 +35,23 @@ interface SnapResult {
   world: THREE.Vector3;
   landmark: Landmark;
   description: { actorName: string; pointName: string };
+}
+
+/**
+ * A pre-resolved snap candidate from the landmark pool. `world` is the position
+ * sampled at the last pool rebuild (used for screen-space proximity); `landmark`
+ * carries provenance so the placed point live-follows its actor.
+ */
+interface SnapCandidate {
+  world: THREE.Vector3;
+  landmark: Landmark;
+}
+
+/** A world-space DXF line segment, used for on-line and intersection snapping. */
+interface EdgeCandidate {
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  actorId: string;
 }
 
 interface DimensionGeometry {
@@ -98,16 +115,92 @@ function axisUnit(axis: DimensionAxis): THREE.Vector3 {
   return new THREE.Vector3(axis === "x" ? 1 : 0, axis === "y" ? 1 : 0, axis === "z" ? 1 : 0);
 }
 
+function clamp01(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
+/** 2D distance from point (px,py) to the segment a→b (all in screen pixels). */
+function segmentPointDistancePx(a: { x: number; y: number }, b: { x: number; y: number }, px: number, py: number): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq <= 1e-9) {
+    return Math.hypot(px - a.x, py - a.y);
+  }
+  const t = clamp01(((px - a.x) * dx + (py - a.y) * dy) / lenSq);
+  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
+
+/** Foot of the perpendicular from point P onto the infinite line through (p0, dir). */
+function footOnLine(p: THREE.Vector3, p0: THREE.Vector3, dir: THREE.Vector3): THREE.Vector3 {
+  const d = dir.clone();
+  const lenSq = d.lengthSq();
+  if (lenSq <= 1e-12) {
+    return p0.clone();
+  }
+  const t = p.clone().sub(p0).dot(d) / lenSq;
+  return p0.clone().addScaledVector(d, t);
+}
+
+/**
+ * Closest points between two finite segments (Ericson, Real-Time Collision
+ * Detection). Returns the point on each segment nearest the other.
+ */
+function closestPointsBetweenSegments(
+  p1: THREE.Vector3,
+  q1: THREE.Vector3,
+  p2: THREE.Vector3,
+  q2: THREE.Vector3
+): { c1: THREE.Vector3; c2: THREE.Vector3 } {
+  const d1 = q1.clone().sub(p1);
+  const d2 = q2.clone().sub(p2);
+  const r = p1.clone().sub(p2);
+  const a = d1.dot(d1);
+  const e = d2.dot(d2);
+  const f = d2.dot(r);
+  const EPS = 1e-12;
+  let s: number;
+  let t: number;
+  if (a <= EPS && e <= EPS) {
+    s = 0;
+    t = 0;
+  } else if (a <= EPS) {
+    s = 0;
+    t = clamp01(f / e);
+  } else {
+    const c = d1.dot(r);
+    if (e <= EPS) {
+      t = 0;
+      s = clamp01(-c / a);
+    } else {
+      const b = d1.dot(d2);
+      const denom = a * e - b * b;
+      s = denom > EPS ? clamp01((b * f - c * e) / denom) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp01(-c / a);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp01((b - c) / a);
+      }
+    }
+  }
+  return { c1: p1.clone().addScaledVector(d1, s), c2: p2.clone().addScaledVector(d2, t) };
+}
+
 export class DimensionOverlayController {
   private readonly overlayRoot = new THREE.Group();
   private readonly placementGroup = new THREE.Group();
   private readonly hoverMarker: THREE.Mesh;
+  private readonly hoverLine: THREE.Line;
   private readonly startMarker: THREE.Mesh;
   private readonly rubberLine: THREE.Line;
   private readonly previewLines: THREE.Line[];
   private readonly offsetHandle: THREE.Mesh;
   private readonly snapDots: THREE.Points;
-  private snapDotPool: THREE.Vector3[] = [];
+  private snapDotPool: SnapCandidate[] = [];
+  private edgePool: EdgeCandidate[] = [];
   private snapPoolSignature = "";
   private lastPointerPx: { x: number; y: number } | null = null;
   private readonly visuals = new Map<string, DimensionVisual>();
@@ -139,6 +232,9 @@ export class DimensionOverlayController {
     const markerGeometry = new THREE.SphereGeometry(0.5, 16, 12);
     this.hoverMarker = new THREE.Mesh(markerGeometry, new THREE.MeshBasicMaterial({ color: 0x55ffcc, depthTest: false, depthWrite: false }));
     this.hoverMarker.renderOrder = LABEL_RENDER_ORDER;
+    // Highlight for a hovered line landmark (the whole DXF segment).
+    this.hoverLine = makeLine(0x55ffcc);
+    this.hoverLine.visible = false;
     this.startMarker = new THREE.Mesh(markerGeometry, new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false, depthWrite: false }));
     this.startMarker.renderOrder = LABEL_RENDER_ORDER;
     this.startMarker.visible = false;
@@ -148,7 +244,7 @@ export class DimensionOverlayController {
       line.visible = false;
       this.placementGroup.add(line);
     }
-    this.placementGroup.add(this.hoverMarker, this.startMarker, this.rubberLine);
+    this.placementGroup.add(this.hoverMarker, this.hoverLine, this.startMarker, this.rubberLine);
     this.overlayRoot.add(this.placementGroup);
 
     // The offset drag handle lives outside placementGroup so it can show in
@@ -201,6 +297,8 @@ export class DimensionOverlayController {
     this.visuals.clear();
     this.hoverMarker.geometry.dispose();
     (this.hoverMarker.material as THREE.Material).dispose();
+    this.hoverLine.geometry.dispose();
+    (this.hoverLine.material as THREE.Material).dispose();
     (this.startMarker.material as THREE.Material).dispose();
     this.rubberLine.geometry.dispose();
     (this.rubberLine.material as THREE.Material).dispose();
@@ -297,11 +395,21 @@ export class DimensionOverlayController {
     this.updateOffsetHandle(state, selectedIds, placementActive);
 
     const snap = state.dimensionSnap;
+    // The candidate pool now drives snapping (not just the dots), so build it
+    // whenever a tool is armed and landmark snapping is enabled.
+    if (placementActive && snap.vertex) {
+      this.maybeRebuildSnapPool(state, selectedIds);
+    } else {
+      this.snapDotPool = [];
+      this.edgePool = [];
+      this.snapPoolSignature = "";
+    }
     const showDots = placementActive && snap.showSnapPoints && snap.vertex;
     this.snapDots.visible = showDots;
     if (showDots) {
-      this.maybeRebuildSnapPool(state, selectedIds);
       this.updateSnapDots();
+    } else {
+      this.snapDots.geometry.setDrawRange(0, 0);
     }
 
     if (placementActive) {
@@ -328,8 +436,11 @@ export class DimensionOverlayController {
   }
 
   private rebuildSnapPool(actorIds: string[]): void {
-    const pool: THREE.Vector3[] = [];
+    const pool: SnapCandidate[] = [];
+    const edges: EdgeCandidate[] = [];
     const seen = new Set<string>();
+    const instanceMatrix = new THREE.Matrix4();
+    const instancePos = new THREE.Vector3();
     for (const actorId of actorIds) {
       const root = this.sceneController.getActorObject(actorId);
       if (!(root instanceof THREE.Object3D)) {
@@ -337,14 +448,84 @@ export class DimensionOverlayController {
       }
       root.updateWorldMatrix(true, false);
       let perActor = 0;
-      root.traverse((node) => {
+      let perActorEdges = 0;
+      // Candidates store an actor-relative landmark so a placed point live-follows
+      // the actor; `world` is the sampled position for screen-space proximity.
+      const addCandidate = (world: THREE.Vector3): void => {
         if (pool.length >= SNAP_DOT_POOL_CAP || perActor >= SNAP_DOT_PER_ACTOR_CAP) {
           return;
         }
-        if (!(node instanceof THREE.Mesh) && !(node instanceof THREE.Line) && !(node instanceof THREE.Points)) {
+        const key = `${world.x.toFixed(2)},${world.y.toFixed(2)},${world.z.toFixed(2)}`;
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        const local = root.worldToLocal(world.clone());
+        pool.push({
+          world,
+          landmark: { kind: "actor", actorId, localOffset: [local.x, local.y, local.z] }
+        });
+        perActor += 1;
+      };
+
+      // Authoritative snap points published by an actor/plugin (e.g. beam-emitter
+      // arrays expose exact emitter positions). These replace geometry sampling,
+      // whose vertices would be noise (beam volume verts, not emitter points).
+      const authoritative = (root.userData as { dimensionSnapPointsWorld?: unknown }).dimensionSnapPointsWorld;
+      if (Array.isArray(authoritative) && authoritative.length > 0) {
+        for (const p of authoritative) {
+          if (Array.isArray(p) && p.length >= 3 && typeof p[0] === "number" && typeof p[1] === "number" && typeof p[2] === "number") {
+            addCandidate(new THREE.Vector3(p[0], p[1], p[2]));
+          }
+        }
+        continue;
+      }
+
+      root.traverse((node) => {
+        // DXF straight lines: collect world-space segments for on-line and
+        // intersection snapping (endpoints still flow into the vertex pool below).
+        if (node instanceof THREE.LineSegments && (node.userData as { kind?: string }).kind === "dxf-lines") {
+          node.updateWorldMatrix(true, false);
+          const geom = node.geometry as THREE.BufferGeometry | undefined;
+          const segPos = geom?.getAttribute?.("position") as THREE.BufferAttribute | undefined;
+          if (segPos) {
+            const segCount = Math.floor(segPos.count / 2);
+            const segStride = Math.max(1, Math.floor(segCount / SNAP_DOT_PER_ACTOR_CAP));
+            for (let s = 0; s < segCount; s += segStride) {
+              if (edges.length >= SNAP_DOT_POOL_CAP || perActorEdges >= SNAP_DOT_PER_ACTOR_CAP) {
+                break;
+              }
+              const i = s * 2;
+              edges.push({
+                a: node.localToWorld(new THREE.Vector3().fromBufferAttribute(segPos, i)),
+                b: node.localToWorld(new THREE.Vector3().fromBufferAttribute(segPos, i + 1)),
+                actorId
+              });
+              perActorEdges += 1;
+            }
+          }
+        }
+        if (pool.length >= SNAP_DOT_POOL_CAP || perActor >= SNAP_DOT_PER_ACTOR_CAP) {
           return;
         }
         if (this.isOverlayObject(node)) {
+          return;
+        }
+        node.updateWorldMatrix(true, false);
+        // InstancedMesh (e.g. beam-emitter arrays): one landmark per instance at
+        // the instance's world translation. Checked before Mesh — it subclasses it.
+        if (node instanceof THREE.InstancedMesh) {
+          for (let i = 0; i < node.count; i += 1) {
+            if (pool.length >= SNAP_DOT_POOL_CAP || perActor >= SNAP_DOT_PER_ACTOR_CAP) {
+              break;
+            }
+            node.getMatrixAt(i, instanceMatrix);
+            instancePos.setFromMatrixPosition(instanceMatrix).applyMatrix4(node.matrixWorld);
+            addCandidate(instancePos.clone());
+          }
+          return;
+        }
+        if (!(node instanceof THREE.Mesh) && !(node instanceof THREE.Line) && !(node instanceof THREE.Points)) {
           return;
         }
         const geometry = (node as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
@@ -352,25 +533,18 @@ export class DimensionOverlayController {
         if (!position) {
           return;
         }
-        node.updateWorldMatrix(true, false);
         // Evenly sample when the geometry is dense so one actor can't flood the pool.
         const stride = Math.max(1, Math.floor(position.count / SNAP_DOT_PER_ACTOR_CAP));
         for (let i = 0; i < position.count; i += stride) {
           if (pool.length >= SNAP_DOT_POOL_CAP || perActor >= SNAP_DOT_PER_ACTOR_CAP) {
             break;
           }
-          const world = node.localToWorld(new THREE.Vector3().fromBufferAttribute(position, i));
-          const key = `${world.x.toFixed(2)},${world.y.toFixed(2)},${world.z.toFixed(2)}`;
-          if (seen.has(key)) {
-            continue;
-          }
-          seen.add(key);
-          pool.push(world);
-          perActor += 1;
+          addCandidate(node.localToWorld(new THREE.Vector3().fromBufferAttribute(position, i)));
         }
       });
     }
     this.snapDotPool = pool;
+    this.edgePool = edges;
   }
 
   private updateSnapDots(): void {
@@ -387,12 +561,12 @@ export class DimensionOverlayController {
     }
     this.ensureCameraMatrices();
     const scored: Array<{ p: THREE.Vector3; d: number }> = [];
-    for (const p of this.snapDotPool) {
-      const screen = this.worldToScreenPx(p, rect);
+    for (const entry of this.snapDotPool) {
+      const screen = this.worldToScreenPx(entry.world, rect);
       if (!screen) {
         continue;
       }
-      scored.push({ p, d: Math.hypot(screen.x - cursor.x, screen.y - cursor.y) });
+      scored.push({ p: entry.world, d: Math.hypot(screen.x - cursor.x, screen.y - cursor.y) });
     }
     scored.sort((a, b) => a.d - b.d);
     const count = Math.min(SNAP_DOT_DISPLAY, scored.length);
@@ -416,12 +590,63 @@ export class DimensionOverlayController {
     if (landmark.kind === "world") {
       return new THREE.Vector3(landmark.point[0], landmark.point[1], landmark.point[2]);
     }
+    if (landmark.kind === "line") {
+      // Fallback point for a line landmark (annotation anchor / offset handle): its midpoint.
+      const line = this.resolveLandmarkLine(landmark);
+      return line ? line.a.clone().add(line.b).multiplyScalar(0.5) : null;
+    }
     const object = this.sceneController.getActorObject(landmark.actorId);
     if (!(object instanceof THREE.Object3D)) {
       return null;
     }
     object.updateWorldMatrix(true, false);
     return object.localToWorld(new THREE.Vector3(landmark.localOffset[0], landmark.localOffset[1], landmark.localOffset[2]));
+  }
+
+  /** Resolve a line landmark to its world-space endpoints + direction (live-follow). */
+  private resolveLandmarkLine(
+    landmark: Landmark | null
+  ): { p0: THREE.Vector3; dir: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 } | null {
+    if (!landmark || landmark.kind !== "line") {
+      return null;
+    }
+    const object = this.sceneController.getActorObject(landmark.actorId);
+    if (!(object instanceof THREE.Object3D)) {
+      return null;
+    }
+    object.updateWorldMatrix(true, false);
+    const a = object.localToWorld(new THREE.Vector3(landmark.a[0], landmark.a[1], landmark.a[2]));
+    const b = object.localToWorld(new THREE.Vector3(landmark.b[0], landmark.b[1], landmark.b[2]));
+    return { p0: a.clone(), dir: b.clone().sub(a), a, b };
+  }
+
+  /**
+   * Resolve the two world points a dimension measures between. When a line
+   * landmark is involved the measure is orthogonal: line→point drops a
+   * perpendicular from the point onto the line; line→line uses the closest
+   * points between the two lines.
+   */
+  private resolveMeasureEndpoints(
+    start: Landmark | null,
+    end: Landmark | null
+  ): { A: THREE.Vector3; B: THREE.Vector3; perpendicular: boolean } | null {
+    const startLine = start?.kind === "line" ? this.resolveLandmarkLine(start) : null;
+    const endLine = end?.kind === "line" ? this.resolveLandmarkLine(end) : null;
+    if (startLine && endLine) {
+      const { c1, c2 } = closestPointsBetweenSegments(startLine.a, startLine.b, endLine.a, endLine.b);
+      return { A: c1, B: c2, perpendicular: true };
+    }
+    if (startLine) {
+      const P = this.resolveLandmarkWorld(end);
+      return P ? { A: footOnLine(P, startLine.p0, startLine.dir), B: P, perpendicular: true } : null;
+    }
+    if (endLine) {
+      const P = this.resolveLandmarkWorld(start);
+      return P ? { A: P, B: footOnLine(P, endLine.p0, endLine.dir), perpendicular: true } : null;
+    }
+    const A = this.resolveLandmarkWorld(start);
+    const B = this.resolveLandmarkWorld(end);
+    return A && B ? { A, B, perpendicular: false } : null;
   }
 
   /** Offset vector O for a dimension's measure line, from offsetDir × extensionGap (with fallback). */
@@ -442,12 +667,13 @@ export class DimensionOverlayController {
   }
 
   private computeDimensionGeometry(actor: ActorNode): DimensionGeometry | null {
-    const A = this.resolveLandmarkWorld(readLandmark(actor.params.start));
-    const B = this.resolveLandmarkWorld(readLandmark(actor.params.end));
-    if (!A || !B) {
+    const measure = this.resolveMeasureEndpoints(readLandmark(actor.params.start), readLandmark(actor.params.end));
+    if (!measure) {
       return null;
     }
-    const axis = resolveDimensionAxis(actor.params.axis);
+    const { A, B, perpendicular } = measure;
+    // A line landmark forces an orthogonal (direct between the derived points) measure.
+    const axis = perpendicular ? "direct" : resolveDimensionAxis(actor.params.axis);
     const O = this.resolveOffsetVector(actor.params, axis);
     let along: THREE.Vector3;
     let lineDir: THREE.Vector3;
@@ -712,10 +938,19 @@ export class DimensionOverlayController {
     if (this.pendingEnd && this.placementOffset) {
       // Offset step: preview the measure line at the candidate offset.
       this.hoverMarker.visible = false;
+      this.hoverLine.visible = false;
       this.startMarker.visible = false;
       this.rubberLine.visible = false;
-      const A = (this.pendingStart as { world: THREE.Vector3 }).world;
-      const B = this.pendingEnd.world;
+      // Derive the measured endpoints (perpendicular foot / closest points for line landmarks).
+      const measure = this.resolveMeasureEndpoints(this.pendingStart!.landmark, this.pendingEnd.landmark);
+      if (!measure) {
+        for (const line of this.previewLines) {
+          line.visible = false;
+        }
+        return;
+      }
+      const A = measure.A;
+      const B = measure.B;
       const O = this.placementOffset.dir.clone().multiplyScalar(this.placementOffset.magnitude);
       const along =
         this.pendingEnd.axis === "direct"
@@ -737,11 +972,19 @@ export class DimensionOverlayController {
     for (const line of this.previewLines) {
       line.visible = false;
     }
-    if (this.hoverSnap) {
+    const hoverLine = this.hoverSnap?.landmark.kind === "line" ? this.resolveLandmarkLine(this.hoverSnap.landmark) : null;
+    if (hoverLine) {
+      // Hovering a line landmark: highlight the whole segment, hide the point sphere.
+      this.hoverLine.visible = true;
+      setLinePoints(this.hoverLine, hoverLine.a, hoverLine.b);
+      this.hoverMarker.visible = false;
+    } else if (this.hoverSnap) {
+      this.hoverLine.visible = false;
       this.hoverMarker.visible = true;
       this.hoverMarker.position.copy(this.hoverSnap.world);
       this.hoverMarker.scale.setScalar(this.markerScale(this.hoverSnap.world, 6));
     } else {
+      this.hoverLine.visible = false;
       this.hoverMarker.visible = false;
     }
     if (!annotation && this.pendingStart) {
@@ -782,7 +1025,10 @@ export class DimensionOverlayController {
     this.domElement.style.cursor = "crosshair";
     if (this.pendingEnd) {
       // Offset step: cursor sets the perpendicular offset, not a snap point.
-      this.placementOffset = this.computeOffset(event, (this.pendingStart as { world: THREE.Vector3 }).world, this.pendingEnd.world, this.pendingEnd.axis);
+      const measure = this.resolveMeasureEndpoints(this.pendingStart!.landmark, this.pendingEnd.landmark);
+      const mA = measure ? measure.A : (this.pendingStart as { world: THREE.Vector3 }).world;
+      const mB = measure ? measure.B : this.pendingEnd.world;
+      this.placementOffset = this.computeOffset(event, mA, mB, this.pendingEnd.axis);
       this.hoverSnap = null;
       this.publishHover(null);
       return;
@@ -839,9 +1085,16 @@ export class DimensionOverlayController {
       }
       event.preventDefault();
       event.stopPropagation();
-      const axis: DimensionAxis = event.shiftKey ? "direct" : dominantAxis(this.pendingStart.world, snap.world);
+      // A line landmark forces an orthogonal measure; otherwise use the dominant
+      // world axis of the derived measure endpoints (Shift = direct).
+      const lineInvolved = this.pendingStart.landmark.kind === "line" || snap.landmark.kind === "line";
+      const measure = this.resolveMeasureEndpoints(this.pendingStart.landmark, snap.landmark);
+      const axis: DimensionAxis =
+        lineInvolved || event.shiftKey || !measure ? "direct" : dominantAxis(measure.A, measure.B);
       this.pendingEnd = { landmark: snap.landmark, world: snap.world.clone(), axis };
-      this.placementOffset = this.computeOffset(event, this.pendingStart.world, this.pendingEnd.world, axis);
+      const mA = measure ? measure.A : this.pendingStart.world;
+      const mB = measure ? measure.B : snap.world;
+      this.placementOffset = this.computeOffset(event, mA, mB, axis);
       this.kernel.store.getState().actions.setStatus("Move to position the dimension line, then click to place.");
       return;
     }
@@ -849,7 +1102,10 @@ export class DimensionOverlayController {
     // Third click: confirm offset and create.
     event.preventDefault();
     event.stopPropagation();
-    const offset = this.placementOffset ?? this.computeOffset(event, this.pendingStart.world, this.pendingEnd.world, this.pendingEnd.axis);
+    const measure3 = this.resolveMeasureEndpoints(this.pendingStart.landmark, this.pendingEnd.landmark);
+    const offA = measure3 ? measure3.A : this.pendingStart.world;
+    const offB = measure3 ? measure3.B : this.pendingEnd.world;
+    const offset = this.placementOffset ?? this.computeOffset(event, offA, offB, this.pendingEnd.axis);
     let dir = offset ? offset.dir.clone() : new THREE.Vector3(0, 1, 0);
     let magnitude = offset ? offset.magnitude : 0;
     if (magnitude < 0) {
@@ -1048,51 +1304,84 @@ export class DimensionOverlayController {
       }
     }
 
-    // 2) Geometry hits (vertex / surface).
-    if (settings.vertex || settings.surface) {
-      const hits = this.raycaster.intersectObjects(this.sceneController.scene.children, true);
-      for (const hit of hits) {
-        const object = hit.object;
-        if (!object.visible || this.isOverlayObject(object)) {
+    // 2) Nearest actor landmark: pick the closest candidate in screen space from
+    // the pre-resolved pool. This is geometry-type agnostic (mesh vertices, line
+    // endpoints, point clouds, and per-instance beam-emitter positions all land
+    // in the pool), so it works where the old face-raycast snap could not.
+    if (settings.vertex && this.snapDotPool.length > 0) {
+      let best: SnapCandidate | null = null;
+      let bestDist = SNAP_PIXEL_THRESHOLD;
+      for (const candidate of this.snapDotPool) {
+        const screen = this.worldToScreenPx(candidate.world, rect);
+        if (!screen) {
           continue;
         }
-        if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.Line) && !(object instanceof THREE.Points)) {
+        const dist = Math.hypot(screen.x - pointerX, screen.y - pointerY);
+        if (dist <= bestDist) {
+          bestDist = dist;
+          best = candidate;
+        }
+      }
+      if (best) {
+        // Re-resolve to the live world position so the placed point matches the
+        // landmark exactly even if the actor moved since the last pool rebuild.
+        const world = this.resolveLandmarkWorld(best.landmark) ?? best.world.clone();
+        const actorName =
+          best.landmark.kind === "actor" ? state.actors[best.landmark.actorId]?.name ?? "Actor" : "World";
+        return { world, landmark: best.landmark, description: { actorName, pointName: "Landmark" } };
+      }
+    }
+
+    // 2b) DXF lines: line–line intersections (point), then the line itself (segment).
+    if (settings.vertex && this.edgePool.length > 0) {
+      const near: Array<{ edge: EdgeCandidate; sa: { x: number; y: number }; sb: { x: number; y: number } }> = [];
+      for (const edge of this.edgePool) {
+        const sa = this.worldToScreenPx(edge.a, rect);
+        const sb = this.worldToScreenPx(edge.b, rect);
+        if (!sa || !sb) {
           continue;
         }
-        let snappedWorld: THREE.Vector3 | null = null;
-        let pointName: string | null = null;
-        if (settings.vertex) {
-          const vertex = this.snapHitToVertex(hit, rect, pointerX, pointerY);
-          if (vertex) {
-            snappedWorld = vertex;
-            pointName = "Landmark";
+        if (segmentPointDistancePx(sa, sb, pointerX, pointerY) <= SNAP_PIXEL_THRESHOLD * 2) {
+          near.push({ edge, sa, sb });
+          if (near.length >= 32) {
+            break;
           }
         }
-        if (!snappedWorld && settings.surface) {
-          snappedWorld = hit.point.clone();
-          pointName = "Surface";
-        }
-        if (!snappedWorld || !pointName) {
-          continue;
-        }
-        const actorId = this.sceneController.getActorIdForObject(object);
-        if (actorId) {
-          const actorObject = this.sceneController.getActorObject(actorId);
-          if (actorObject instanceof THREE.Object3D) {
-            actorObject.updateWorldMatrix(true, false);
-            const localOffset = actorObject.worldToLocal(snappedWorld.clone());
-            return {
-              world: snappedWorld,
-              landmark: { kind: "actor", actorId, localOffset: [localOffset.x, localOffset.y, localOffset.z] },
-              description: { actorName: state.actors[actorId]?.name ?? "Actor", pointName }
-            };
+      }
+
+      // Intersection (preferred): two near segments that actually cross on screen.
+      let bestX: { world: THREE.Vector3; actorId: string; dist: number } | null = null;
+      for (let i = 0; i < near.length; i += 1) {
+        for (let j = i + 1; j < near.length; j += 1) {
+          const { c1, c2 } = closestPointsBetweenSegments(near[i]!.edge.a, near[i]!.edge.b, near[j]!.edge.a, near[j]!.edge.b);
+          const s1 = this.worldToScreenPx(c1, rect);
+          const s2 = this.worldToScreenPx(c2, rect);
+          if (!s1 || !s2 || Math.hypot(s1.x - s2.x, s1.y - s2.y) > 3) {
+            continue;
+          }
+          const dist = Math.hypot(s1.x - pointerX, s1.y - pointerY);
+          if (dist <= SNAP_PIXEL_THRESHOLD && (!bestX || dist < bestX.dist)) {
+            bestX = { world: c1.clone().add(c2).multiplyScalar(0.5), actorId: near[i]!.edge.actorId, dist };
           }
         }
-        return {
-          world: snappedWorld,
-          landmark: { kind: "world", point: [snappedWorld.x, snappedWorld.y, snappedWorld.z] },
-          description: { actorName: "World", pointName }
-        };
+      }
+      if (bestX) {
+        return this.actorPointResult(bestX.world, bestX.actorId, "Intersection", state);
+      }
+
+      // The line itself: nearest near-edge to the cursor → a line landmark.
+      let bestEdge: { edge: EdgeCandidate; dist: number } | null = null;
+      for (const entry of near) {
+        const dist = segmentPointDistancePx(entry.sa, entry.sb, pointerX, pointerY);
+        if (dist <= SNAP_PIXEL_THRESHOLD && (!bestEdge || dist < bestEdge.dist)) {
+          bestEdge = { edge: entry.edge, dist };
+        }
+      }
+      if (bestEdge) {
+        const result = this.lineLandmarkResult(bestEdge.edge, pointerX, pointerY, rect, state);
+        if (result) {
+          return result;
+        }
       }
     }
 
@@ -1113,7 +1402,40 @@ export class DimensionOverlayController {
       }
     }
 
-    // 4) Free point on a camera-facing plane through origin.
+    // 4) Surface: the raycast hit point on visible geometry (opt-in).
+    if (settings.surface) {
+      const hits = this.raycaster.intersectObjects(this.sceneController.scene.children, true);
+      for (const hit of hits) {
+        const object = hit.object;
+        if (!object.visible || this.isOverlayObject(object)) {
+          continue;
+        }
+        if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.Line) && !(object instanceof THREE.Points)) {
+          continue;
+        }
+        const snappedWorld = hit.point.clone();
+        const actorId = this.sceneController.getActorIdForObject(object);
+        if (actorId) {
+          const actorObject = this.sceneController.getActorObject(actorId);
+          if (actorObject instanceof THREE.Object3D) {
+            actorObject.updateWorldMatrix(true, false);
+            const localOffset = actorObject.worldToLocal(snappedWorld.clone());
+            return {
+              world: snappedWorld,
+              landmark: { kind: "actor", actorId, localOffset: [localOffset.x, localOffset.y, localOffset.z] },
+              description: { actorName: state.actors[actorId]?.name ?? "Actor", pointName: "Surface" }
+            };
+          }
+        }
+        return {
+          world: snappedWorld,
+          landmark: { kind: "world", point: [snappedWorld.x, snappedWorld.y, snappedWorld.z] },
+          description: { actorName: "World", pointName: "Surface" }
+        };
+      }
+    }
+
+    // 5) Free point on a camera-facing plane through origin.
     if (settings.free) {
       const cameraDir = new THREE.Vector3();
       this.currentCamera.getWorldDirection(cameraDir);
@@ -1130,39 +1452,55 @@ export class DimensionOverlayController {
     return null;
   }
 
-  private snapHitToVertex(
-    hit: THREE.Intersection,
-    rect: DOMRect,
+  /** Build a point SnapResult anchored to an actor (live-follow via local offset). */
+  private actorPointResult(world: THREE.Vector3, actorId: string, pointName: string, state: AppState): SnapResult {
+    const actorObject = this.sceneController.getActorObject(actorId);
+    if (actorObject instanceof THREE.Object3D) {
+      actorObject.updateWorldMatrix(true, false);
+      const local = actorObject.worldToLocal(world.clone());
+      return {
+        world,
+        landmark: { kind: "actor", actorId, localOffset: [local.x, local.y, local.z] },
+        description: { actorName: state.actors[actorId]?.name ?? "Actor", pointName }
+      };
+    }
+    return {
+      world,
+      landmark: { kind: "world", point: [world.x, world.y, world.z] },
+      description: { actorName: "World", pointName }
+    };
+  }
+
+  /** Build a line SnapResult from a world-space edge; marker sits on the segment nearest the cursor. */
+  private lineLandmarkResult(
+    edge: EdgeCandidate,
     pointerX: number,
-    pointerY: number
-  ): THREE.Vector3 | null {
-    const face = hit.face;
-    const object = hit.object as THREE.Mesh;
-    const geometry = object.geometry as THREE.BufferGeometry | undefined;
-    if (!face || !geometry) {
+    pointerY: number,
+    rect: DOMRect,
+    state: AppState
+  ): SnapResult | null {
+    const actorObject = this.sceneController.getActorObject(edge.actorId);
+    if (!(actorObject instanceof THREE.Object3D)) {
       return null;
     }
-    const position = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
-    if (!position) {
-      return null;
+    actorObject.updateWorldMatrix(true, false);
+    const la = actorObject.worldToLocal(edge.a.clone());
+    const lb = actorObject.worldToLocal(edge.b.clone());
+    let world = edge.a.clone().add(edge.b).multiplyScalar(0.5);
+    const sa = this.worldToScreenPx(edge.a, rect);
+    const sb = this.worldToScreenPx(edge.b, rect);
+    if (sa && sb) {
+      const dx = sb.x - sa.x;
+      const dy = sb.y - sa.y;
+      const lenSq = dx * dx + dy * dy;
+      const t = lenSq > 1e-9 ? clamp01(((pointerX - sa.x) * dx + (pointerY - sa.y) * dy) / lenSq) : 0;
+      world = edge.a.clone().lerp(edge.b, t);
     }
-    object.updateWorldMatrix(true, false);
-    let best: THREE.Vector3 | null = null;
-    let bestDist = SNAP_PIXEL_THRESHOLD;
-    for (const index of [face.a, face.b, face.c]) {
-      const local = new THREE.Vector3().fromBufferAttribute(position, index);
-      const world = object.localToWorld(local.clone());
-      const screen = this.worldToScreenPx(world, rect);
-      if (!screen) {
-        continue;
-      }
-      const dist = Math.hypot(screen.x - pointerX, screen.y - pointerY);
-      if (dist <= bestDist) {
-        bestDist = dist;
-        best = world;
-      }
-    }
-    return best;
+    return {
+      world,
+      landmark: { kind: "line", actorId: edge.actorId, a: [la.x, la.y, la.z], b: [lb.x, lb.y, lb.z] },
+      description: { actorName: state.actors[edge.actorId]?.name ?? "Actor", pointName: "Line" }
+    };
   }
 
   private worldToScreenPx(world: THREE.Vector3, rect: DOMRect): { x: number; y: number } | null {

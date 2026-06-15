@@ -62,6 +62,13 @@ export interface SceneHookContext {
   getVolumetricRayResource(actorId: string): VolumetricRayFieldResource | null;
   profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: ActorRuntimeStatus | null): void;
+  /**
+   * Write derived parameter values back to an actor. Scene hooks that compute
+   * state from a loaded asset (e.g. discovered DXF layers) use this to persist
+   * that state to the actor params so the inspector can display/edit it. Pass
+   * `{ history: false }` for derived data that must not pollute the undo stack.
+   */
+  updateActorParams(actorId: string, partial: ParameterValues, options?: { history?: boolean }): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
   /**
    * Publish an environment IBL texture for this actor. Pass null to clear.

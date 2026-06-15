@@ -72,10 +72,11 @@ describe("project snapshot schema", () => {
     expect(parsed.schemaVersion).toBe(PROJECT_SCHEMA_VERSION);
     expect(parsed.scene.tonemapping).toEqual({
       mode: "aces",
-      dither: true
+      dither: true,
+      hdrPeak: 4
     });
     expect(parsed.scene.renderEngine).toBe("webgpu");
-    expect(parsed.scene.colorBufferPrecision).toBe("float32");
+    expect(parsed.scene.colorBufferPrecision).toBe("float16");
     expect(parsed.scene.framePacing).toEqual({
       mode: "vsync",
       targetFps: 60
@@ -231,13 +232,14 @@ describe("project snapshot schema", () => {
     const parsed = parseProjectSnapshot(JSON.stringify(payload));
     expect(parsed.scene.tonemapping).toEqual({
       mode: "aces",
-      dither: true
+      dither: true,
+      hdrPeak: 4
     });
     expect(parsed.scene.framePacing).toEqual({
       mode: "vsync",
       targetFps: 60
     });
-    expect(parsed.scene.colorBufferPrecision).toBe("float32");
+    expect(parsed.scene.colorBufferPrecision).toBe("float16");
     expect(parsed.scene.helpers).toEqual(DEFAULT_SCENE_HELPERS);
     expect(parsed.scene.cameraFlyLookInvertYaw).toBe(true);
     expect(parsed.scene.cameraFlyLookSpeed).toBe(1);
