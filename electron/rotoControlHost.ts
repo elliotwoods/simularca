@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { fork, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   RotoControlBank,
   RotoControlDawEmulation,
@@ -72,6 +74,12 @@ const MIDI_BINDINGS_UNAVAILABLE_MESSAGE = "MIDI bindings unavailable.";
 const MIDI_PORTS_NOT_FOUND_MESSAGE = "Roto-Control MIDI ports not found.";
 const SERIAL_BINDINGS_UNAVAILABLE_MESSAGE = "Serial bindings unavailable. Serial configuration features are disabled.";
 const NO_SERIAL_PORTS_MESSAGE = "No compatible Roto serial ports detected.";
+// Max time to wait for the MIDI subprocess to answer a port-list/open request before
+// treating the device as wedged. Tuned long enough to cover a slow-but-healthy open.
+const MIDI_REQUEST_TIMEOUT_MS = 4000;
+// After a MIDI request times out (and the wedged subprocess is killed), reject further
+// MIDI requests immediately for this long so a stuck device can't drive constant respawns.
+const MIDI_CHILD_COOLDOWN_MS = 15000;
 
 type MidiInputHandle = {
   getPortCount(): number;
@@ -399,17 +407,16 @@ export function scoreMatchingPortName(name: string): number {
   return score;
 }
 
-function findMatchingPort(port: { getPortCount(): number; getPortName(index: number): string }): number {
+function findMatchingPortName(names: string[]): number {
   let bestIndex = -1;
   let bestScore = -1;
-  for (let index = 0; index < port.getPortCount(); index += 1) {
-    const name = port.getPortName(index);
+  names.forEach((name, index) => {
     const score = scoreMatchingPortName(name);
     if (score > bestScore) {
       bestScore = score;
       bestIndex = index;
     }
-  }
+  });
   return bestIndex;
 }
 
@@ -759,14 +766,325 @@ async function loadSerialBindings(): Promise<SerialBindings | null> {
   }
 }
 
+/**
+ * Off-main-thread MIDI transport. The blocking `@julusian/midi` enumeration/open calls
+ * live behind this async surface so a wedged device can never freeze the caller. Two
+ * implementations: {@link createChildMidiEngine} (production, real device in a killable
+ * child process) and {@link createInProcessMidiEngine} (tests / injected bindings).
+ */
+interface MidiEngine {
+  /** Enumerate input + output port names. Rejects/times out if the backend hangs. */
+  listPorts(): Promise<{ inputs: string[]; outputs: string[] }>;
+  /** Open the given input + output port indices. Rejects/times out on a hung open. */
+  open(inputIndex: number, outputIndex: number): Promise<void>;
+  /** Queue an outgoing MIDI message to the open output port (fire-and-forget). */
+  send(message: number[]): void;
+  /** Close the currently open ports (best-effort). */
+  close(): Promise<void>;
+  /** Register the listener invoked for each incoming MIDI message. */
+  onMessage(listener: (message: number[]) => void): void;
+  /** Tear the engine down entirely (kill child / release handles). */
+  dispose(): Promise<void>;
+}
+
+/**
+ * In-process engine that drives a synchronous MidiBindings pair directly on the current
+ * thread. Used for tests (injected fake bindings) — never for the real device, whose
+ * blocking calls must stay off the main thread (see {@link createChildMidiEngine}).
+ */
+function createInProcessMidiEngine(loadBindings: () => Promise<MidiBindings | null>): MidiEngine {
+  let input: MidiInputHandle | null = null;
+  let output: MidiOutputHandle | null = null;
+  let messageListener: ((message: number[]) => void) | null = null;
+  let initPromise: Promise<boolean> | null = null;
+
+  const ensureHandles = (): Promise<boolean> => {
+    if (input && output) {
+      return Promise.resolve(true);
+    }
+    if (!initPromise) {
+      initPromise = (async () => {
+        const bindings = await loadBindings();
+        if (!bindings) {
+          return false;
+        }
+        const nextInput = new bindings.input();
+        const nextOutput = new bindings.output();
+        nextInput.ignoreTypes(false, false, false);
+        nextInput.on("message", (_deltaTime, message) => messageListener?.(message));
+        input = nextInput;
+        output = nextOutput;
+        return true;
+      })();
+    }
+    return initPromise;
+  };
+
+  const portNames = (port: { getPortCount(): number; getPortName(index: number): string }): string[] => {
+    const names: string[] = [];
+    const count = port.getPortCount();
+    for (let index = 0; index < count; index += 1) {
+      names.push(port.getPortName(index));
+    }
+    return names;
+  };
+
+  return {
+    async listPorts() {
+      const ready = await ensureHandles();
+      if (!ready || !input || !output) {
+        throw new Error(MIDI_BINDINGS_UNAVAILABLE_MESSAGE);
+      }
+      return { inputs: portNames(input), outputs: portNames(output) };
+    },
+    async open(inputIndex, outputIndex) {
+      if (!input || !output) {
+        throw new Error(MIDI_BINDINGS_UNAVAILABLE_MESSAGE);
+      }
+      input.openPort(inputIndex);
+      output.openPort(outputIndex);
+    },
+    send(message) {
+      output?.sendMessage(message);
+    },
+    async close() {
+      try {
+        input?.closePort();
+      } catch {
+        /* ignore */
+      }
+      try {
+        output?.closePort();
+      } catch {
+        /* ignore */
+      }
+    },
+    onMessage(listener) {
+      messageListener = listener;
+    },
+    async dispose() {
+      input?.removeAllListeners?.("message");
+      try {
+        input?.closePort();
+      } catch {
+        /* ignore */
+      }
+      try {
+        output?.closePort();
+      } catch {
+        /* ignore */
+      }
+      input = null;
+      output = null;
+      messageListener = null;
+      initPromise = null;
+    }
+  };
+}
+
+function resolveMidiChildPath(): string {
+  return fileURLToPath(new URL("./rotoMidiChild.js", import.meta.url));
+}
+
+interface ChildMidiEngineDeps {
+  log: (message: string, metadata?: unknown) => void;
+  setTimeout: typeof globalThis.setTimeout;
+  clearTimeout: typeof globalThis.clearTimeout;
+}
+
+interface PendingMidiRequest {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof globalThis.setTimeout>;
+}
+
+/**
+ * Production MIDI engine: spawns a killable Node child process (rotoMidiChild) that owns
+ * the real @julusian/midi handles. Every request is timeout-guarded; if a wedged device
+ * makes a call hang, the child is SIGKILLed (reliably reclaiming a process stuck in a
+ * native call) and a brief cooldown prevents respawn churn. The Electron main thread
+ * never blocks.
+ */
+function createChildMidiEngine(deps: ChildMidiEngineDeps): MidiEngine {
+  const childPath = resolveMidiChildPath();
+  let child: ChildProcess | null = null;
+  let readyPromise: Promise<void> | null = null;
+  let messageListener: ((message: number[]) => void) | null = null;
+  let nextRequestId = 1;
+  let cooldownUntil = 0;
+  const pending = new Map<number, PendingMidiRequest>();
+
+  const teardown = (reason: string): void => {
+    const current = child;
+    child = null;
+    readyPromise = null;
+    for (const [, entry] of pending) {
+      deps.clearTimeout(entry.timer);
+      entry.reject(new Error(reason));
+    }
+    pending.clear();
+    if (current) {
+      current.removeAllListeners();
+      try {
+        current.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const ensureChild = (): Promise<void> => {
+    if (readyPromise) {
+      return readyPromise;
+    }
+    readyPromise = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const proc = fork(childPath, [], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        stdio: ["ignore", "ignore", "ignore", "ipc"]
+      });
+      child = proc;
+      const startupTimer = deps.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        teardown("MIDI subprocess did not start in time.");
+        reject(new Error("MIDI subprocess startup timed out."));
+      }, MIDI_REQUEST_TIMEOUT_MS);
+      proc.on("message", (raw: unknown) => {
+        if (!raw || typeof raw !== "object") {
+          return;
+        }
+        const value = raw as { kind?: string; id?: number; ok?: boolean; data?: unknown; error?: unknown; message?: unknown };
+        if (value.kind === "ready") {
+          if (!settled) {
+            settled = true;
+            deps.clearTimeout(startupTimer);
+            resolve();
+          }
+          return;
+        }
+        if (value.kind === "loadFailed") {
+          if (!settled) {
+            settled = true;
+            deps.clearTimeout(startupTimer);
+            reject(new Error(MIDI_BINDINGS_UNAVAILABLE_MESSAGE));
+          }
+          return;
+        }
+        if (value.kind === "midi" && Array.isArray(value.message)) {
+          messageListener?.(value.message as number[]);
+          return;
+        }
+        if (value.kind === "result" && typeof value.id === "number") {
+          const entry = pending.get(value.id);
+          if (!entry) {
+            return;
+          }
+          pending.delete(value.id);
+          deps.clearTimeout(entry.timer);
+          if (value.ok) {
+            entry.resolve(value.data);
+          } else {
+            entry.reject(new Error(typeof value.error === "string" ? value.error : "MIDI request failed."));
+          }
+        }
+      });
+      proc.on("error", (error: unknown) => {
+        if (!settled) {
+          settled = true;
+          deps.clearTimeout(startupTimer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+        teardown("MIDI subprocess error.");
+      });
+      proc.on("exit", () => {
+        if (!settled) {
+          settled = true;
+          deps.clearTimeout(startupTimer);
+          reject(new Error("MIDI subprocess exited."));
+        }
+        if (child === proc) {
+          teardown("MIDI subprocess exited.");
+        }
+      });
+    });
+    return readyPromise;
+  };
+
+  const request = async <T>(message: Record<string, unknown> & { kind: string }, timeoutMs: number): Promise<T> => {
+    if (Date.now() < cooldownUntil) {
+      throw new Error("MIDI device is unresponsive (cooling down).");
+    }
+    await ensureChild();
+    const proc = child;
+    if (!proc) {
+      throw new Error("MIDI subprocess unavailable.");
+    }
+    const id = nextRequestId++;
+    return await new Promise<T>((resolve, reject) => {
+      const timer = deps.setTimeout(() => {
+        pending.delete(id);
+        cooldownUntil = Date.now() + MIDI_CHILD_COOLDOWN_MS;
+        deps.log("MIDI request timed out; restarting MIDI subprocess.", { request: message.kind });
+        teardown("MIDI request timed out.");
+        reject(new Error("MIDI device did not respond (request timed out)."));
+      }, timeoutMs);
+      pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
+      try {
+        proc.send({ ...message, id });
+      } catch (error) {
+        pending.delete(id);
+        deps.clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  };
+
+  return {
+    async listPorts() {
+      return await request<{ inputs: string[]; outputs: string[] }>({ kind: "list" }, MIDI_REQUEST_TIMEOUT_MS);
+    },
+    async open(inputIndex, outputIndex) {
+      await request<void>({ kind: "open", inputIndex, outputIndex }, MIDI_REQUEST_TIMEOUT_MS);
+    },
+    send(message) {
+      if (child && Date.now() >= cooldownUntil) {
+        try {
+          child.send({ kind: "send", message });
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+    async close() {
+      if (!child) {
+        return;
+      }
+      try {
+        await request<void>({ kind: "close" }, MIDI_REQUEST_TIMEOUT_MS);
+      } catch {
+        /* ignore */
+      }
+    },
+    onMessage(listener) {
+      messageListener = listener;
+    },
+    async dispose() {
+      messageListener = null;
+      teardown("MIDI engine disposed.");
+    }
+  };
+}
+
 export class RotoControlHost {
   private readonly options: RotoControlHostOptions;
   private readonly deps: Required<RotoControlHostDependencies>;
   private state: RotoControlState;
-  private midiInput: MidiInputHandle | null = null;
-  private midiOutput: MidiOutputHandle | null = null;
+  private readonly midiEngineFactory: () => MidiEngine;
+  private midiEngine: MidiEngine | null = null;
   private midiPortsOpen = false;
-  private midiMessageHandler: ((deltaTime: number, message: number[]) => void) | null = null;
   private serialPort: SerialPortHandle | null = null;
   private currentBank: RotoControlBank | null = null;
   private currentBankRevision = 0;
@@ -806,6 +1124,17 @@ export class RotoControlHost {
       clearTimeout: deps.clearTimeout ?? globalThis.clearTimeout
     };
     this.state = createDefaultState();
+    // When a MIDI binding loader is injected (tests), drive it in-process. Otherwise run
+    // the real @julusian/midi in a killable child process so a wedged device can never
+    // block the Electron main thread.
+    this.midiEngineFactory = deps.loadMidiBindings
+      ? () => createInProcessMidiEngine(this.deps.loadMidiBindings)
+      : () =>
+          createChildMidiEngine({
+            log: this.options.log,
+            setTimeout: this.deps.setTimeout,
+            clearTimeout: this.deps.clearTimeout
+          });
   }
 
   public getState(): RotoControlState {
@@ -922,7 +1251,7 @@ export class RotoControlHost {
   }
 
   private async ensureMidiConnection(): Promise<void> {
-    if (this.midiPortsOpen && this.midiInput && this.midiOutput) {
+    if (this.midiPortsOpen && this.midiEngine) {
       this.updateState({
         midiConnected: true,
         connectionPhase: this.state.sysexConnected ? "connected" : "waiting-for-ping",
@@ -934,87 +1263,59 @@ export class RotoControlHost {
       return;
     }
 
-    if (!this.midiInput || !this.midiOutput) {
-      const midiBindings = await this.deps.loadMidiBindings();
-      if (!midiBindings) {
-        this.updateState({
-          midiConnected: false,
-          sysexConnected: false,
-          connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
-          midiInputPortName: null,
-          midiOutputPortName: null,
-          lastError: MIDI_BINDINGS_UNAVAILABLE_MESSAGE
-        });
-        return;
-      }
-
-      try {
-        const midiInput = new midiBindings.input();
-        const midiOutput = new midiBindings.output();
-        midiInput.ignoreTypes(false, false, false);
-        this.midiMessageHandler = (_delta, message) => {
-          this.handleMidiMessage(message);
-        };
-        midiInput.on("message", this.midiMessageHandler);
-        this.midiInput = midiInput;
-        this.midiOutput = midiOutput;
-      } catch (error) {
-        this.options.log("Failed to initialize MIDI bindings", error);
-        this.updateState({
-          midiConnected: false,
-          sysexConnected: false,
-          connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
-          midiInputPortName: null,
-          midiOutputPortName: null,
-          lastError: error instanceof Error ? error.message : String(error)
-        });
-        return;
-      }
-    }
-
-    const midiInput = this.midiInput;
-    const midiOutput = this.midiOutput;
-    if (!midiInput || !midiOutput) {
-      return;
-    }
-
-    try {
-      const inputIndex = findMatchingPort(midiInput);
-      const outputIndex = findMatchingPort(midiOutput);
-      if (inputIndex < 0 || outputIndex < 0) {
-        this.updateState({
-          midiConnected: false,
-          sysexConnected: false,
-          connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
-          midiInputPortName: null,
-          midiOutputPortName: null,
-          lastError: MIDI_PORTS_NOT_FOUND_MESSAGE
-        });
-        return;
-      }
-
-      midiInput.openPort(inputIndex);
-      midiOutput.openPort(outputIndex);
-      this.midiPortsOpen = true;
-      this.updateState({
-        midiConnected: true,
-        connectionPhase: this.state.sysexConnected ? "connected" : "waiting-for-ping",
-        midiInputPortName: midiInput.getPortName(inputIndex),
-        midiOutputPortName: midiOutput.getPortName(outputIndex),
-        lastError: null
+    if (!this.midiEngine) {
+      const engine = this.midiEngineFactory();
+      engine.onMessage((message) => {
+        this.handleMidiMessage(message);
       });
-      this.sendSysex([GENERAL_TYPE, GENERAL_DAW_STARTED]);
-    } catch (error) {
-      this.closeMidiPorts();
-      this.options.log("Failed to open MIDI ports", error);
+      this.midiEngine = engine;
+    }
+    const engine = this.midiEngine;
+
+    const midiUnavailable = (lastError: string): void => {
       this.updateState({
         midiConnected: false,
         sysexConnected: false,
         connectionPhase: this.state.serialConnected ? "probing" : "disconnected",
         midiInputPortName: null,
         midiOutputPortName: null,
-        lastError: error instanceof Error ? error.message : String(error)
+        lastError
       });
+    };
+
+    let ports: { inputs: string[]; outputs: string[] };
+    try {
+      ports = await engine.listPorts();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A binding-load failure maps to the dedicated "unavailable" message; any other
+      // failure (e.g. the device backend timing out) surfaces its own reason.
+      midiUnavailable(message === MIDI_BINDINGS_UNAVAILABLE_MESSAGE ? MIDI_BINDINGS_UNAVAILABLE_MESSAGE : message);
+      return;
+    }
+
+    const inputIndex = findMatchingPortName(ports.inputs);
+    const outputIndex = findMatchingPortName(ports.outputs);
+    if (inputIndex < 0 || outputIndex < 0) {
+      midiUnavailable(MIDI_PORTS_NOT_FOUND_MESSAGE);
+      return;
+    }
+
+    try {
+      await engine.open(inputIndex, outputIndex);
+      this.midiPortsOpen = true;
+      this.updateState({
+        midiConnected: true,
+        connectionPhase: this.state.sysexConnected ? "connected" : "waiting-for-ping",
+        midiInputPortName: ports.inputs[inputIndex] ?? null,
+        midiOutputPortName: ports.outputs[outputIndex] ?? null,
+        lastError: null
+      });
+      this.sendSysex([GENERAL_TYPE, GENERAL_DAW_STARTED]);
+    } catch (error) {
+      this.closeMidiPorts();
+      this.options.log("Failed to open MIDI ports", error);
+      midiUnavailable(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1174,8 +1475,9 @@ export class RotoControlHost {
   }
 
   private closeMidiPorts(): void {
-    this.midiInput?.closePort();
-    this.midiOutput?.closePort();
+    if (this.midiEngine) {
+      void this.midiEngine.close().catch(() => undefined);
+    }
     this.midiPortsOpen = false;
   }
 
@@ -1184,11 +1486,11 @@ export class RotoControlHost {
   }
 
   private destroyMidiHandles(): void {
-    this.closeMidiPorts();
-    this.midiInput?.removeAllListeners?.("message");
-    this.midiMessageHandler = null;
-    this.midiInput = null;
-    this.midiOutput = null;
+    this.midiPortsOpen = false;
+    if (this.midiEngine) {
+      void this.midiEngine.dispose().catch(() => undefined);
+      this.midiEngine = null;
+    }
   }
 
   private disposeSerialConnection(): void {
@@ -1214,7 +1516,7 @@ export class RotoControlHost {
       return;
     }
     this.scheduleSerialProvision(this.currentBank);
-    if (!this.midiOutput || !this.state.sysexConnected) {
+    if (!this.midiPortsOpen || !this.state.sysexConnected) {
       return;
     }
     this.sendRuntimePluginInventory(this.currentBank);
@@ -1407,16 +1709,16 @@ export class RotoControlHost {
   }
 
   private sendHiResValueFeedback(slotIndex: number, normalizedValue?: number): void {
-    if (!this.midiOutput || slotIndex < 0 || slotIndex >= 8 || typeof normalizedValue !== "number" || !Number.isFinite(normalizedValue)) {
+    if (!this.midiPortsOpen || slotIndex < 0 || slotIndex >= 8 || typeof normalizedValue !== "number" || !Number.isFinite(normalizedValue)) {
       return;
     }
     const [msb, lsb] = u14To7BitPair(normalizedToU14(normalizedValue));
-    this.midiOutput.sendMessage([0xbf, (PLUGIN_ENCODER_MSB_BASE + slotIndex) & 0x7f, msb]);
-    this.midiOutput.sendMessage([0xbf, (PLUGIN_ENCODER_LSB_BASE + slotIndex) & 0x7f, lsb]);
+    this.midiEngine?.send([0xbf, (PLUGIN_ENCODER_MSB_BASE + slotIndex) & 0x7f, msb]);
+    this.midiEngine?.send([0xbf, (PLUGIN_ENCODER_LSB_BASE + slotIndex) & 0x7f, lsb]);
   }
 
   private sendButtonStateFeedback(slotIndex: number, slot: RotoControlSlot): void {
-    if (!this.midiOutput || slotIndex < 0 || slotIndex >= 8) {
+    if (!this.midiPortsOpen || slotIndex < 0 || slotIndex >= 8) {
       return;
     }
     let value = 0;
@@ -1429,11 +1731,11 @@ export class RotoControlHost {
         value = 127;
       }
     }
-    this.midiOutput.sendMessage([0xbf, (PLUGIN_BUTTON_CC_BASE + slotIndex) & 0x7f, value]);
+    this.midiEngine?.send([0xbf, (PLUGIN_BUTTON_CC_BASE + slotIndex) & 0x7f, value]);
   }
 
   private sendValueStringFeedback(slotIndex: number, controlType: 0x00 | 0x01, valueText?: string): void {
-    if (!valueText || !this.midiOutput || slotIndex < 0 || slotIndex >= 8) {
+    if (!valueText || !this.midiPortsOpen || slotIndex < 0 || slotIndex >= 8) {
       return;
     }
     this.sendSysex([GENERAL_TYPE, 0x0f, controlType & 0x7f, slotIndex & 0x7f, ...toAscii0D(valueText)]);
@@ -1667,7 +1969,9 @@ export class RotoControlHost {
   }
 
   private sendSysex(data: number[]): void {
-    this.midiOutput?.sendMessage(buildSysex(data));
+    if (this.midiPortsOpen) {
+      this.midiEngine?.send(buildSysex(data));
+    }
   }
 
   private emitBankInput<T extends RotoControlInputEvent>(event: T): void {
