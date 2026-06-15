@@ -38,6 +38,9 @@ import { FileImportModal } from "@/ui/components/FileImportModal";
 import { KeyboardMapModal } from "@/ui/components/KeyboardMapModal";
 import { TextInputModal } from "@/ui/components/TextInputModal";
 import { RenderSettingsModal } from "@/ui/components/RenderSettingsModal";
+import { PrintPreviewModal } from "@/ui/components/PrintPreviewModal";
+import { renderPrintFrame, runPrint, type PrintFrameResult } from "@/features/print/runPrint";
+import type { PrintSettings } from "@/features/print/types";
 import { ProfileCaptureModal } from "@/ui/components/ProfileCaptureModal";
 import { QuitConfirmModal } from "@/ui/components/QuitConfirmModal";
 import { RenderOverlay } from "@/ui/components/RenderOverlay";
@@ -140,6 +143,8 @@ export function App() {
     resolve: (value: string | null) => void;
   } | null>(null);
   const [renderModalOpen, setRenderModalOpen] = useState(false);
+  const [printModalOpen, setPrintModalOpen] = useState(false);
+  const printHostElRef = useRef<HTMLDivElement | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [renderOverlayOpen, setRenderOverlayOpen] = useState(false);
   const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
@@ -164,6 +169,7 @@ export function App() {
   const sceneRenderEngine = useAppStore((store) => store.state.scene.renderEngine);
   const sceneAntialiasing = useAppStore((store) => store.state.scene.antialiasing);
   const sceneColorBufferPrecision = useAppStore((store) => store.state.scene.colorBufferPrecision);
+  const cameraMode = useAppStore((store) => store.state.camera.mode);
   const actors = useAppStore((store) => store.state.actors);
   const selection = useAppStore((store) => store.state.selection);
   const dirty = useAppStore((store) => store.state.dirty);
@@ -851,6 +857,63 @@ export function App() {
     ]
   );
 
+  const requestPrintBase = useCallback(
+    async (settings: PrintSettings): Promise<PrintFrameResult> => {
+      const hostEl = printHostElRef.current;
+      if (!hostEl) {
+        throw new Error("Print host is not ready.");
+      }
+      return renderPrintFrame(
+        settings,
+        {
+          kernel,
+          hostEl,
+          renderEngine: sceneRenderEngine,
+          antialias: sceneAntialiasing,
+          colorBufferPrecision: sceneColorBufferPrecision,
+          setMainViewportSuspended
+        },
+        { maxPx: 720, suspendMain: false }
+      );
+    },
+    [kernel, sceneAntialiasing, sceneColorBufferPrecision, sceneRenderEngine]
+  );
+
+  const handleRunPrint = useCallback(
+    async (settings: PrintSettings) => {
+      const hostEl = printHostElRef.current;
+      if (!hostEl) {
+        kernel.store.getState().actions.setStatus("Print failed: viewport host is not ready.");
+        return;
+      }
+      await runPrint(settings, {
+        kernel,
+        hostEl,
+        renderEngine: sceneRenderEngine,
+        antialias: sceneAntialiasing,
+        colorBufferPrecision: sceneColorBufferPrecision,
+        setMainViewportSuspended,
+        setStatus: (message) => kernel.store.getState().actions.setStatus(message),
+        projectName: activeProject?.name
+      });
+    },
+    [activeProject, kernel, sceneAntialiasing, sceneColorBufferPrecision, sceneRenderEngine]
+  );
+
+  const printDefaults = useMemo<PrintSettings>(
+    () => ({
+      paper: "a4",
+      orientation: "landscape",
+      dpi: 300,
+      invert: false,
+      showRuler: false,
+      scaleMode: "fit",
+      scaleRatio: 100,
+      output: window.electronAPI ? "dialog" : "png"
+    }),
+    []
+  );
+
   useEffect(() => {
     const unregister = registerCameraTransitionDriver({
       request: (targetCamera: CameraState, options?: CameraTransitionRequestOptions) => {
@@ -1218,6 +1281,7 @@ export function App() {
       <TopBarPanel
         onToggleKeyboardMap={() => setKeyboardMapOpen((value) => !value)}
         onOpenRender={() => setRenderModalOpen(true)}
+        onOpenPrint={() => setPrintModalOpen(true)}
         onOpenProfiling={() => setProfileModalOpen(true)}
         onCaptureViewportScreenshot={(event) => {
           if (viewportScreenshotBusy) {
@@ -1398,6 +1462,19 @@ export function App() {
           void runRender(settings);
         }}
       />
+      <PrintPreviewModal
+        open={printModalOpen}
+        isElectron={Boolean(window.electronAPI)}
+        isOrthographic={cameraMode === "orthographic"}
+        defaults={printDefaults}
+        requestBaseFrame={requestPrintBase}
+        onCancel={() => setPrintModalOpen(false)}
+        onConfirm={(settings) => {
+          setPrintModalOpen(false);
+          void handleRunPrint(settings);
+        }}
+      />
+      <div ref={printHostElRef} className="print-offscreen-host" aria-hidden="true" />
       <ProfileCaptureModal
         open={profileModalOpen}
         profilingState={profilingState}

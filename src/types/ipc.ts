@@ -706,6 +706,13 @@ export interface ElectronApi {
   discoverExternalPlugins(): Promise<ExternalPluginCandidate[]>;
   getGitDirtyStatus(args: GitDirtyStatusRequest): Promise<GitDirtyStatusResponse>;
   writeClipboardImagePng(args: { pngBytes: Uint8Array }): Promise<void>;
+  printPagePdf(args: {
+    pngBytes: Uint8Array;
+    paper: "a4" | "a3";
+    landscape: boolean;
+    defaultFileName?: string;
+  }): Promise<{ path: string } | null>;
+  printPageDialog(args: { pngBytes: Uint8Array; paper: "a4" | "a3"; landscape: boolean }): Promise<void>;
   renderPipeOpen(args: {
     outputPath: string;
     fps: number;

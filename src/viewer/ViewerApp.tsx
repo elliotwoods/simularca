@@ -117,6 +117,7 @@ export function ViewerApp({ manifest, publishConfig }: ViewerAppProps) {
       <TopBarPanel
         onToggleKeyboardMap={() => undefined}
         onOpenRender={() => undefined}
+        onOpenPrint={() => undefined}
         onCaptureViewportScreenshot={() => undefined}
         canCaptureViewportScreenshot={false}
         viewportScreenshotBusy={false}

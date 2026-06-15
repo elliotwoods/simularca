@@ -1299,6 +1299,50 @@ function tempEncodeArgs(args: {
   ];
 }
 
+/**
+ * Render a print page (a single PNG sized to the chosen paper) into a hidden
+ * BrowserWindow so it can be sent to `printToPDF` or `webContents.print`. The
+ * PNG and HTML are written to temp files (data URLs are size-limited) and the
+ * returned `dispose` tears down the window and removes them.
+ */
+async function loadPrintPage(
+  pngBytes: Uint8Array,
+  paper: "a4" | "a3",
+  landscape: boolean
+): Promise<{ win: BrowserWindow; dispose: () => Promise<void> }> {
+  const tempDir = app.getPath("temp");
+  const id = randomUUID();
+  const pngPath = path.join(tempDir, `simularca-print-${id}.png`);
+  const htmlPath = path.join(tempDir, `simularca-print-${id}.html`);
+  await fs.writeFile(pngPath, Buffer.from(pngBytes));
+  const pageSize = `${paper.toUpperCase()} ${landscape ? "landscape" : "portrait"}`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+@page { size: ${pageSize}; margin: 0; }
+html, body { margin: 0; padding: 0; }
+img { display: block; width: 100%; height: auto; }
+</style></head><body><img src="${pathToFileURL(pngPath).href}"></body></html>`;
+  await fs.writeFile(htmlPath, html, "utf8");
+
+  const win = new BrowserWindow({
+    show: false,
+    width: 800,
+    height: 600,
+    webPreferences: { offscreen: false, sandbox: true }
+  });
+  await win.loadURL(pathToFileURL(htmlPath).href);
+  // Give the embedded image a frame to lay out before printing.
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+  const dispose = async (): Promise<void> => {
+    if (!win.isDestroyed()) {
+      win.destroy();
+    }
+    await fs.rm(pngPath, { force: true }).catch(() => undefined);
+    await fs.rm(htmlPath, { force: true }).catch(() => undefined);
+  };
+  return { win, dispose };
+}
+
 function createWindow(): BrowserWindow {
   const persisted = readPersistedWindowState();
   const usePersistedBounds = persisted && isWindowBoundsVisible(persisted);
@@ -1684,6 +1728,69 @@ function registerIpcHandlers(): void {
         throw new Error("Clipboard image is empty.");
       }
       clipboard.writeImage(image);
+    }
+  );
+  ipcMain.handle(
+    "print:pdf",
+    async (
+      event,
+      args: { pngBytes: Uint8Array; paper: "a4" | "a3"; landscape: boolean; defaultFileName?: string }
+    ) => {
+      const parentWin = BrowserWindow.fromWebContents(event.sender);
+      const saveResult = parentWin
+        ? await dialog.showSaveDialog(parentWin, {
+            title: "Save print PDF",
+            defaultPath: args.defaultFileName ?? "print.pdf",
+            filters: [{ name: "PDF", extensions: ["pdf"] }]
+          })
+        : await dialog.showSaveDialog({
+            title: "Save print PDF",
+            defaultPath: args.defaultFileName ?? "print.pdf",
+            filters: [{ name: "PDF", extensions: ["pdf"] }]
+          });
+      if (saveResult.canceled || !saveResult.filePath) {
+        return null;
+      }
+      const cleanup = await loadPrintPage(args.pngBytes, args.paper, args.landscape);
+      try {
+        const pdf = await cleanup.win.webContents.printToPDF({
+          pageSize: args.paper === "a3" ? "A3" : "A4",
+          landscape: args.landscape,
+          printBackground: true,
+          margins: { marginType: "none" }
+        });
+        await fs.writeFile(saveResult.filePath, pdf);
+        return { path: saveResult.filePath };
+      } finally {
+        await cleanup.dispose();
+      }
+    }
+  );
+  ipcMain.handle(
+    "print:dialog",
+    async (_event, args: { pngBytes: Uint8Array; paper: "a4" | "a3"; landscape: boolean }) => {
+      const cleanup = await loadPrintPage(args.pngBytes, args.paper, args.landscape);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          cleanup.win.webContents.print(
+            {
+              silent: false,
+              printBackground: true,
+              pageSize: args.paper === "a3" ? "A3" : "A4",
+              landscape: args.landscape
+            },
+            (success, failureReason) => {
+              if (!success && failureReason && failureReason !== "cancelled" && failureReason !== "Print job canceled") {
+                reject(new Error(failureReason));
+                return;
+              }
+              resolve();
+            }
+          );
+        });
+      } finally {
+        await cleanup.dispose();
+      }
     }
   );
   ipcMain.handle(

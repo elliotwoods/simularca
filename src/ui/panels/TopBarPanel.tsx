@@ -10,9 +10,12 @@ import {
   faFilm,
   faGlobe,
   faKeyboard,
+  faNoteSticky,
   faPalette,
+  faPrint,
   faRotateLeft,
-  faRotateRight
+  faRotateRight,
+  faRuler
 } from "@fortawesome/free-solid-svg-icons";
 import { useKernel } from "@/app/useKernel";
 import { useAppStore } from "@/app/useAppStore";
@@ -73,11 +76,13 @@ export interface TopBarPanelVisibility {
   keyboard?: boolean;
   materials?: boolean;
   fps?: boolean;
+  tools?: boolean;
 }
 
 interface TopBarPanelProps {
   onToggleKeyboardMap: () => void;
   onOpenRender: () => void;
+  onOpenPrint: () => void;
   onCaptureViewportScreenshot: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   canCaptureViewportScreenshot: boolean;
   viewportScreenshotBusy: boolean;
@@ -129,6 +134,19 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const showKeyboard = showSection("keyboard");
   const showMaterials = showSection("materials");
   const showFps = showSection("fps");
+  const showTools = showSection("tools") && !isReadOnly;
+  const interactionTool = state.interactionTool;
+  const toggleInteractionTool = (tool: "dimension" | "annotation"): void => {
+    const next = interactionTool === tool ? "select" : tool;
+    kernel.store.getState().actions.setInteractionTool(next);
+    kernel.store.getState().actions.setStatus(
+      next === "select"
+        ? "Tool: Select"
+        : next === "dimension"
+          ? "Dimension tool: click two landmark points (Shift = direct, Esc = cancel)."
+          : "Annotation tool: click a landmark point to place a note (Esc = cancel)."
+    );
+  };
   const fpsValue = Number.isFinite(state.stats.fps) ? state.stats.fps : 0;
   const frameMsValue = Number.isFinite(state.stats.frameMs) ? state.stats.frameMs : 0;
   const framePacing = state.scene.framePacing;
@@ -421,6 +439,30 @@ export function TopBarPanel(props: TopBarPanelProps) {
       </div>
       ) : null}
 
+      {showTools ? (
+        <div className="toolbar-group">
+          <label className="toolbar-group-label" title="Measure & annotate">Tools</label>
+          <button
+            type="button"
+            title="Dimension tool — measure distance between two landmark points"
+            aria-pressed={interactionTool === "dimension"}
+            className={interactionTool === "dimension" ? "toolbar-tool-active" : undefined}
+            onClick={() => toggleInteractionTool("dimension")}
+          >
+            <FontAwesomeIcon icon={faRuler} />
+          </button>
+          <button
+            type="button"
+            title="Annotation tool — attach a text note to a landmark point"
+            aria-pressed={interactionTool === "annotation"}
+            className={interactionTool === "annotation" ? "toolbar-tool-active" : undefined}
+            onClick={() => toggleInteractionTool("annotation")}
+          >
+            <FontAwesomeIcon icon={faNoteSticky} />
+          </button>
+        </div>
+      ) : null}
+
       {showEdit ? (
         <div className="toolbar-group">
           <label className="toolbar-group-label" title="History">Edit</label>
@@ -438,6 +480,9 @@ export function TopBarPanel(props: TopBarPanelProps) {
         <label className="toolbar-group-label" title="Render">Render</label>
         <button type="button" title="Render video" onClick={props.onOpenRender}>
           <FontAwesomeIcon icon={faFilm} />
+        </button>
+        <button type="button" title="Print / export page (PDF, PNG)" onClick={props.onOpenPrint}>
+          <FontAwesomeIcon icon={faPrint} />
         </button>
         <button
           type="button"

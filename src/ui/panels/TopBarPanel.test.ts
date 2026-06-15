@@ -87,6 +87,7 @@ describe("TopBarPanel screenshot button", () => {
             React.createElement(TopBarPanel, {
               onToggleKeyboardMap: () => undefined,
               onOpenRender: () => undefined,
+              onOpenPrint: () => undefined,
               onOpenProfiling: () => undefined,
               profilingState: idleProfilingState,
               onCaptureViewportScreenshot,
@@ -163,6 +164,7 @@ describe("TopBarPanel screenshot button", () => {
           React.createElement(TopBarPanel, {
             onToggleKeyboardMap: () => undefined,
             onOpenRender: () => undefined,
+              onOpenPrint: () => undefined,
             onOpenProfiling: () => undefined,
             profilingState: idleProfilingState,
             onCaptureViewportScreenshot: () => undefined,
@@ -245,6 +247,7 @@ describe("TopBarPanel screenshot button", () => {
           React.createElement(TopBarPanel, {
             onToggleKeyboardMap: () => undefined,
             onOpenRender: () => undefined,
+              onOpenPrint: () => undefined,
             onOpenProfiling,
             profilingState: idleProfilingState,
             onCaptureViewportScreenshot: () => undefined,
