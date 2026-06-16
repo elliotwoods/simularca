@@ -1076,7 +1076,7 @@ export const CURVE_ACTOR_SCHEMA: ParameterSchema = {
       max: 256,
       step: 1,
       defaultValue: 24,
-      visibleWhen: [{ key: "curveType", equals: "spline" }]
+      visibleWhen: [{ key: "curveType", equals: ["spline", "circle", "arc", "helix"] }]
     },
     {
       key: "radius",
@@ -1219,10 +1219,9 @@ export const DIMENSION_ACTOR_SCHEMA: ParameterSchema = {
     },
     {
       key: "lineColor",
-      label: "Line Color",
+      label: "Color",
       type: "color",
-      groupKey: "style",
-      groupLabel: "Style",
+      description: "Color of the dimension lines, and the highlight rectangle drawn behind the value when the dimension is selected.",
       defaultValue: "#ffcc33"
     },
     {

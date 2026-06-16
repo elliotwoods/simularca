@@ -4,12 +4,15 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faBorderAll,
   faBraille,
+  faBullseye,
+  faCircle,
   faCircleDot,
   faCrosshairs,
   faLocationDot,
   faMagnet,
   faMaximize,
   faRotateRight,
+  faRulerHorizontal,
   faUpDownLeftRight,
   faVectorSquare
 } from "@fortawesome/free-solid-svg-icons";
@@ -846,6 +849,33 @@ export function ViewportPanel(props: ViewportPanelProps) {
             aria-pressed={dimensionSnap.vertex}
           >
             <FontAwesomeIcon icon={faCircleDot} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.endpoint ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ endpoint: !dimensionSnap.endpoint })}
+            title="Snap to DXF endpoints (line / arc / curve ends, polyline vertices)"
+            aria-pressed={dimensionSnap.endpoint}
+          >
+            <FontAwesomeIcon icon={faCircle} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.midpoint ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ midpoint: !dimensionSnap.midpoint })}
+            title="Snap to DXF midpoints of lines, arcs, and curves"
+            aria-pressed={dimensionSnap.midpoint}
+          >
+            <FontAwesomeIcon icon={faRulerHorizontal} />
+          </button>
+          <button
+            type="button"
+            className={`viewport-transform-button${dimensionSnap.center ? " is-active" : ""}`}
+            onClick={() => kernel.store.getState().actions.setDimensionSnap({ center: !dimensionSnap.center })}
+            title="Snap to DXF arc / circle / ellipse centers"
+            aria-pressed={dimensionSnap.center}
+          >
+            <FontAwesomeIcon icon={faBullseye} />
           </button>
           <button
             type="button"

@@ -13,6 +13,7 @@ import {
   type ParsedDxfCircleEntity,
   type ParsedDxfDocument,
   type ParsedDxfEllipseEntity,
+  type ParsedDxfEntity,
   type ParsedDxfPlaneBasis,
   type ParsedDxfPolylineEntity,
   type ParsedDxfSplineEntity
@@ -182,6 +183,39 @@ function appendEllipseSegments(
   return segments;
 }
 
+/**
+ * Center / radius / angles of the circular arc a polyline bulge describes between two
+ * projected 2D points. Returns null when the bulge is degenerate (treat as a straight
+ * chord). Shared by segment tessellation and snap-point (arc midpoint) extraction.
+ */
+function bulgeArcParams(
+  start2: [number, number],
+  end2: [number, number],
+  bulge: number
+): { center: [number, number]; radius: number; startAngle: number; sweep: number } | null {
+  const chordDx = end2[0] - start2[0];
+  const chordDy = end2[1] - start2[1];
+  const chord = Math.hypot(chordDx, chordDy);
+  if (chord < 1e-9 || Math.abs(bulge) < 1e-9) {
+    return null;
+  }
+  const sweep = 4 * Math.atan(bulge);
+  const radius = chord / (2 * Math.sin(Math.abs(sweep) / 2));
+  if (!Number.isFinite(radius) || radius < 1e-9) {
+    return null;
+  }
+  const midX = (start2[0] + end2[0]) * 0.5;
+  const midY = (start2[1] + end2[1]) * 0.5;
+  const offset = Math.sqrt(Math.max(0, radius * radius - (chord * chord) / 4));
+  const nx = -chordDy / chord;
+  const ny = chordDx / chord;
+  const direction = bulge >= 0 ? 1 : -1;
+  const centerX = midX + nx * offset * direction;
+  const centerY = midY + ny * offset * direction;
+  const startAngle = Math.atan2(start2[1] - centerY, start2[0] - centerX);
+  return { center: [centerX, centerY], radius, startAngle, sweep };
+}
+
 function appendBulgeSegments(
   start: { point: [number, number, number]; bulge?: number },
   end: { point: [number, number, number]; bulge?: number },
@@ -194,28 +228,12 @@ function appendBulgeSegments(
 ): number {
   const start2 = projectPoint(start.point, sourcePlane);
   const end2 = projectPoint(end.point, sourcePlane);
-  const chordDx = end2[0] - start2[0];
-  const chordDy = end2[1] - start2[1];
-  const chord = Math.hypot(chordDx, chordDy);
-  if (chord < 1e-9 || Math.abs(bulge) < 1e-9) {
+  const arc = bulgeArcParams(start2, end2, bulge);
+  if (!arc) {
     pushSegment(target, start2, end2, targetPlane, scale);
     return 1;
   }
-  const sweep = 4 * Math.atan(bulge);
-  const radius = chord / (2 * Math.sin(Math.abs(sweep) / 2));
-  if (!Number.isFinite(radius) || radius < 1e-9) {
-    pushSegment(target, start2, end2, targetPlane, scale);
-    return 1;
-  }
-  const midX = (start2[0] + end2[0]) * 0.5;
-  const midY = (start2[1] + end2[1]) * 0.5;
-  const offset = Math.sqrt(Math.max(0, radius * radius - (chord * chord) / 4));
-  const nx = -chordDy / chord;
-  const ny = chordDx / chord;
-  const direction = bulge >= 0 ? 1 : -1;
-  const centerX = midX + nx * offset * direction;
-  const centerY = midY + ny * offset * direction;
-  const startAngle = Math.atan2(start2[1] - centerY, start2[0] - centerX);
+  const { center, radius, startAngle, sweep } = arc;
   const steps = Math.max(4, Math.ceil((Math.abs(sweep) / (Math.PI * 2)) * resolution));
   let segments = 0;
   for (let index = 0; index < steps; index += 1) {
@@ -223,8 +241,8 @@ function appendBulgeSegments(
     const a1 = startAngle + ((index + 1) / steps) * sweep;
     pushSegment(
       target,
-      [centerX + Math.cos(a0) * radius, centerY + Math.sin(a0) * radius],
-      [centerX + Math.cos(a1) * radius, centerY + Math.sin(a1) * radius],
+      [center[0] + Math.cos(a0) * radius, center[1] + Math.sin(a0) * radius],
+      [center[0] + Math.cos(a1) * radius, center[1] + Math.sin(a1) * radius],
       targetPlane,
       scale
     );
@@ -363,6 +381,138 @@ function appendSplineSegments(
   return segments;
 }
 
+/** Accumulator for per-entity snap points (flat [x,y,z] triplets, drawing-plane space). */
+interface EntitySnapPoints {
+  endpoints: number[];
+  midpoints: number[];
+  centers: number[];
+}
+
+/**
+ * Derive precise snap points from an entity's original geometry (not its tessellation):
+ * line/arc/ellipse/spline endpoints, geometric midpoints, and arc/circle/ellipse centers.
+ * Polylines contribute every vertex as an endpoint and one midpoint per sub-segment
+ * (CAD convention). Points use the same projection + drawing-plane mapping as the rendered
+ * segments, so they land exactly on the geometry.
+ */
+function collectEntitySnapPoints(
+  entity: ParsedDxfEntity,
+  sourcePlane: Exclude<DxfSourcePlane, "auto">,
+  targetPlane: DxfDrawingPlane,
+  scale: number,
+  out: EntitySnapPoints
+): void {
+  const push = (target: number[], p: [number, number]): void => {
+    const mapped = mapPoint(p[0], p[1], targetPlane, scale);
+    target.push(mapped[0], mapped[1], mapped[2]);
+  };
+  switch (entity.type) {
+    case "LINE": {
+      const start2 = projectPoint(entity.start, sourcePlane);
+      const end2 = projectPoint(entity.end, sourcePlane);
+      push(out.endpoints, start2);
+      push(out.endpoints, end2);
+      push(out.midpoints, [(start2[0] + end2[0]) * 0.5, (start2[1] + end2[1]) * 0.5]);
+      break;
+    }
+    case "ARC": {
+      const plane2d = planeBasis2d(entity.plane, sourcePlane);
+      const start = THREE.MathUtils.degToRad(entity.startAngleDeg);
+      const end = THREE.MathUtils.degToRad(entity.endAngleDeg);
+      const sweep = normalizeArcSweep(start, end);
+      const at = (angle: number): [number, number] => [
+        plane2d.origin[0] + plane2d.uAxis[0] * Math.cos(angle) * entity.radius + plane2d.vAxis[0] * Math.sin(angle) * entity.radius,
+        plane2d.origin[1] + plane2d.uAxis[1] * Math.cos(angle) * entity.radius + plane2d.vAxis[1] * Math.sin(angle) * entity.radius
+      ];
+      push(out.endpoints, at(start));
+      push(out.endpoints, at(start + sweep));
+      push(out.midpoints, at(start + sweep / 2));
+      push(out.centers, plane2d.origin);
+      break;
+    }
+    case "CIRCLE": {
+      const plane2d = planeBasis2d(entity.plane, sourcePlane);
+      push(out.centers, plane2d.origin);
+      break;
+    }
+    case "ELLIPSE": {
+      const plane2d = planeBasis2d(entity.plane, sourcePlane);
+      const start = entity.startParameter;
+      const sweep = normalizeArcSweep(entity.startParameter, entity.endParameter);
+      const at = (t: number): [number, number] => [
+        plane2d.origin[0] + plane2d.uAxis[0] * Math.cos(t) * entity.majorLength + plane2d.vAxis[0] * Math.sin(t) * entity.minorLength,
+        plane2d.origin[1] + plane2d.uAxis[1] * Math.cos(t) * entity.majorLength + plane2d.vAxis[1] * Math.sin(t) * entity.minorLength
+      ];
+      push(out.endpoints, at(start));
+      push(out.endpoints, at(start + sweep));
+      push(out.midpoints, at(start + sweep / 2));
+      push(out.centers, plane2d.origin);
+      break;
+    }
+    case "LWPOLYLINE":
+    case "POLYLINE": {
+      if (entity.vertices.length < 2) {
+        break;
+      }
+      for (const vertex of entity.vertices) {
+        push(out.endpoints, projectPoint(vertex.point, sourcePlane));
+      }
+      const segmentCount = entity.closed ? entity.vertices.length : entity.vertices.length - 1;
+      for (let index = 0; index < segmentCount; index += 1) {
+        const current = entity.vertices[index];
+        const next = entity.vertices[(index + 1) % entity.vertices.length];
+        if (!current || !next) {
+          continue;
+        }
+        const start2 = projectPoint(current.point, sourcePlane);
+        const end2 = projectPoint(next.point, sourcePlane);
+        if (current.bulge && Math.abs(current.bulge) > 1e-9) {
+          const arc = bulgeArcParams(start2, end2, current.bulge);
+          if (arc) {
+            const mid = arc.startAngle + arc.sweep / 2;
+            push(out.midpoints, [arc.center[0] + Math.cos(mid) * arc.radius, arc.center[1] + Math.sin(mid) * arc.radius]);
+            continue;
+          }
+        }
+        push(out.midpoints, [(start2[0] + end2[0]) * 0.5, (start2[1] + end2[1]) * 0.5]);
+      }
+      break;
+    }
+    case "SPLINE": {
+      const projectedPoints = (entity.controlPoints.length > 0 ? entity.controlPoints : entity.fitPoints).map((point) =>
+        projectPoint(point, sourcePlane)
+      );
+      if (projectedPoints.length < 2) {
+        break;
+      }
+      const first = projectedPoints[0]!;
+      const last = projectedPoints[projectedPoints.length - 1]!;
+      push(out.endpoints, first);
+      push(out.endpoints, last);
+      // Mirror appendSplineSegments: only the planar quadratic case supports parameter
+      // evaluation; otherwise fall back to the chord midpoint of the endpoints.
+      if (
+        entity.planar &&
+        !entity.linear &&
+        entity.degree === 2 &&
+        entity.knotValues.length >= projectedPoints.length + entity.degree + 1
+      ) {
+        const knots = entity.knotValues;
+        const lo = knots[entity.degree];
+        const hi = knots[projectedPoints.length];
+        if (lo !== undefined && hi !== undefined && Number.isFinite(lo) && Number.isFinite(hi) && hi - lo > 1e-9) {
+          push(out.midpoints, evaluateBSplinePoint(projectedPoints, knots, entity.degree, (lo + hi) / 2));
+          break;
+        }
+      }
+      push(out.midpoints, [(first[0] + last[0]) * 0.5, (first[1] + last[1]) * 0.5]);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 function addBoundsPoint(bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null, point: [number, number, number]) {
   if (!bounds) {
     return {
@@ -380,13 +530,18 @@ export function buildDxfScene(document: ParsedDxfDocument, options: DxfBuildOpti
   const sourceResolution = resolveSourcePlane(document, options.sourcePlane);
   const sourcePlane = sourceResolution.resolvedPlane;
   const warnings = sourceResolution.warning ? [...document.warnings, sourceResolution.warning] : [...document.warnings];
-  const layerBuckets = new Map<string, { sourceColor: string; linePositions: number[]; textItems: DxfTextRenderItem[] }>();
+  const layerBuckets = new Map<
+    string,
+    { sourceColor: string; linePositions: number[]; snap: EntitySnapPoints; textItems: DxfTextRenderItem[] }
+  >();
+  const makeBucket = (sourceColor: string) => ({
+    sourceColor,
+    linePositions: [] as number[],
+    snap: { endpoints: [] as number[], midpoints: [] as number[], centers: [] as number[] },
+    textItems: [] as DxfTextRenderItem[]
+  });
   for (const layer of document.layers) {
-    layerBuckets.set(layer.name, {
-      sourceColor: layer.sourceColor,
-      linePositions: [],
-      textItems: []
-    });
+    layerBuckets.set(layer.name, makeBucket(layer.sourceColor));
   }
 
   let bounds: { min: THREE.Vector3; max: THREE.Vector3 } | null = null;
@@ -394,12 +549,9 @@ export function buildDxfScene(document: ParsedDxfDocument, options: DxfBuildOpti
   let textCount = 0;
 
   for (const entity of document.entities) {
-    const bucket = layerBuckets.get(entity.layerName) ?? {
-      sourceColor: "#ffffff",
-      linePositions: [],
-      textItems: []
-    };
+    const bucket = layerBuckets.get(entity.layerName) ?? makeBucket("#ffffff");
     layerBuckets.set(entity.layerName, bucket);
+    collectEntitySnapPoints(entity, sourcePlane, options.drawingPlane, scale, bucket.snap);
     let segmentDelta = 0;
     switch (entity.type) {
       case "LINE":
@@ -461,6 +613,9 @@ export function buildDxfScene(document: ParsedDxfDocument, options: DxfBuildOpti
       layerName: layer.name,
       sourceColor: layer.sourceColor,
       linePositions,
+      snapEndpoints: Float32Array.from(bucket.snap.endpoints),
+      snapMidpoints: Float32Array.from(bucket.snap.midpoints),
+      snapCenters: Float32Array.from(bucket.snap.centers),
       textItems: bucket.textItems
     });
   }
@@ -568,6 +723,11 @@ export function createDxfObject(
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(layer.linePositions, 3));
     const lineSegments = new THREE.LineSegments(geometry, lineMaterial);
     lineSegments.userData.kind = "dxf-lines";
+    // Categorized snap points (flat [x,y,z] triplets in this object's local space),
+    // consumed by the dimension tool's snap pool.
+    lineSegments.userData.dxfSnapEndpoints = layer.snapEndpoints;
+    lineSegments.userData.dxfSnapMidpoints = layer.snapMidpoints;
+    lineSegments.userData.dxfSnapCenters = layer.snapCenters;
     layerGroup.add(lineSegments);
 
     const textGroup = new THREE.Group();

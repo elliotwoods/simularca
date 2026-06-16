@@ -1,13 +1,21 @@
 import * as THREE from "three";
 import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AppKernel } from "@/app/kernel";
-import type { ActorNode, AppState, DimensionAxis, DimensionSnapHover, Landmark, ParameterValues } from "@/core/types";
+import type { ActorNode, AppState, DimensionAxis, DimensionSnapHover, DimensionSnapSettings, Landmark } from "@/core/types";
 import {
   formatDistanceMeters,
   readLandmark,
-  resolveDimensionAxis,
   resolveDimensionUnits
 } from "@/features/dimensions/model";
+import {
+  axisIndexOf,
+  axisUnit,
+  closestPointsBetweenSegments,
+  computeDimensionWorldGeometry,
+  resolveLandmarkLine as resolveLandmarkLineWorld,
+  resolveLandmarkWorld as resolveLandmarkWorldShared,
+  resolveMeasureEndpoints as resolveMeasureEndpointsShared
+} from "@/features/dimensions/geometry";
 import { computeActorObjectVisibility, type SceneController } from "@/render/sceneController";
 
 const OVERLAY_RENDER_ORDER = 999;
@@ -42,9 +50,16 @@ interface SnapResult {
  * sampled at the last pool rebuild (used for screen-space proximity); `landmark`
  * carries provenance so the placed point live-follows its actor.
  */
+/** Snap category, gated by the matching `dimensionSnap` toggle. */
+type SnapCategory = "vertex" | "endpoint" | "midpoint" | "center";
+
 interface SnapCandidate {
   world: THREE.Vector3;
   landmark: Landmark;
+  /** Which snap toggle gates this candidate. */
+  category: SnapCategory;
+  /** Readout label for this candidate (defaults to "Landmark" for generic vertices). */
+  name?: string;
 }
 
 /** A world-space DXF line segment, used for on-line and intersection snapping. */
@@ -97,22 +112,38 @@ function hexToCss(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
-function isVec3(value: unknown): value is [number, number, number] {
-  return (
-    Array.isArray(value) &&
-    value.length >= 3 &&
-    typeof value[0] === "number" &&
-    typeof value[1] === "number" &&
-    typeof value[2] === "number"
-  );
+/**
+ * Black or white, whichever reads more clearly on the given fill colour. Used to
+ * keep the value legible against the selection-highlight rectangle (which is the
+ * user-chosen line colour, so it can be any brightness). Uses a perceptual
+ * luminance on the sRGB components and a threshold biased towards dark text.
+ */
+function contrastingTextColor(cssHex: string): string {
+  const match = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(cssHex.trim());
+  if (!match) {
+    return "#ffffff";
+  }
+  const hex = match[1]!.length === 3 ? match[1]!.replace(/(.)/g, "$1$1") : match[1]!;
+  const r = parseInt(hex.slice(0, 2), 16) / 255;
+  const g = parseInt(hex.slice(2, 4), 16) / 255;
+  const b = parseInt(hex.slice(4, 6), 16) / 255;
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+  return luminance > 0.55 ? "#000000" : "#ffffff";
 }
 
-function axisIndexOf(axis: DimensionAxis): number {
-  return axis === "x" ? 0 : axis === "y" ? 1 : 2;
-}
-
-function axisUnit(axis: DimensionAxis): THREE.Vector3 {
-  return new THREE.Vector3(axis === "x" ? 1 : 0, axis === "y" ? 1 : 0, axis === "z" ? 1 : 0);
+/** True only if `node` and every ancestor up to and including `root` are visible. */
+function isVisibleInSubtree(node: THREE.Object3D, root: THREE.Object3D): boolean {
+  let current: THREE.Object3D | null = node;
+  while (current) {
+    if (!current.visible) {
+      return false;
+    }
+    if (current === root) {
+      break;
+    }
+    current = current.parent;
+  }
+  return true;
 }
 
 function clamp01(value: number): number {
@@ -131,64 +162,6 @@ function segmentPointDistancePx(a: { x: number; y: number }, b: { x: number; y: 
   return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
 }
 
-/** Foot of the perpendicular from point P onto the infinite line through (p0, dir). */
-function footOnLine(p: THREE.Vector3, p0: THREE.Vector3, dir: THREE.Vector3): THREE.Vector3 {
-  const d = dir.clone();
-  const lenSq = d.lengthSq();
-  if (lenSq <= 1e-12) {
-    return p0.clone();
-  }
-  const t = p.clone().sub(p0).dot(d) / lenSq;
-  return p0.clone().addScaledVector(d, t);
-}
-
-/**
- * Closest points between two finite segments (Ericson, Real-Time Collision
- * Detection). Returns the point on each segment nearest the other.
- */
-function closestPointsBetweenSegments(
-  p1: THREE.Vector3,
-  q1: THREE.Vector3,
-  p2: THREE.Vector3,
-  q2: THREE.Vector3
-): { c1: THREE.Vector3; c2: THREE.Vector3 } {
-  const d1 = q1.clone().sub(p1);
-  const d2 = q2.clone().sub(p2);
-  const r = p1.clone().sub(p2);
-  const a = d1.dot(d1);
-  const e = d2.dot(d2);
-  const f = d2.dot(r);
-  const EPS = 1e-12;
-  let s: number;
-  let t: number;
-  if (a <= EPS && e <= EPS) {
-    s = 0;
-    t = 0;
-  } else if (a <= EPS) {
-    s = 0;
-    t = clamp01(f / e);
-  } else {
-    const c = d1.dot(r);
-    if (e <= EPS) {
-      t = 0;
-      s = clamp01(-c / a);
-    } else {
-      const b = d1.dot(d2);
-      const denom = a * e - b * b;
-      s = denom > EPS ? clamp01((b * f - c * e) / denom) : 0;
-      t = (b * s + f) / e;
-      if (t < 0) {
-        t = 0;
-        s = clamp01(-c / a);
-      } else if (t > 1) {
-        t = 1;
-        s = clamp01((b - c) / a);
-      }
-    }
-  }
-  return { c1: p1.clone().addScaledVector(d1, s), c2: p2.clone().addScaledVector(d2, t) };
-}
-
 export class DimensionOverlayController {
   private readonly overlayRoot = new THREE.Group();
   private readonly placementGroup = new THREE.Group();
@@ -203,6 +176,8 @@ export class DimensionOverlayController {
   private edgePool: EdgeCandidate[] = [];
   private snapPoolSignature = "";
   private lastPointerPx: { x: number; y: number } | null = null;
+  private shiftHeld = false;
+  private axisOverride: DimensionAxis | null = null;
   private readonly visuals = new Map<string, DimensionVisual>();
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
@@ -211,6 +186,9 @@ export class DimensionOverlayController {
   private pendingEnd: { landmark: Landmark; world: THREE.Vector3; axis: DimensionAxis } | null = null;
   private placementOffset: { dir: THREE.Vector3; magnitude: number } | null = null;
   private draggingOffset: { actorId: string; A: THREE.Vector3; B: THREE.Vector3; axis: DimensionAxis } | null = null;
+  // True when a single dimension is selected and its label rectangle acts as the
+  // (invisible) offset-drag target; gates pointer handling without rendering a box.
+  private offsetHandleActive = false;
   private hoverSnap: SnapResult | null = null;
   private lastHoverLabel: string | null = null;
   private frameCounter = 0;
@@ -284,6 +262,7 @@ export class DimensionOverlayController {
     this.domElement.addEventListener("pointermove", this.onPointerMove, true);
     this.domElement.addEventListener("pointerup", this.onPointerUp, true);
     window.addEventListener("keydown", this.onKeyDown, true);
+    window.addEventListener("keyup", this.onKeyUp, true);
   }
 
   public dispose(): void {
@@ -291,6 +270,7 @@ export class DimensionOverlayController {
     this.domElement.removeEventListener("pointermove", this.onPointerMove, true);
     this.domElement.removeEventListener("pointerup", this.onPointerUp, true);
     window.removeEventListener("keydown", this.onKeyDown, true);
+    window.removeEventListener("keyup", this.onKeyUp, true);
     for (const visual of this.visuals.values()) {
       this.disposeVisual(visual);
     }
@@ -347,7 +327,7 @@ export class DimensionOverlayController {
       return true;
     }
     // In select mode we only claim the pointer when starting an offset-handle drag.
-    return this.offsetHandle.visible && this.pickHandle(event) !== null;
+    return this.offsetHandleActive && this.pickHandle(event) !== null;
   }
 
   public update(): void {
@@ -356,7 +336,7 @@ export class DimensionOverlayController {
     const placementActive = this.tool !== "select";
     this.placementGroup.visible = visible && placementActive;
     if (!visible) {
-      this.offsetHandle.visible = false;
+      this.offsetHandleActive = false;
       return;
     }
     this.frameCounter += 1;
@@ -378,7 +358,7 @@ export class DimensionOverlayController {
         continue;
       }
       if (actor.actorType === "dimension") {
-        this.updateDimensionVisual(actor, visual);
+        this.updateDimensionVisual(actor, visual, isSelected);
       } else {
         this.updateAnnotationVisual(actor, visual);
       }
@@ -395,16 +375,19 @@ export class DimensionOverlayController {
     this.updateOffsetHandle(state, selectedIds, placementActive);
 
     const snap = state.dimensionSnap;
+    const anyLandmarkSnap = snap.vertex || snap.endpoint || snap.midpoint || snap.center;
     // The candidate pool now drives snapping (not just the dots), so build it
-    // whenever a tool is armed and landmark snapping is enabled.
-    if (placementActive && snap.vertex) {
+    // whenever a tool is armed and any landmark category is enabled.
+    if (placementActive && anyLandmarkSnap) {
       this.maybeRebuildSnapPool(state, selectedIds);
     } else {
       this.snapDotPool = [];
       this.edgePool = [];
       this.snapPoolSignature = "";
     }
-    const showDots = placementActive && snap.showSnapPoints && snap.vertex;
+    // Hide the snap-point preview once both endpoints are placed: during the offset
+    // step the cursor only sets the perpendicular offset, so the dots are noise.
+    const showDots = placementActive && snap.showSnapPoints && anyLandmarkSnap && !this.pendingEnd;
     this.snapDots.visible = showDots;
     if (showDots) {
       this.updateSnapDots();
@@ -451,7 +434,7 @@ export class DimensionOverlayController {
       let perActorEdges = 0;
       // Candidates store an actor-relative landmark so a placed point live-follows
       // the actor; `world` is the sampled position for screen-space proximity.
-      const addCandidate = (world: THREE.Vector3): void => {
+      const addCandidate = (world: THREE.Vector3, category: SnapCategory = "vertex", name?: string): void => {
         if (pool.length >= SNAP_DOT_POOL_CAP || perActor >= SNAP_DOT_PER_ACTOR_CAP) {
           return;
         }
@@ -463,7 +446,9 @@ export class DimensionOverlayController {
         const local = root.worldToLocal(world.clone());
         pool.push({
           world,
-          landmark: { kind: "actor", actorId, localOffset: [local.x, local.y, local.z] }
+          landmark: { kind: "actor", actorId, localOffset: [local.x, local.y, local.z] },
+          category,
+          name
         });
         perActor += 1;
       };
@@ -482,10 +467,38 @@ export class DimensionOverlayController {
       }
 
       root.traverse((node) => {
+        // Skip hidden geometry (e.g. toggled-off DXF layers): a node that isn't drawn
+        // must not contribute snap points. `traverse` still descends, so each node is
+        // checked against its own ancestor chain rather than relying on early-out.
+        if (!isVisibleInSubtree(node, root)) {
+          return;
+        }
         // DXF straight lines: collect world-space segments for on-line and
         // intersection snapping (endpoints still flow into the vertex pool below).
         if (node instanceof THREE.LineSegments && (node.userData as { kind?: string }).kind === "dxf-lines") {
           node.updateWorldMatrix(true, false);
+          // Precise per-entity snap points (endpoints / midpoints / centers) published
+          // by the DXF builder. Added before the strided vertex sampling below so their
+          // dedupe keys win, keeping these exact points out of the generic "vertex" bucket.
+          const dxfSnap = node.userData as {
+            dxfSnapEndpoints?: Float32Array;
+            dxfSnapMidpoints?: Float32Array;
+            dxfSnapCenters?: Float32Array;
+          };
+          const addDxfSnapPoints = (data: Float32Array | undefined, category: SnapCategory, name: string): void => {
+            if (!data) {
+              return;
+            }
+            for (let i = 0; i + 2 < data.length; i += 3) {
+              if (pool.length >= SNAP_DOT_POOL_CAP || perActor >= SNAP_DOT_PER_ACTOR_CAP) {
+                break;
+              }
+              addCandidate(node.localToWorld(new THREE.Vector3(data[i], data[i + 1], data[i + 2])), category, name);
+            }
+          };
+          addDxfSnapPoints(dxfSnap.dxfSnapEndpoints, "endpoint", "Endpoint");
+          addDxfSnapPoints(dxfSnap.dxfSnapMidpoints, "midpoint", "Midpoint");
+          addDxfSnapPoints(dxfSnap.dxfSnapCenters, "center", "Center");
           const geom = node.geometry as THREE.BufferGeometry | undefined;
           const segPos = geom?.getAttribute?.("position") as THREE.BufferAttribute | undefined;
           if (segPos) {
@@ -547,6 +560,21 @@ export class DimensionOverlayController {
     this.edgePool = edges;
   }
 
+  /** Whether a pool candidate's category is currently armed by the snap toggles. */
+  private isSnapCategoryEnabled(category: SnapCategory, settings: DimensionSnapSettings): boolean {
+    switch (category) {
+      case "endpoint":
+        return settings.endpoint;
+      case "midpoint":
+        return settings.midpoint;
+      case "center":
+        return settings.center;
+      case "vertex":
+      default:
+        return settings.vertex;
+    }
+  }
+
   private updateSnapDots(): void {
     const attr = this.snapDots.geometry.getAttribute("position") as THREE.BufferAttribute;
     const cursor = this.lastPointerPx;
@@ -560,8 +588,12 @@ export class DimensionOverlayController {
       return;
     }
     this.ensureCameraMatrices();
+    const settings = this.kernel.store.getState().state.dimensionSnap;
     const scored: Array<{ p: THREE.Vector3; d: number }> = [];
     for (const entry of this.snapDotPool) {
+      if (!this.isSnapCategoryEnabled(entry.category, settings)) {
+        continue;
+      }
       const screen = this.worldToScreenPx(entry.world, rect);
       if (!screen) {
         continue;
@@ -579,125 +611,34 @@ export class DimensionOverlayController {
   }
 
   // ----- Landmark / geometry resolution --------------------------------------
+  // Delegated to the shared, render-agnostic `dimensions/geometry` module so the
+  // live overlay and the vector print exporter derive identical geometry. The
+  // resolver maps actor ids to scene objects for local→world landmark transforms.
+
+  private readonly resolveActorObject = (actorId: string): THREE.Object3D | null => {
+    const object = this.sceneController.getActorObject(actorId);
+    return object instanceof THREE.Object3D ? object : null;
+  };
 
   private resolveLandmarkWorld(landmark: Landmark | null): THREE.Vector3 | null {
-    if (!landmark) {
-      return null;
-    }
-    if (landmark.kind === "origin") {
-      return new THREE.Vector3(0, 0, 0);
-    }
-    if (landmark.kind === "world") {
-      return new THREE.Vector3(landmark.point[0], landmark.point[1], landmark.point[2]);
-    }
-    if (landmark.kind === "line") {
-      // Fallback point for a line landmark (annotation anchor / offset handle): its midpoint.
-      const line = this.resolveLandmarkLine(landmark);
-      return line ? line.a.clone().add(line.b).multiplyScalar(0.5) : null;
-    }
-    const object = this.sceneController.getActorObject(landmark.actorId);
-    if (!(object instanceof THREE.Object3D)) {
-      return null;
-    }
-    object.updateWorldMatrix(true, false);
-    return object.localToWorld(new THREE.Vector3(landmark.localOffset[0], landmark.localOffset[1], landmark.localOffset[2]));
+    return resolveLandmarkWorldShared(landmark, this.resolveActorObject);
   }
 
-  /** Resolve a line landmark to its world-space endpoints + direction (live-follow). */
   private resolveLandmarkLine(
     landmark: Landmark | null
   ): { p0: THREE.Vector3; dir: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 } | null {
-    if (!landmark || landmark.kind !== "line") {
-      return null;
-    }
-    const object = this.sceneController.getActorObject(landmark.actorId);
-    if (!(object instanceof THREE.Object3D)) {
-      return null;
-    }
-    object.updateWorldMatrix(true, false);
-    const a = object.localToWorld(new THREE.Vector3(landmark.a[0], landmark.a[1], landmark.a[2]));
-    const b = object.localToWorld(new THREE.Vector3(landmark.b[0], landmark.b[1], landmark.b[2]));
-    return { p0: a.clone(), dir: b.clone().sub(a), a, b };
+    return resolveLandmarkLineWorld(landmark, this.resolveActorObject);
   }
 
-  /**
-   * Resolve the two world points a dimension measures between. When a line
-   * landmark is involved the measure is orthogonal: line→point drops a
-   * perpendicular from the point onto the line; line→line uses the closest
-   * points between the two lines.
-   */
   private resolveMeasureEndpoints(
     start: Landmark | null,
     end: Landmark | null
   ): { A: THREE.Vector3; B: THREE.Vector3; perpendicular: boolean } | null {
-    const startLine = start?.kind === "line" ? this.resolveLandmarkLine(start) : null;
-    const endLine = end?.kind === "line" ? this.resolveLandmarkLine(end) : null;
-    if (startLine && endLine) {
-      const { c1, c2 } = closestPointsBetweenSegments(startLine.a, startLine.b, endLine.a, endLine.b);
-      return { A: c1, B: c2, perpendicular: true };
-    }
-    if (startLine) {
-      const P = this.resolveLandmarkWorld(end);
-      return P ? { A: footOnLine(P, startLine.p0, startLine.dir), B: P, perpendicular: true } : null;
-    }
-    if (endLine) {
-      const P = this.resolveLandmarkWorld(start);
-      return P ? { A: P, B: footOnLine(P, endLine.p0, endLine.dir), perpendicular: true } : null;
-    }
-    const A = this.resolveLandmarkWorld(start);
-    const B = this.resolveLandmarkWorld(end);
-    return A && B ? { A, B, perpendicular: false } : null;
-  }
-
-  /** Offset vector O for a dimension's measure line, from offsetDir × extensionGap (with fallback). */
-  private resolveOffsetVector(params: ParameterValues, axis: DimensionAxis): THREE.Vector3 {
-    const mag = Number.isFinite(Number(params.extensionGap)) ? Math.max(0, Number(params.extensionGap)) : 0.25;
-    const dirRaw = params.offsetDir;
-    if (isVec3(dirRaw)) {
-      const dir = new THREE.Vector3(dirRaw[0], dirRaw[1], dirRaw[2]);
-      if (dir.lengthSq() > 1e-12) {
-        return dir.normalize().multiplyScalar(mag);
-      }
-    }
-    if (axis === "direct") {
-      return new THREE.Vector3(0, 0, 0);
-    }
-    const perp = axis === "y" ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-    return perp.multiplyScalar(mag);
+    return resolveMeasureEndpointsShared(start, end, this.resolveActorObject);
   }
 
   private computeDimensionGeometry(actor: ActorNode): DimensionGeometry | null {
-    const measure = this.resolveMeasureEndpoints(readLandmark(actor.params.start), readLandmark(actor.params.end));
-    if (!measure) {
-      return null;
-    }
-    const { A, B, perpendicular } = measure;
-    // A line landmark forces an orthogonal (direct between the derived points) measure.
-    const axis = perpendicular ? "direct" : resolveDimensionAxis(actor.params.axis);
-    const O = this.resolveOffsetVector(actor.params, axis);
-    let along: THREE.Vector3;
-    let lineDir: THREE.Vector3;
-    if (axis === "direct") {
-      along = B.clone().sub(A);
-      lineDir = along.lengthSq() > 1e-12 ? along.clone().normalize() : new THREE.Vector3(1, 0, 0);
-    } else {
-      const i = axisIndexOf(axis);
-      along = new THREE.Vector3();
-      along.setComponent(i, B.getComponent(i) - A.getComponent(i));
-      lineDir = axisUnit(axis);
-    }
-    const m1 = A.clone().add(O);
-    const m2 = m1.clone().add(along);
-    return {
-      A,
-      B,
-      axis,
-      m1,
-      m2,
-      distance: along.length(),
-      labelPos: m1.clone().add(m2).multiplyScalar(0.5),
-      lineDir
-    };
+    return computeDimensionWorldGeometry(actor, this.resolveActorObject);
   }
 
   // ----- Per-actor visuals ---------------------------------------------------
@@ -716,7 +657,9 @@ export class DimensionOverlayController {
       new THREE.SpriteMaterial({ map: labelTexture, depthTest: false, depthWrite: false, transparent: true })
     );
     label.renderOrder = LABEL_RENDER_ORDER;
-    const lines = [makeLine(0xffcc33), makeLine(0xffcc33), makeLine(0xffcc33)];
+    // Four lines: extension-at-start, extension-at-end, and the measure span
+    // split into two segments so the label can break it (lines[2] + lines[3]).
+    const lines = [makeLine(0xffcc33), makeLine(0xffcc33), makeLine(0xffcc33), makeLine(0xffcc33)];
     for (const line of lines) {
       root.add(line);
     }
@@ -745,7 +688,7 @@ export class DimensionOverlayController {
     visual.root.parent?.remove(visual.root);
   }
 
-  private updateDimensionVisual(actor: ActorNode, visual: DimensionVisual): void {
+  private updateDimensionVisual(actor: ActorNode, visual: DimensionVisual, isSelected: boolean): void {
     const geom = this.computeDimensionGeometry(actor);
     if (!geom) {
       visual.root.visible = false;
@@ -761,25 +704,104 @@ export class DimensionOverlayController {
 
     setLinePoints(visual.lines[0]!, geom.A, geom.m1); // extension at start
     setLinePoints(visual.lines[1]!, geom.B, geom.m2); // extension at end
-    setLinePoints(visual.lines[2]!, geom.m1, geom.m2); // measure line
     visual.lines[0]!.visible = true;
     visual.lines[1]!.visible = true;
-    visual.lines[2]!.visible = true;
 
     const showValue = actor.params.showValue !== false;
     const text = showValue ? formatDistanceMeters(geom.distance, units, decimals) : "";
     const textColor = hexToCss(actor.params.textColor, "#ffffff");
     const textSizePx = Number.isFinite(Number(actor.params.textSizePx)) ? Number(actor.params.textSizePx) : 14;
-    const signature = `dim|${text}|${textColor}|${textSizePx}`;
+    // Selection highlight: back the number with a filled rectangle in the line
+    // colour. It bridges the measure line through the label so the dimension
+    // reads as one continuous bar, marking selection without covering the text
+    // (which renders on top of the fill). The text switches to whichever of
+    // black/white stays legible against that fill.
+    const background = isSelected ? lineColor : null;
+    const effectiveTextColor = isSelected ? contrastingTextColor(lineColor) : textColor;
+    const signature = `dim|${text}|${effectiveTextColor}|${textSizePx}|${background ?? ""}`;
     if (signature !== visual.signature) {
-      this.renderLabel(visual, text, { textColor, textSizePx, background: null });
+      this.renderLabel(visual, text, { textColor: effectiveTextColor, textSizePx, background });
       visual.signature = signature;
     }
     visual.label.visible = text.length > 0;
     visual.label.position.copy(geom.labelPos);
     this.scaleLabel(visual, textSizePx);
 
+    // Selected: the fill covers the centre, so draw the span unbroken — it shows
+    // through as a continuous line behind the rectangle. Unselected: break the
+    // line around the number so it never crosses it.
+    const breakForLabel = text.length > 0 && !isSelected;
+    this.layoutSpanLine(geom, visual, breakForLabel ? textSizePx : 0);
+
     this.maybeWriteStatus(actor.id, geom.distance);
+  }
+
+  /**
+   * Lay out the measure span as two segments (lines[2] + lines[3]) leaving a gap
+   * around the centered label so the line doesn't run through the number. The gap
+   * is sized from the label's on-screen bounding box, projected onto the line's
+   * screen direction, so it stays correct at any orientation/zoom. Pass
+   * `textSizePx = 0` (no visible label) to draw the span as a single unbroken line.
+   */
+  private layoutSpanLine(geom: DimensionGeometry, visual: DimensionVisual, textSizePx: number): void {
+    const drawWhole = (): void => {
+      setLinePoints(visual.lines[2]!, geom.m1, geom.m2);
+      visual.lines[2]!.visible = true;
+      visual.lines[3]!.visible = false;
+    };
+    if (textSizePx <= 0) {
+      drawWhole();
+      return;
+    }
+    const rect = this.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      drawWhole();
+      return;
+    }
+    this.ensureCameraMatrices();
+    const s1 = this.worldToScreenPx(geom.m1, rect);
+    const s2 = this.worldToScreenPx(geom.m2, rect);
+    const worldLen = geom.m1.distanceTo(geom.m2);
+    if (!s1 || !s2 || worldLen < 1e-6) {
+      drawWhole();
+      return;
+    }
+    const screenLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
+    if (screenLen < 1e-3) {
+      drawWhole();
+      return;
+    }
+    // Label on-screen half-extents (height matches scaleLabel: textSizePx * 1.6).
+    const heightPx = textSizePx * 1.6;
+    const pad = Math.max(2, textSizePx * 0.2);
+    const halfW = (heightPx * visual.labelAspect) / 2 + pad;
+    const halfH = heightPx / 2 + pad;
+    // Distance along the screen line, from the label centre, to where it leaves
+    // the label's bounding box (the line passes through the centre).
+    const dx = (s2.x - s1.x) / screenLen;
+    const dy = (s2.y - s1.y) / screenLen;
+    const tx = Math.abs(dx) > 1e-6 ? halfW / Math.abs(dx) : Infinity;
+    const ty = Math.abs(dy) > 1e-6 ? halfH / Math.abs(dy) : Infinity;
+    const gapPx = Math.min(tx, ty);
+    const gapWorld = Number.isFinite(gapPx) ? gapPx * (worldLen / screenLen) : 0;
+    if (gapWorld <= 0 || gapWorld * 2 >= worldLen) {
+      // Label covers the whole span (or no usable gap): hide the line so it
+      // never crosses the number; very short dims just show the value.
+      if (gapWorld * 2 >= worldLen) {
+        visual.lines[2]!.visible = false;
+        visual.lines[3]!.visible = false;
+        return;
+      }
+      drawWhole();
+      return;
+    }
+    const spanDir = geom.m2.clone().sub(geom.m1).normalize();
+    const breakA = geom.labelPos.clone().addScaledVector(spanDir, -gapWorld);
+    const breakB = geom.labelPos.clone().addScaledVector(spanDir, gapWorld);
+    setLinePoints(visual.lines[2]!, geom.m1, breakA);
+    setLinePoints(visual.lines[3]!, breakB, geom.m2);
+    visual.lines[2]!.visible = true;
+    visual.lines[3]!.visible = true;
   }
 
   private updateAnnotationVisual(actor: ActorNode, visual: DimensionVisual): void {
@@ -790,6 +812,7 @@ export class DimensionOverlayController {
     }
     visual.lines[1]!.visible = false;
     visual.lines[2]!.visible = false;
+    visual.lines[3]!.visible = false;
 
     const text = typeof actor.params.text === "string" ? actor.params.text : "Note";
     const textColor = hexToCss(actor.params.textColor, "#ffffff");
@@ -911,23 +934,25 @@ export class DimensionOverlayController {
     placementActive: boolean
   ): void {
     if (placementActive || selectedIds.size !== 1) {
-      this.offsetHandle.visible = false;
+      this.offsetHandleActive = false;
       return;
     }
     const actorId = [...selectedIds][0]!;
     const actor = state.actors[actorId];
     if (!actor || actor.actorType !== "dimension") {
-      this.offsetHandle.visible = false;
+      this.offsetHandleActive = false;
       return;
     }
     const geom = this.computeDimensionGeometry(actor);
     if (!geom) {
-      this.offsetHandle.visible = false;
+      this.offsetHandleActive = false;
       return;
     }
-    this.offsetHandle.visible = true;
+    // The selection-highlight rectangle drawn behind the number is the drag
+    // affordance; keep an invisible pick proxy at its centre so dragging the
+    // label still adjusts the offset. The box mesh itself is never rendered.
+    this.offsetHandleActive = true;
     this.offsetHandle.position.copy(geom.labelPos);
-    this.offsetHandle.scale.setScalar(this.markerScale(geom.labelPos, 9));
     this.offsetHandle.userData.actorId = actorId;
   }
 
@@ -1006,6 +1031,7 @@ export class DimensionOverlayController {
   // ----- Pointer handling ----------------------------------------------------
 
   private onPointerMove = (event: PointerEvent): void => {
+    this.shiftHeld = event.shiftKey;
     const rectForCursor = this.domElement.getBoundingClientRect();
     if (rectForCursor.width > 0 && rectForCursor.height > 0) {
       this.lastPointerPx = { x: event.clientX - rectForCursor.left, y: event.clientY - rectForCursor.top };
@@ -1025,10 +1051,8 @@ export class DimensionOverlayController {
     this.domElement.style.cursor = "crosshair";
     if (this.pendingEnd) {
       // Offset step: cursor sets the perpendicular offset, not a snap point.
-      const measure = this.resolveMeasureEndpoints(this.pendingStart!.landmark, this.pendingEnd.landmark);
-      const mA = measure ? measure.A : (this.pendingStart as { world: THREE.Vector3 }).world;
-      const mB = measure ? measure.B : this.pendingEnd.world;
-      this.placementOffset = this.computeOffset(event, mA, mB, this.pendingEnd.axis);
+      // Re-evaluate the axis from the live Shift state so it can be toggled here.
+      this.refreshOffsetStep();
       this.hoverSnap = null;
       this.publishHover(null);
       return;
@@ -1038,9 +1062,10 @@ export class DimensionOverlayController {
   };
 
   private onPointerDown = (event: PointerEvent): void => {
+    this.shiftHeld = event.shiftKey;
     const tool = this.tool;
     if (tool === "select") {
-      if (event.button === 0 && this.offsetHandle.visible) {
+      if (event.button === 0 && this.offsetHandleActive) {
         const actorId = this.pickHandle(event);
         if (actorId) {
           this.beginOffsetDrag(event, actorId);
@@ -1086,16 +1111,21 @@ export class DimensionOverlayController {
       event.preventDefault();
       event.stopPropagation();
       // A line landmark forces an orthogonal measure; otherwise use the dominant
-      // world axis of the derived measure endpoints (Shift = direct).
-      const lineInvolved = this.pendingStart.landmark.kind === "line" || snap.landmark.kind === "line";
+      // world axis of the derived measure endpoints (Shift = direct). The axis can
+      // still be toggled with Shift during the offset step that follows.
+      const rect = this.domElement.getBoundingClientRect();
+      this.lastPointerPx = { x: event.clientX - rect.left, y: event.clientY - rect.top };
       const measure = this.resolveMeasureEndpoints(this.pendingStart.landmark, snap.landmark);
-      const axis: DimensionAxis =
-        lineInvolved || event.shiftKey || !measure ? "direct" : dominantAxis(measure.A, measure.B);
+      const axis = this.resolvePlacementAxis(this.pendingStart.landmark, snap.landmark);
       this.pendingEnd = { landmark: snap.landmark, world: snap.world.clone(), axis };
       const mA = measure ? measure.A : this.pendingStart.world;
       const mB = measure ? measure.B : snap.world;
-      this.placementOffset = this.computeOffset(event, mA, mB, axis);
-      this.kernel.store.getState().actions.setStatus("Move to position the dimension line, then click to place.");
+      this.placementOffset = this.computeOffset(this.lastPointerPx, mA, mB, axis);
+      this.kernel.store
+        .getState()
+        .actions.setStatus(
+          "Move to position the dimension line (Shift = direct, Space = flip axis), then click to place."
+        );
       return;
     }
 
@@ -1105,7 +1135,9 @@ export class DimensionOverlayController {
     const measure3 = this.resolveMeasureEndpoints(this.pendingStart.landmark, this.pendingEnd.landmark);
     const offA = measure3 ? measure3.A : this.pendingStart.world;
     const offB = measure3 ? measure3.B : this.pendingEnd.world;
-    const offset = this.placementOffset ?? this.computeOffset(event, offA, offB, this.pendingEnd.axis);
+    const rect3 = this.domElement.getBoundingClientRect();
+    const px3 = { x: event.clientX - rect3.left, y: event.clientY - rect3.top };
+    const offset = this.placementOffset ?? this.computeOffset(px3, offA, offB, this.pendingEnd.axis);
     let dir = offset ? offset.dir.clone() : new THREE.Vector3(0, 1, 0);
     let magnitude = offset ? offset.magnitude : 0;
     if (magnitude < 0) {
@@ -1132,6 +1164,23 @@ export class DimensionOverlayController {
   };
 
   private onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Shift") {
+      // Live-toggle the axis during the offset step (auto-repeat is harmless).
+      this.shiftHeld = true;
+      if (this.pendingEnd) {
+        this.refreshOffsetStep();
+      }
+      return;
+    }
+    if ((event.key === " " || event.code === "Space") && this.pendingEnd && !this.draggingOffset) {
+      // Flip to the other in-view orthogonal axis while positioning the offset.
+      event.preventDefault();
+      event.stopPropagation();
+      this.axisOverride = this.flipOrthoAxis(this.pendingEnd.axis);
+      this.refreshOffsetStep();
+      this.kernel.store.getState().actions.setStatus(`Dimension axis: ${this.pendingEnd.axis}.`);
+      return;
+    }
     if (event.key !== "Escape" || this.tool === "select") {
       return;
     }
@@ -1139,6 +1188,7 @@ export class DimensionOverlayController {
       // Step back from the offset step to re-pick the end point.
       this.pendingEnd = null;
       this.placementOffset = null;
+      this.axisOverride = null;
       this.kernel.store.getState().actions.setStatus("Re-pick the dimension end point.");
     } else if (this.pendingStart) {
       this.cancelPlacement();
@@ -1148,7 +1198,79 @@ export class DimensionOverlayController {
     }
   };
 
+  private onKeyUp = (event: KeyboardEvent): void => {
+    if (event.key !== "Shift") {
+      return;
+    }
+    this.shiftHeld = false;
+    if (this.pendingEnd) {
+      this.refreshOffsetStep();
+    }
+  };
+
+  // Axis selection shared by the end-point click and the offset step: a line
+  // landmark always forces a direct measure; otherwise Shift forces direct, a
+  // Space override (set while placing) pins a chosen orthogonal axis, and the
+  // default snaps to the dominant world axis of the measured endpoints.
+  private resolvePlacementAxis(start: Landmark, end: Landmark): DimensionAxis {
+    const lineInvolved = start.kind === "line" || end.kind === "line";
+    const measure = this.resolveMeasureEndpoints(start, end);
+    if (lineInvolved || !measure) {
+      return "direct";
+    }
+    if (this.shiftHeld) {
+      return "direct";
+    }
+    if (this.axisOverride) {
+      return this.axisOverride;
+    }
+    return dominantAxis(measure.A, measure.B);
+  }
+
+  // The two world axes that lie most in the current view plane (i.e. not the
+  // camera's depth axis), ordered most-in-view first.
+  private inViewAxes(): [DimensionAxis, DimensionAxis] {
+    if (!this.currentCamera) {
+      return ["x", "y"];
+    }
+    const fwd = new THREE.Vector3();
+    this.currentCamera.getWorldDirection(fwd);
+    const comp: Record<"x" | "y" | "z", number> = { x: Math.abs(fwd.x), y: Math.abs(fwd.y), z: Math.abs(fwd.z) };
+    const sorted = (["x", "y", "z"] as const).slice().sort((a, b) => comp[a] - comp[b]);
+    return [sorted[0]!, sorted[1]!];
+  }
+
+  // Flip the current orthogonal axis to the other in-view axis (Space). From a
+  // direct/depth axis, jump to the most in-view axis.
+  private flipOrthoAxis(current: DimensionAxis): DimensionAxis {
+    const [a, b] = this.inViewAxes();
+    if (current === a) {
+      return b;
+    }
+    if (current === b) {
+      return a;
+    }
+    return a;
+  }
+
+  // Re-derive the axis (from the live Shift state) and offset for the offset
+  // step, using the last known cursor position so a stationary-mouse Shift
+  // toggle still updates the preview.
+  private refreshOffsetStep(): void {
+    if (!this.pendingStart || !this.pendingEnd || this.draggingOffset || !this.lastPointerPx) {
+      return;
+    }
+    const axis = this.resolvePlacementAxis(this.pendingStart.landmark, this.pendingEnd.landmark);
+    this.pendingEnd.axis = axis;
+    const measure = this.resolveMeasureEndpoints(this.pendingStart.landmark, this.pendingEnd.landmark);
+    const mA = measure ? measure.A : this.pendingStart.world;
+    const mB = measure ? measure.B : this.pendingEnd.world;
+    this.placementOffset = this.computeOffset(this.lastPointerPx, mA, mB, axis);
+  }
+
   private cancelPlacement(): void {
+    this.shiftHeld = false;
+    this.axisOverride = null;
     this.pendingStart = null;
     this.pendingEnd = null;
     this.placementOffset = null;
@@ -1184,7 +1306,9 @@ export class DimensionOverlayController {
     if (!this.draggingOffset) {
       return;
     }
-    const offset = this.computeOffset(event, this.draggingOffset.A, this.draggingOffset.B, this.draggingOffset.axis);
+    const rect = this.domElement.getBoundingClientRect();
+    const px = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const offset = this.computeOffset(px, this.draggingOffset.A, this.draggingOffset.B, this.draggingOffset.axis);
     if (!offset) {
       return;
     }
@@ -1201,7 +1325,7 @@ export class DimensionOverlayController {
   }
 
   private pickHandle(event: PointerEvent): string | null {
-    if (!this.currentCamera || !this.offsetHandle.visible) {
+    if (!this.currentCamera || !this.offsetHandleActive) {
       return null;
     }
     const rect = this.domElement.getBoundingClientRect();
@@ -1221,20 +1345,20 @@ export class DimensionOverlayController {
 
   /** Compute a perpendicular offset (direction + signed magnitude) from the cursor. */
   private computeOffset(
-    event: PointerEvent,
+    px: { x: number; y: number } | null,
     A: THREE.Vector3,
     B: THREE.Vector3,
     axis: DimensionAxis
   ): { dir: THREE.Vector3; magnitude: number } | null {
+    if (!px) {
+      return null;
+    }
     const rect = this.domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || !this.currentCamera) {
       return null;
     }
     this.ensureCameraMatrices();
-    this.pointerNdc.set(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
-    );
+    this.pointerNdc.set((px.x / rect.width) * 2 - 1, -(px.y / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(this.pointerNdc, this.currentCamera);
 
     const lineDir = axis === "direct"
@@ -1307,11 +1431,15 @@ export class DimensionOverlayController {
     // 2) Nearest actor landmark: pick the closest candidate in screen space from
     // the pre-resolved pool. This is geometry-type agnostic (mesh vertices, line
     // endpoints, point clouds, and per-instance beam-emitter positions all land
-    // in the pool), so it works where the old face-raycast snap could not.
-    if (settings.vertex && this.snapDotPool.length > 0) {
+    // in the pool), so it works where the old face-raycast snap could not. Each
+    // candidate is gated by its category's toggle (vertex / endpoint / midpoint / center).
+    if ((settings.vertex || settings.endpoint || settings.midpoint || settings.center) && this.snapDotPool.length > 0) {
       let best: SnapCandidate | null = null;
       let bestDist = SNAP_PIXEL_THRESHOLD;
       for (const candidate of this.snapDotPool) {
+        if (!this.isSnapCategoryEnabled(candidate.category, settings)) {
+          continue;
+        }
         const screen = this.worldToScreenPx(candidate.world, rect);
         if (!screen) {
           continue;
@@ -1328,7 +1456,7 @@ export class DimensionOverlayController {
         const world = this.resolveLandmarkWorld(best.landmark) ?? best.world.clone();
         const actorName =
           best.landmark.kind === "actor" ? state.actors[best.landmark.actorId]?.name ?? "Actor" : "World";
-        return { world, landmark: best.landmark, description: { actorName, pointName: "Landmark" } };
+        return { world, landmark: best.landmark, description: { actorName, pointName: best.name ?? "Landmark" } };
       }
     }
 

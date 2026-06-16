@@ -189,6 +189,10 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
         { label: "Radius (m)", value: isAnalyticRadius ? getCurveRadiusFromActor(actor) : "n/a" }
       ];
 
+      const analyticRows: ActorStatusEntry[] = isAnalyticCurveKind(curveType)
+        ? [{ label: "Samples", value: runtimeStatus?.values.samplesPerSegment ?? samplesPerSegment }]
+        : [];
+
       const arcRows: ActorStatusEntry[] = curveType === "arc"
         ? [
             { label: "Arc Fraction", value: getCurveArcFractionFromActor(actor) },
@@ -246,7 +250,7 @@ export const curveActorDescriptor: ReloadableDescriptor<CurveRuntime> = {
         { label: "Error", value: runtimeStatus?.error ?? null, tone: "error" }
       ];
 
-      return [...baseRows, ...arcRows, ...helixRows, ...splineRows, ...projectionRows, ...trailingRows];
+      return [...baseRows, ...analyticRows, ...arcRows, ...helixRows, ...splineRows, ...projectionRows, ...trailingRows];
     }
   }
 };

@@ -117,7 +117,7 @@ function detectMeshImportScale(extension: string, loadedObject: any): number | n
   return null;
 }
 const DXF_RENDER_ROOT_NAME = "dxf-render-root";
-const CURVE_RENDER_LINE_NAME = "curve-render-line";
+export const CURVE_RENDER_LINE_NAME = "curve-render-line";
 const SPLAT_COORDINATE_CORRECTION_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ");
 const SPLAT_COORDINATE_CORRECTION_QUATERNION = new THREE.Quaternion().setFromEuler(SPLAT_COORDINATE_CORRECTION_EULER);
 const MATRIX_IDENTITY = new THREE.Matrix4().identity();

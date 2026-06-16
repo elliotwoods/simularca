@@ -1,10 +1,12 @@
 import type { DxfLayerStateMap } from "@/core/types";
+import { invertHexColor } from "@/features/dxf/dxfColor";
 
 interface DxfLayerStatesFieldProps {
   label: string;
   description?: string;
   value: DxfLayerStateMap;
   layerOrder?: string[];
+  invertColors?: boolean;
   disabled?: boolean;
   onChange(next: DxfLayerStateMap): void;
   onReset?(): void;
@@ -71,14 +73,19 @@ export function DxfLayerStatesField(props: DxfLayerStatesFieldProps) {
                 <input
                   className="dxf-layer-states-color"
                   type="color"
-                  value={entry.color}
+                  value={props.invertColors ? invertHexColor(entry.color) : entry.color}
                   disabled={props.disabled}
                   onChange={(event) => {
+                    // The swatch shows the colour as it appears in the viewport. When the
+                    // viewport is inverted, store the native (inverse) colour so the
+                    // rendered colour matches exactly what the user picked.
+                    const picked = event.target.value;
+                    const stored = props.invertColors ? invertHexColor(picked) : picked;
                     props.onChange({
                       ...props.value,
                       [name]: {
                         ...entry,
-                        color: event.target.value
+                        color: stored
                       }
                     });
                   }}

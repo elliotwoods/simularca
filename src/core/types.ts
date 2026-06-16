@@ -51,6 +51,12 @@ export type InteractionTool = "select" | "dimension" | "annotation";
 /** Which snap targets the dimension/annotation placement tool considers. Ephemeral, not persisted. */
 export interface DimensionSnapSettings {
   vertex: boolean;
+  /** DXF entity endpoints (line/arc/ellipse/spline ends, polyline vertices). */
+  endpoint: boolean;
+  /** DXF entity geometric midpoints (per sub-segment for polylines). */
+  midpoint: boolean;
+  /** DXF arc/circle/ellipse centers. */
+  center: boolean;
   surface: boolean;
   origin: boolean;
   grid: boolean;

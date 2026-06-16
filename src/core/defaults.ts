@@ -290,7 +290,7 @@ export function createInitialState(
     hdrPreviewOpen: false,
     hdrPreviewFocusToken: 0,
     interactionTool: "select",
-    dimensionSnap: { vertex: true, surface: false, origin: true, grid: false, free: false, showSnapPoints: true },
+    dimensionSnap: { vertex: true, endpoint: true, midpoint: true, center: true, surface: false, origin: true, grid: false, free: false, showSnapPoints: true },
     dimensionSnapHover: null,
     pluginsEnabled: {},
     materials: createInitialMaterials(),

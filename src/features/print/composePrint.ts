@@ -1,4 +1,5 @@
 import type { OrthoEdgeMapping } from "@/features/camera/viewUtils";
+import type { PrintOverlayCurve, PrintOverlayDimension, PrintVectorOverlay } from "@/features/print/printVectorOverlay";
 import type { PrintSettings } from "@/features/print/types";
 
 const AXIS_LETTERS = ["X", "Y", "Z"] as const;
@@ -10,6 +11,9 @@ const MIN_MAJOR_TICK_SPACING_PX = 64;
 const MIN_MINOR_PIXEL_SPACING = 6;
 // Keep major-tick labels at least this far apart so they stay legible.
 const MIN_MAJOR_LABEL_SPACING_PX = 48;
+// Minor grid lines render at this fraction of the major-line opacity so they
+// read as a fainter sub-division of the majors.
+const MINOR_GRID_ALPHA_FACTOR = 0.4;
 
 /**
  * Choose a "nice" ruler step (in metres) so major ticks are at least
@@ -243,6 +247,13 @@ function drawWorldRuler(
     for (let i = start; i <= end; i += 1) {
       const coord = i * stepMeters;
       const pos = toPixel(coord);
+      // Keep ticks (and labels) out of the perpendicular corner bands so the
+      // opposite axis's ticks never intrude on this axis's corner — e.g. an
+      // X tick bleeding into the Z corner (which can read as "−X").
+      const clear = horizontal ? pos > band && pos < width - band : pos > band && pos < height - band;
+      if (!clear) {
+        continue;
+      }
       const isMajor = isMajorTick(coord, major);
       const tick = isMajor ? majorTick : minorTick;
       context.beginPath();
@@ -264,9 +275,7 @@ function drawWorldRuler(
       context.stroke();
       if (isMajor) {
         const majorIndex = Math.round(coord / major);
-        // Keep labels off the perpendicular corner bands.
-        const clear = horizontal ? pos > band + 2 && pos < width - band - 2 : pos > band + 2 && pos < height - band - 2;
-        if (majorIndex % labelEveryK === 0 && clear) {
+        if (majorIndex % labelEveryK === 0) {
           context.save();
           if (horizontal) {
             context.textAlign = "center";
@@ -275,18 +284,22 @@ function drawWorldRuler(
             context.textBaseline = "bottom";
             context.fillText(formatWorldLabel(coord), pos, height - 2); // bottom band
           } else {
-            context.textAlign = "left";
+            // Left + right bands: read along the band, centred within the band
+            // (so glyphs can't spill past the page edge — the old anchor at the
+            // extreme edge clipped half the digit height off the print region)
+            // and centred on the tick line.
+            const label = formatWorldLabel(coord);
+            const half = Math.round(band / 2);
+            context.textAlign = "center";
             context.textBaseline = "middle";
-            context.translate(2, pos);
-            context.rotate(Math.PI / 2);
-            context.fillText(formatWorldLabel(coord), 0, 0);
+            context.translate(half, pos); // left edge
+            context.rotate(-Math.PI / 2);
+            context.fillText(label, 0, 0);
             context.restore();
             context.save();
-            context.textAlign = "right";
-            context.textBaseline = "middle";
-            context.translate(width - 2, pos);
-            context.rotate(Math.PI / 2);
-            context.fillText(formatWorldLabel(coord), 0, 0);
+            context.translate(width - half, pos); // right edge
+            context.rotate(-Math.PI / 2);
+            context.fillText(label, 0, 0);
           }
           context.restore();
         }
@@ -353,7 +366,6 @@ function drawVectorGrid(
   const minorInk = invert ? invertHex(minorColor) : minorColor;
 
   context.save();
-  context.globalAlpha = clamp01(opacity);
   context.lineWidth = 1; // hairline
 
   const drawSet = (worldLow: number, worldHigh: number, toPixel: (coord: number) => number, pixelExtent: number, vertical: boolean): void => {
@@ -369,6 +381,7 @@ function drawVectorGrid(
     for (let i = start; i <= end; i += 1) {
       const coord = i * stepMeters;
       const isMajor = isMajorTick(coord, major);
+      context.globalAlpha = clamp01(isMajor ? opacity : opacity * MINOR_GRID_ALPHA_FACTOR);
       context.strokeStyle = isMajor ? majorInk : minorInk;
       const p = snapHalf(toPixel(coord));
       context.beginPath();
@@ -430,6 +443,133 @@ function drawInfoBlock(
   context.restore();
 }
 
+/** Resolve an overlay ink colour, inverting it (like the grid) when the page is inverted. */
+function overlayInk(color: string, invert: boolean): string {
+  return invert ? invertHex(color) : color;
+}
+
+/**
+ * Contrast halo drawn under overlay lines so they stay legible — and read as
+ * unambiguously on top — over bright HDR primitives and busy geometry. Dark on a
+ * normal print, light on an inverted (white) page.
+ */
+function overlayHalo(invert: boolean): string {
+  return invert ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.6)";
+}
+
+/**
+ * Stroke the current path twice: first a wider contrast halo, then the ink on
+ * top. The path persists between `stroke()` calls (until the next `beginPath`),
+ * so the caller builds it once before invoking this.
+ */
+function strokeWithHalo(
+  context: CanvasRenderingContext2D,
+  ink: string,
+  lineWidth: number,
+  invert: boolean
+): void {
+  context.lineJoin = "round";
+  context.lineCap = "round";
+  context.strokeStyle = overlayHalo(invert);
+  context.lineWidth = lineWidth + Math.max(2, Math.round(lineWidth * 1.2));
+  context.stroke();
+  context.strokeStyle = ink;
+  context.lineWidth = lineWidth;
+  context.stroke();
+}
+
+/** Stroke projected curve polylines as crisp vector lines with a contrast halo. */
+function drawVectorCurves(
+  context: CanvasRenderingContext2D,
+  curves: PrintOverlayCurve[],
+  width: number,
+  height: number,
+  invert: boolean
+): void {
+  const scale = Math.min(width, height);
+  const lineWidth = Math.max(1, Math.round(scale * 0.0013));
+  context.save();
+  for (const curve of curves) {
+    if (curve.points.length < 2) {
+      continue;
+    }
+    context.beginPath();
+    const first = curve.points[0]!;
+    context.moveTo(first.x, first.y);
+    for (let i = 1; i < curve.points.length; i += 1) {
+      const point = curve.points[i]!;
+      context.lineTo(point.x, point.y);
+    }
+    strokeWithHalo(context, overlayInk(curve.color, invert), lineWidth, invert);
+  }
+  context.restore();
+}
+
+/**
+ * Draw a label centred at (x, y) with an opaque backing so it stays legible over
+ * the scene and visually "breaks" any measure line running beneath it. Returns
+ * nothing; the backing colour follows the page (white when inverted).
+ */
+function drawOverlayLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  fontPx: number,
+  textColor: string,
+  invert: boolean
+): void {
+  if (!text) {
+    return;
+  }
+  context.save();
+  context.font = `600 ${fontPx}px sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  const padX = fontPx * 0.4;
+  const padY = fontPx * 0.3;
+  const textWidth = context.measureText(text).width;
+  const boxW = textWidth + padX * 2;
+  const boxH = fontPx + padY * 2;
+  context.fillStyle = invert ? "rgba(255,255,255,0.85)" : "rgba(10,14,22,0.85)";
+  context.fillRect(x - boxW / 2, y - boxH / 2, boxW, boxH);
+  context.fillStyle = overlayInk(textColor, invert);
+  context.fillText(text, x, y);
+  context.restore();
+}
+
+/** Stroke projected dimensions/annotations and their value labels as vector graphics. */
+function drawVectorDimensions(
+  context: CanvasRenderingContext2D,
+  dimensions: PrintOverlayDimension[],
+  width: number,
+  height: number,
+  invert: boolean
+): void {
+  const scale = Math.min(width, height);
+  const lineWidth = Math.max(1, Math.round(scale * 0.0013));
+  for (const dim of dimensions) {
+    context.save();
+    context.beginPath();
+    if (dim.kind === "measure") {
+      // Extension feet then the full span; the label box knocks the line out.
+      context.moveTo(dim.A.x, dim.A.y);
+      context.lineTo(dim.m1.x, dim.m1.y);
+      context.moveTo(dim.B.x, dim.B.y);
+      context.lineTo(dim.m2.x, dim.m2.y);
+      context.moveTo(dim.m1.x, dim.m1.y);
+      context.lineTo(dim.m2.x, dim.m2.y);
+      strokeWithHalo(context, overlayInk(dim.lineColor, invert), lineWidth, invert);
+    } else if (dim.leader) {
+      context.moveTo(dim.A.x, dim.A.y);
+      context.lineTo(dim.labelPos.x, dim.labelPos.y);
+      strokeWithHalo(context, overlayInk(dim.lineColor, invert), lineWidth, invert);
+    }
+    context.restore();
+    drawOverlayLabel(context, dim.text, dim.labelPos.x, dim.labelPos.y, dim.fontPx, dim.textColor, invert);
+  }
+}
+
 /**
  * Composite a rendered frame into a print-ready canvas: optional full-image
  * colour invert (dark editor background → white paper), an optional grid-aligned
@@ -447,6 +587,8 @@ export function composePrintCanvas(args: {
   gridOpacity?: number;
   ruler?: OrthoEdgeMapping | null;
   info?: { version: string; project: string; snapshot: string };
+  /** Projected curve/dimension vector primitives to stroke onto the page. */
+  overlay?: PrintVectorOverlay | null;
 }): HTMLCanvasElement {
   const { source, settings } = args;
   const width = Math.max(1, source.width);
@@ -479,6 +621,16 @@ export function composePrintCanvas(args: {
       args.gridOpacity ?? 0.35,
       settings.invert
     );
+  }
+
+  // Vector curves & dimensions, projected to paper pixels by the print camera.
+  if (args.overlay) {
+    if (settings.showCurves && args.overlay.curves.length > 0) {
+      drawVectorCurves(context, args.overlay.curves, width, height, settings.invert);
+    }
+    if (settings.showDimensions && args.overlay.dimensions.length > 0) {
+      drawVectorDimensions(context, args.overlay.dimensions, width, height, settings.invert);
+    }
   }
 
   if (settings.showRuler && args.ruler) {

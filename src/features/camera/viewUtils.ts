@@ -200,6 +200,51 @@ export function computeOrthoEdgeMapping(camera: CameraState, viewportAspect: num
   };
 }
 
+export interface PaperPoint {
+  /** Pixel position on the paper canvas (origin top-left). */
+  x: number;
+  y: number;
+  /** True only when the point is genuinely behind a perspective camera. */
+  behind: boolean;
+}
+
+export type WorldToPaperProjector = (world: THREE.Vector3) => PaperPoint;
+
+/**
+ * Build a world→paper-pixel projector for the print camera. Uses the same
+ * projection (`createProjectionCamera`) the offscreen print render uses, so
+ * projected vector geometry (curves, dimensions) lines up with the rasterised
+ * scene.
+ *
+ * `behind` flags only points genuinely behind a *perspective* camera (where the
+ * projection mirrors and is unusable). It deliberately ignores near/far depth
+ * clipping so annotations beyond the depth slab — common for an orthographic
+ * plan view measuring to the world origin — still draw, matching the live
+ * overlay's `depthTest: false` behaviour. Orthographic views are never `behind`.
+ */
+export function createWorldToPaperProjector(
+  camera: CameraState,
+  width: number,
+  height: number
+): WorldToPaperProjector {
+  const aspect = width > EPSILON && height > EPSILON ? width / height : 1;
+  const proj = createProjectionCamera(camera, aspect);
+  const isPerspective = proj instanceof THREE.PerspectiveCamera;
+  const scratch = new THREE.Vector3();
+  const view = new THREE.Vector3();
+  return (world) => {
+    // View-space Z: the camera looks down its local -Z, so points in front have
+    // z < 0. Only points at/behind the camera plane are unusable for projection.
+    const behind = isPerspective && view.copy(world).applyMatrix4(proj.matrixWorldInverse).z >= 0;
+    scratch.copy(world).project(proj);
+    return {
+      x: (scratch.x * 0.5 + 0.5) * width,
+      y: (1 - (scratch.y * 0.5 + 0.5)) * height,
+      behind
+    };
+  };
+}
+
 export function isCameraFacingDirection(
   camera: CameraState,
   direction: CameraViewDirection,

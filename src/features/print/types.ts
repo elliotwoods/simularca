@@ -21,6 +21,10 @@ export interface PrintSettings {
   showGrid: boolean;
   /** Include the world origin / axes helper in the print. */
   showOrigin: boolean;
+  /** Draw curve actors as crisp vector lines in the print. */
+  showCurves: boolean;
+  /** Draw dimension & annotation actors as vector graphics in the print. */
+  showDimensions: boolean;
   /** Include editing gizmos & handles (transform gizmo, curve/dimension overlays). */
   showOverlays: boolean;
   /** Stamp a title block (Simularca, version, project, snapshot) on the print. */

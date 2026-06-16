@@ -292,6 +292,12 @@ export class WebGpuViewport {
     );
   }
 
+  /** Scene controller for this viewport — used by the print path to read actor
+   *  objects and curve geometry for vector overlay export. */
+  public getSceneController(): SceneController {
+    return this.sceneController;
+  }
+
   public async start(): Promise<void> {
     if (this.started) {
       return;

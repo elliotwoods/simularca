@@ -912,11 +912,13 @@ export function App() {
       // Match the live viewport by default so the print looks like what's on screen.
       showGrid: sceneGridVisible,
       showOrigin: sceneAxesVisible,
+      showCurves: true,
+      showDimensions: true,
       showOverlays: false,
       showInfo: true,
       scaleMode: "fit",
       scaleRatio: 100,
-      output: window.electronAPI ? "dialog" : "png"
+      output: window.electronAPI ? "pdf" : "png"
     }),
     [sceneGridVisible, sceneAxesVisible]
   );

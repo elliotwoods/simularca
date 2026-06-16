@@ -5908,6 +5908,7 @@ export function InspectorPane() {
                 ])
               )}
               layerOrder={layerOrder}
+              invertColors={actorSelection[0]?.params.invertColors === true}
               disabled={readOnly || !singleSelection}
               onReset={() => {
                 updateSelectedActorParams(

@@ -112,6 +112,10 @@ export interface DxfLayerGeometry {
   layerName: string;
   sourceColor: string;
   linePositions: Float32Array;
+  /** True per-entity snap points (flat [x,y,z] triplets), same local space as linePositions. */
+  snapEndpoints: Float32Array;
+  snapMidpoints: Float32Array;
+  snapCenters: Float32Array;
   textItems: DxfTextRenderItem[];
 }
 

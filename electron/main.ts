@@ -1305,6 +1305,32 @@ function tempEncodeArgs(args: {
  * PNG and HTML are written to temp files (data URLs are size-limited) and the
  * returned `dispose` tears down the window and removes them.
  */
+/** Normalise a print file name to a safe `.pdf` filename (no directory parts). */
+function sanitizePrintPdfName(name: string | undefined): string {
+  const raw = name && name.trim().length > 0 ? name.trim() : "print";
+  const base = path.basename(raw).replace(/[^\w.\- ]+/g, "_") || "print";
+  return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
+}
+
+/**
+ * Resolve a writable path in `dir` for `fileName`, appending " (1)", " (2)", …
+ * before the extension if the file already exists, so repeated silent exports
+ * never overwrite an earlier one.
+ */
+async function resolveUniquePath(dir: string, fileName: string): Promise<string> {
+  const ext = path.extname(fileName);
+  const stem = path.basename(fileName, ext);
+  let candidate = path.join(dir, fileName);
+  for (let i = 1; ; i += 1) {
+    try {
+      await fs.access(candidate);
+      candidate = path.join(dir, `${stem} (${i})${ext}`);
+    } catch {
+      return candidate;
+    }
+  }
+}
+
 async function loadPrintPage(
   pngBytes: Uint8Array,
   paper: "a4" | "a3",
@@ -1733,24 +1759,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "print:pdf",
     async (
-      event,
+      _event,
       args: { pngBytes: Uint8Array; paper: "a4" | "a3"; landscape: boolean; defaultFileName?: string }
     ) => {
-      const parentWin = BrowserWindow.fromWebContents(event.sender);
-      const saveResult = parentWin
-        ? await dialog.showSaveDialog(parentWin, {
-            title: "Save print PDF",
-            defaultPath: args.defaultFileName ?? "print.pdf",
-            filters: [{ name: "PDF", extensions: ["pdf"] }]
-          })
-        : await dialog.showSaveDialog({
-            title: "Save print PDF",
-            defaultPath: args.defaultFileName ?? "print.pdf",
-            filters: [{ name: "PDF", extensions: ["pdf"] }]
-          });
-      if (saveResult.canceled || !saveResult.filePath) {
-        return null;
-      }
+      // Save straight to the Downloads folder (matching the PNG export) instead of
+      // prompting for a path; de-duplicate so repeated exports don't overwrite.
+      const downloadsDir = app.getPath("downloads");
+      await fs.mkdir(downloadsDir, { recursive: true });
+      const targetPath = await resolveUniquePath(downloadsDir, sanitizePrintPdfName(args.defaultFileName));
       const cleanup = await loadPrintPage(args.pngBytes, args.paper, args.landscape);
       try {
         const pdf = await cleanup.win.webContents.printToPDF({
@@ -1759,8 +1775,8 @@ function registerIpcHandlers(): void {
           printBackground: true,
           margins: { marginType: "none" }
         });
-        await fs.writeFile(saveResult.filePath, pdf);
-        return { path: saveResult.filePath };
+        await fs.writeFile(targetPath, pdf);
+        return { path: targetPath };
       } finally {
         await cleanup.dispose();
       }

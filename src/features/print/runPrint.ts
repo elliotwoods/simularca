@@ -1,9 +1,14 @@
 import { BUILD_INFO } from "@/app/buildInfo";
 import type { AppKernel } from "@/app/kernel";
 import type { CameraState, RenderEngine, SceneColorBufferPrecision } from "@/core/types";
-import { computeOrthoEdgeMapping, type OrthoEdgeMapping } from "@/features/camera/viewUtils";
+import {
+  computeOrthoEdgeMapping,
+  createWorldToPaperProjector,
+  type OrthoEdgeMapping
+} from "@/features/camera/viewUtils";
 import { canvasToPngBytes } from "@/features/render/exporters";
 import { composePrintCanvas, isCanvasMostlyDark } from "@/features/print/composePrint";
+import { buildPrintVectorOverlay, type PrintVectorOverlay } from "@/features/print/printVectorOverlay";
 import {
   paperDimensionsMm,
   paperPixelSize,
@@ -13,6 +18,7 @@ import {
   zoomForPrintScale
 } from "@/features/print/paper";
 import type { PrintSettings } from "@/features/print/types";
+import type { SceneController } from "@/render/sceneController";
 import { WebGlViewport } from "@/render/webglRenderer";
 import { WebGpuViewport } from "@/render/webgpuRenderer";
 
@@ -20,6 +26,7 @@ interface PrintViewportRuntime {
   start(): Promise<void>;
   stop(): Promise<void>;
   renderOnce(): Promise<void>;
+  getSceneController(): SceneController;
 }
 
 export interface PrintRenderContext {
@@ -49,6 +56,8 @@ export interface PrintFrameResult {
   ruler: OrthoEdgeMapping | null;
   /** Title-block strings (version/project/snapshot). */
   info: { version: string; project: string; snapshot: string };
+  /** Curve/dimension vector primitives projected to paper pixels for this frame. */
+  overlay: PrintVectorOverlay;
 }
 
 function hasOpaquePixel(rgba: Uint8ClampedArray): boolean {
@@ -226,9 +235,19 @@ export async function renderPrintFrame(
     const out = copyCanvas(canvas);
     const appState = store.getState().state;
     const grid = appState.scene.helpers.grid;
+    // Project curves & dimensions to paper pixels while the offscreen scene (and
+    // its actor world transforms) is still alive, using the same print camera.
+    const overlay = buildPrintVectorOverlay({
+      state: appState,
+      scene: viewport.getSceneController(),
+      project: createWorldToPaperProjector(printCamera, width, height),
+      width,
+      height
+    });
     return {
       canvas: out,
       pixelsPerMeter: ppm,
+      overlay,
       gridMajorPitch: grid.majorPitch,
       gridMinorPitch: grid.minorPitch,
       gridMajorColor: grid.majorColor,
@@ -272,7 +291,8 @@ export async function runPrint(settings: PrintSettings, deps: RunPrintDeps): Pro
       gridMinorColor: frame.gridMinorColor,
       gridOpacity: frame.gridOpacity,
       ruler: frame.ruler,
-      info: frame.info
+      info: frame.info,
+      overlay: frame.overlay
     });
     const pngBytes = await canvasToPngBytes(composed);
     const baseName = (deps.projectName ?? "print").replace(/[^\w.-]+/g, "_") || "print";

@@ -144,3 +144,82 @@ describe("DXF source-plane handling", () => {
     expect(built.bounds?.max[1]).toBeGreaterThanOrEqual(210);
   });
 });
+
+describe("DXF snap-point extraction", () => {
+  const buildOptions = {
+    inputUnits: "meters" as const,
+    sourcePlane: "yz" as const,
+    drawingPlane: "front-xy" as const,
+    curveResolution: 16,
+    invertColors: false,
+    showText: true
+  };
+
+  it("emits both endpoints and the midpoint of a line", () => {
+    const built = buildDxfScene(
+      makeDocument([{ type: "LINE", layerName: "0", start: [0, 10, 20], end: [0, 30, 40] }]),
+      buildOptions
+    );
+    const layer = built.layers[0];
+    expect(Array.from(layer?.snapEndpoints ?? [])).toEqual([10, 20, 0, 30, 40, 0]);
+    expect(Array.from(layer?.snapMidpoints ?? [])).toEqual([20, 30, 0]);
+    expect(Array.from(layer?.snapCenters ?? [])).toEqual([]);
+  });
+
+  it("emits arc endpoints, mid-angle midpoint, and center", () => {
+    const built = buildDxfScene(
+      makeDocument([
+        {
+          type: "ARC",
+          layerName: "0",
+          plane: makePlaneBasis([0, 100, 200], [0, 1, 0], [0, 0, 1]),
+          radius: 10,
+          startAngleDeg: 0,
+          endAngleDeg: 90
+        }
+      ]),
+      buildOptions
+    );
+    const layer = built.layers[0];
+    const endpoints = Array.from(layer?.snapEndpoints ?? []);
+    const midpoints = Array.from(layer?.snapMidpoints ?? []);
+    const centers = Array.from(layer?.snapCenters ?? []);
+    // Basis projects to [100 + 10·cos θ, 200 + 10·sin θ]; θ = 0 → start, 90° → end, 45° → mid.
+    expect(endpoints[0]).toBeCloseTo(110, 6);
+    expect(endpoints[1]).toBeCloseTo(200, 6);
+    expect(endpoints[3]).toBeCloseTo(100, 6);
+    expect(endpoints[4]).toBeCloseTo(210, 6);
+    // Float32 storage, so loosen precision for the irrational mid-angle coords.
+    expect(midpoints[0]).toBeCloseTo(100 + 10 * Math.cos(Math.PI / 4), 4);
+    expect(midpoints[1]).toBeCloseTo(200 + 10 * Math.sin(Math.PI / 4), 4);
+    expect(centers).toEqual([100, 200, 0]);
+  });
+
+  it("emits only a center for a full circle", () => {
+    const built = buildDxfScene(
+      makeDocument([{ type: "CIRCLE", layerName: "0", plane: makePlaneBasis([0, 5, 7], [0, 1, 0], [0, 0, 1]), radius: 3 }]),
+      buildOptions
+    );
+    const layer = built.layers[0];
+    expect(Array.from(layer?.snapCenters ?? [])).toEqual([5, 7, 0]);
+    expect(Array.from(layer?.snapEndpoints ?? [])).toEqual([]);
+    expect(Array.from(layer?.snapMidpoints ?? [])).toEqual([]);
+  });
+
+  it("emits per-vertex endpoints and per-segment midpoints for an open polyline", () => {
+    const built = buildDxfScene(
+      makeDocument([
+        {
+          type: "LWPOLYLINE",
+          layerName: "0",
+          closed: false,
+          vertices: [{ point: [0, 0, 0] }, { point: [0, 10, 0] }, { point: [0, 10, 10] }]
+        }
+      ]),
+      buildOptions
+    );
+    const layer = built.layers[0];
+    expect(Array.from(layer?.snapEndpoints ?? [])).toEqual([0, 0, 0, 10, 0, 0, 10, 10, 0]);
+    expect(Array.from(layer?.snapMidpoints ?? [])).toEqual([5, 0, 0, 10, 5, 0]);
+  });
+});
