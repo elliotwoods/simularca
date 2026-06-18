@@ -14,7 +14,12 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: ["src/**/*.test.ts", "src/**/*.spec.ts", "tests/**/*.spec.ts"],
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.spec.ts",
+      "tests/**/*.spec.ts",
+      "plugins/**/src/**/*.test.ts"
+    ],
     exclude: ["tests/mylar-baseline/**"]
   }
 });
