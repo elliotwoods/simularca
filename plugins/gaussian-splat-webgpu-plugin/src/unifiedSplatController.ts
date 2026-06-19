@@ -2,6 +2,16 @@ import * as THREE from "three";
 import { SplatController as WebGpuSplatController } from "./splatController";
 import { SparkSplatController } from "./sparkSplatController";
 
+interface BeamLight {
+  position: [number, number, number];
+  direction: [number, number, number];
+  cosHalfAngle: number;
+  color: [number, number, number];
+  intensity: number;
+  range: number;
+  penumbra: number;
+}
+
 interface SyncContext {
   actor: { id: string; params: Record<string, unknown> };
   state: unknown;
@@ -9,6 +19,7 @@ interface SyncContext {
   profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: unknown): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
+  getBeamLights?(): BeamLight[];
 }
 
 type ActiveBackend = "webgpu" | "webgl2";

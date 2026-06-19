@@ -84,6 +84,18 @@ export interface ActorRuntimeStatus {
   updatedAtIso: string;
 }
 
+// A world-space beam cone published for illuminating actors that don't respond to THREE
+// lights (gaussian splats). Mirrors the host's BeamLight resource type.
+export interface BeamLight {
+  position: [number, number, number];
+  direction: [number, number, number];
+  cosHalfAngle: number;
+  color: [number, number, number];
+  intensity: number;
+  range: number;
+  penumbra: number;
+}
+
 // The host passes a richer context (see SceneHookContext in the host repo). These are
 // the members this plugin uses; `object` and `getActorObject(...)` return THREE
 // Object3D instances from the host's (shared) THREE module.
@@ -101,6 +113,9 @@ export interface SceneHookContext {
     partial: ParameterValues,
     options?: { history?: boolean }
   ): void;
+  /** Publish this actor's beam cones to the host registry (read by the splat material).
+   *  Optional: older hosts may not provide it. */
+  setBeamLights?(actorId: string, lights: BeamLight[]): void;
 }
 
 export interface DescriptorSceneHooks {

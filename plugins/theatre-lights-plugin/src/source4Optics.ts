@@ -13,6 +13,8 @@ export interface BeamParams {
   zoomBarrel: string;
   zoomAngleDeg: number;
   throwDistance: number;
+  /** Visual length the beam cone is drawn to — independent of throw/focus. */
+  previewLength: number;
   edgeQuality: number;
   shutterTop: number;
   shutterBottom: number;
@@ -124,17 +126,18 @@ function pushLoop(out: number[], radius: number, z: number, bounds: ClipBounds):
 
 /**
  * Build the beam-outline as LineSegments vertex pairs (flat Float32Array, 6 floats per
- * segment). Apex at the origin; field plane at z = -throwDistance. Returns an empty array
- * when the shutters fully close the field or the beam is degenerate.
+ * segment). Apex at the origin; field plane at z = -previewLength (the visual cone reach,
+ * decoupled from throw/focus). Returns an empty array when the shutters fully close the
+ * field or the beam is degenerate.
  */
 export function buildBeamSegments(p: BeamParams): Float32Array {
   const fieldAngleDeg = resolveFieldAngleDeg(p);
-  const throwM = Math.max(0, p.throwDistance);
-  const R = beamRadiusAtDistance(fieldAngleDeg, throwM);
-  if (R <= 1e-4 || throwM <= 1e-4) {
+  const lengthM = Math.max(0, p.previewLength);
+  const R = beamRadiusAtDistance(fieldAngleDeg, lengthM);
+  if (R <= 1e-4 || lengthM <= 1e-4) {
     return new Float32Array(0);
   }
-  const z = -throwM;
+  const z = -lengthM;
   const bounds = shutterBounds(p, R);
   if (bounds.collapsed) {
     return new Float32Array(0);
@@ -160,4 +163,30 @@ export function buildBeamSegments(p: BeamParams): Float32Array {
   }
 
   return new Float32Array(out);
+}
+
+export type Vec3 = [number, number, number];
+
+/** A world-space beam cone (what the fixture publishes for illuminating actors). */
+export interface BeamCone {
+  position: Vec3;
+  direction: Vec3; // unit vector along the beam axis
+  cosHalfAngle: number;
+  range: number;
+}
+
+/**
+ * True if a world point lies inside the beam cone (within the half-angle and range).
+ * Mirrors the per-splat cone test used by the gaussian-splat shader so behaviour matches.
+ */
+export function pointInBeamCone(point: Vec3, cone: BeamCone): boolean {
+  const dx = point[0] - cone.position[0];
+  const dy = point[1] - cone.position[1];
+  const dz = point[2] - cone.position[2];
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist <= 1e-6 || dist > cone.range) {
+    return false;
+  }
+  const cosA = (dx * cone.direction[0] + dy * cone.direction[1] + dz * cone.direction[2]) / dist;
+  return cosA >= cone.cosHalfAngle;
 }

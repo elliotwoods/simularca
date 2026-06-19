@@ -8,6 +8,8 @@ import { buildBeamSegments, type BeamParams } from "./source4Optics";
 export const AIM_NAME = "source4-aim";
 export const BODY_NAME = "source4-body";
 export const BEAM_NAME = "source4-beam";
+export const SPOT_NAME = "source4-spot";
+export const SPOT_TARGET_NAME = "source4-spot-target";
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -130,6 +132,9 @@ export interface LightObjectRefs {
   aim: THREE.Group;
   body: THREE.LineSegments;
   beam: THREE.LineSegments;
+  /** Real light that illuminates standard meshes/primitives (optional for legacy objects). */
+  spot?: THREE.SpotLight;
+  spotTarget?: THREE.Object3D;
 }
 
 export function createLightObject(bodyHex: string, beamHex: string, beamOpacity: number): THREE.Group {
@@ -151,6 +156,21 @@ export function createLightObject(bodyHex: string, beamHex: string, beamOpacity:
   beam.frustumCulled = false;
   aim.add(beam);
 
+  // Real spotlight (lights standard meshes/primitives). Target sits one unit down the
+  // beam axis (-Z) so the cone follows the aim group's orientation. Params are driven
+  // each frame in syncObject; it starts off (intensity 0).
+  const spotTarget = new THREE.Object3D();
+  spotTarget.name = SPOT_TARGET_NAME;
+  spotTarget.position.set(0, 0, -1);
+  aim.add(spotTarget);
+
+  const spot = new THREE.SpotLight(0xffffff, 0, 10, Math.PI / 8, 0.4, 1);
+  spot.name = SPOT_NAME;
+  spot.position.set(0, 0, 0);
+  spot.castShadow = false;
+  spot.target = spotTarget;
+  aim.add(spot);
+
   const userData: LightUserData = { beamSig: "", frame: 0, lastStatusKey: "" };
   root.userData.source4 = userData;
   return root;
@@ -164,9 +184,38 @@ export function resolveRefs(object: unknown): LightObjectRefs | null {
   const body = object.getObjectByName(BODY_NAME);
   const beam = object.getObjectByName(BEAM_NAME);
   if (aim instanceof THREE.Group && body instanceof THREE.LineSegments && beam instanceof THREE.LineSegments) {
-    return { root: object, aim, body, beam };
+    const spotObj = object.getObjectByName(SPOT_NAME);
+    const spotTargetObj = object.getObjectByName(SPOT_TARGET_NAME);
+    return {
+      root: object,
+      aim,
+      body,
+      beam,
+      spot: spotObj instanceof THREE.SpotLight ? spotObj : undefined,
+      spotTarget: spotTargetObj instanceof THREE.Object3D ? spotTargetObj : undefined
+    };
   }
   return null;
+}
+
+export interface SpotLightSettings {
+  visible: boolean;
+  colorHex: string;
+  intensity: number;
+  angleRad: number;
+  penumbra: number;
+  distance: number;
+  decay: number;
+}
+
+export function applySpotLight(spot: THREE.SpotLight, settings: SpotLightSettings): void {
+  spot.visible = settings.visible;
+  spot.color.set(settings.colorHex);
+  spot.intensity = settings.intensity;
+  spot.angle = settings.angleRad;
+  spot.penumbra = settings.penumbra;
+  spot.distance = settings.distance;
+  spot.decay = settings.decay;
 }
 
 export function getUserData(root: THREE.Group): LightUserData {

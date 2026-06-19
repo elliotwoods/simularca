@@ -104,6 +104,18 @@ export interface AppActions {
     pluginType?: string;
     select?: boolean;
   }): string;
+  /**
+   * Insert pre-built actor/component clones (e.g. from paste/duplicate) in one
+   * undoable step. Each top-level root is linked into the scene according to its
+   * own `parentActorId` field (already set by the caller); descendant actors are
+   * linked via their cloned `childActorIds`. Top-level names are de-duplicated.
+   * Returns the ids that were actually inserted, and selects them.
+   */
+  insertDuplicatedActors(input: {
+    actors: ActorNode[];
+    components: ComponentNode[];
+    newTopLevelIds: string[];
+  }): string[];
   createDimension(input: {
     start: Landmark;
     end: Landmark;
@@ -705,6 +717,46 @@ export function createAppStore(mode: AppMode): AppStoreApi {
           })
         });
         return id;
+      },
+      insertDuplicatedActors({ actors, components, newTopLevelIds }) {
+        if (!mutationAllowed(get().state, "canCreateActors")) {
+          return [];
+        }
+        if (actors.length === 0) {
+          return [];
+        }
+        withHistory(get, set, "Paste actors");
+        set({
+          state: produce(get().state, (draft) => {
+            for (const component of components) {
+              draft.components[component.id] = structuredClone(component);
+            }
+            for (const actor of actors) {
+              draft.actors[actor.id] = structuredClone(actor);
+            }
+            for (const id of newTopLevelIds) {
+              const actor = draft.actors[id];
+              if (!actor) {
+                continue;
+              }
+              actor.name = uniqueActorName(draft.actors, actor.name, id);
+              const parent = actor.parentActorId ? draft.actors[actor.parentActorId] : null;
+              if (parent) {
+                parent.childActorIds.push(id);
+              } else {
+                actor.parentActorId = null;
+                draft.scene.actorIds.push(id);
+              }
+            }
+            draft.stats.actorCount = Object.keys(draft.actors).length;
+            draft.stats.actorCountEnabled = Object.values(draft.actors).filter((entry) => entry.enabled).length;
+            draft.selection = newTopLevelIds
+              .filter((id) => draft.actors[id])
+              .map((id) => ({ kind: "actor" as const, id }));
+            draft.dirty = true;
+          })
+        });
+        return newTopLevelIds.filter((id) => get().state.actors[id]);
       },
       createDimension({ start, end, axis = "direct", offsetDir, extensionGap }) {
         if (!mutationAllowed(get().state, "canCreateActors")) {

@@ -135,7 +135,8 @@ export function createGaussianSplatDescriptor(): ReloadableDescriptor {
             object: context.object,
             profileChunk: context.profileChunk,
             setActorStatus: context.setActorStatus,
-            readAssetBytes: context.readAssetBytes
+            readAssetBytes: context.readAssetBytes,
+            getBeamLights: context.getBeamLights
           });
         }
       },

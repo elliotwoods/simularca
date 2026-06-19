@@ -1202,6 +1202,44 @@ select {
   order: 2;
 }
 
+/* Star toggle buttons — set / unset the default project + snapshot. Unlike the
+   old display-only indicators these are always visible (so the settable
+   "empty" star is discoverable) and clickable. The empty state is drawn as a
+   hollow outline of the solid star glyph via fill:none + stroke, so no
+   separate regular-weight icon package is needed. */
+.titlebar-star-button {
+  cursor: pointer;
+  opacity: 1;
+  pointer-events: auto;
+  background: transparent;
+  border: 0;
+}
+
+.titlebar-project-snapshot-side .titlebar-star-button {
+  order: 2;
+}
+
+.titlebar-star-button.is-default {
+  color: var(--warning);
+}
+
+.titlebar-star-button.is-empty {
+  color: var(--text-muted);
+}
+
+.titlebar-star-button.is-empty:hover,
+.titlebar-star-button.is-empty:focus-visible {
+  color: var(--warning);
+}
+
+/* faStar (solid) is a single filled path on a 0 0 576 512 viewBox; turning the
+   fill off and stroking it yields a thin outline ("empty") star. */
+.titlebar-star-button.is-empty svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 34;
+}
+
 .titlebar-project-snapshot-item.is-editing {
   grid-template-columns: minmax(0, 1fr);
   padding: 8px 10px;

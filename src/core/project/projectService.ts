@@ -274,6 +274,13 @@ export class ProjectService {
     await this.promoteAndSetDefault(state.activeProject, state.activeSnapshotName);
   }
 
+  /** Set (or clear, with `null`) the default project/snapshot pointer directly,
+   *  without opening the project. Powers the per-row star toggles in the
+   *  title-bar project + snapshot lists (the "make this the default" button). */
+  public async setDefault(pointer: DefaultProjectPointer | null): Promise<void> {
+    await this.storage.saveDefaults(pointer);
+  }
+
   public async listSnapshots(projectPath?: string): Promise<ProjectSnapshotListEntry[]> {
     const state = this.store.getState().state;
     const target = projectPath ?? state.activeProject?.path;

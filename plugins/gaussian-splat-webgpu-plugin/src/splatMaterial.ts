@@ -21,11 +21,13 @@ import {
   float,
   uint,
   uniform,
+  uniformArray,
   storage,
   instanceIndex,
   positionGeometry,
   cameraProjectionMatrix,
   modelViewMatrix,
+  modelWorldMatrix,
   varyingProperty,
   sqrt,
   max,
@@ -35,6 +37,11 @@ import {
   sin,
   exp,
   pow,
+  dot,
+  length,
+  smoothstep,
+  mix,
+  clamp,
   select
 } from "three/tsl";
 import { MIN_PERSPECTIVE_PROJECTION_DEPTH } from "./projectionDepth";
@@ -75,6 +82,16 @@ export interface SplatUniforms {
   cameraNear: { value: number };
   sizeScale: { value: number };
   isOrthographic: { value: number };
+  /** Number of active beam cones (0..MAX_BEAMS). */
+  beamCount: { value: number };
+  /** Per-beam arrays (mutate in place; uploaded each render). */
+  beamPos: THREE.Vector3[];
+  beamDir: THREE.Vector3[];
+  beamColor: THREE.Vector3[];
+  /** Per beam: (cosHalfAngle, intensity, range, penumbra). */
+  beamParams: THREE.Vector4[];
+  /** Capacity of the beam arrays. */
+  maxBeams: number;
 }
 
 export interface SplatMaterialResult {
@@ -97,6 +114,53 @@ export function createSplatMaterial(
   const uCameraNear = uniform(MIN_PERSPECTIVE_PROJECTION_DEPTH);
   const uSizeScale = uniform(1.0);
   const uIsOrthographic = uniform(0.0);
+
+  // --- Beam-light cones (theatre lights) ---------------------------------------------
+  // Splats are baked radiance and ignore THREE lights, so we additively brighten splats
+  // that fall inside beam cones published to the host beam-light registry. Up to
+  // MAX_BEAMS cones are uploaded each frame; the controller writes the array elements.
+  const MAX_BEAMS = 4;
+  const beamPosArr = Array.from({ length: MAX_BEAMS }, () => new THREE.Vector3());
+  const beamDirArr = Array.from({ length: MAX_BEAMS }, () => new THREE.Vector3(0, 0, -1));
+  const beamColorArr = Array.from({ length: MAX_BEAMS }, () => new THREE.Vector3());
+  // per beam: (cosHalfAngle, intensity, range, penumbra)
+  const beamParamsArr = Array.from({ length: MAX_BEAMS }, () => new THREE.Vector4(1, 0, 1, 0.2));
+  const uBeamCount = uniform(0);
+  const uBeamPos: any = uniformArray(beamPosArr, "vec3");
+  const uBeamDir: any = uniformArray(beamDirArr, "vec3");
+  const uBeamColor: any = uniformArray(beamColorArr, "vec3");
+  const uBeamParams: any = uniformArray(beamParamsArr, "vec4");
+
+  const beamContribution = (worldPos: any): any => {
+    let accum: any = vec3(0.0, 0.0, 0.0);
+    for (let i = 0; i < MAX_BEAMS; i += 1) {
+      const active: any = float(i).lessThan(uBeamCount);
+      const pos: any = uBeamPos.element(i);
+      const dir: any = uBeamDir.element(i);
+      const col: any = uBeamColor.element(i);
+      const prm: any = uBeamParams.element(i);
+      const cosHalf: any = prm.x;
+      const intensity: any = prm.y;
+      const range: any = prm.z;
+      const penumbra: any = prm.w;
+      const toP: any = worldPos.sub(pos);
+      const dist: any = (length as any)(toP);
+      const ndir: any = toP.div(max(dist, float(1e-4)));
+      const cosA: any = (dot as any)(ndir, dir);
+      // Angular soft edge: 0 at the cone rim (cosHalf) → 1 a bit inside (cosInner).
+      const cosInner: any = (mix as any)(cosHalf, float(1.0), max(penumbra, float(0.001)));
+      const angFall: any = (smoothstep as any)(cosHalf, cosInner, cosA);
+      // Linear range falloff to 0 at `range`.
+      const rangeFall: any = (clamp as any)(
+        float(1.0).sub(dist.div(max(range, float(1e-4)))),
+        float(0.0),
+        float(1.0)
+      );
+      const term: any = col.mul(intensity).mul(angFall).mul(rangeFall);
+      accum = accum.add(select(active, term, vec3(0.0, 0.0, 0.0)));
+    }
+    return accum;
+  };
 
   // Detect whether compute pre-pass ellipse buffers are available
   const hasPrepass = !!(buffers.ellipseA && buffers.ellipseB);
@@ -170,6 +234,9 @@ export function createSplatMaterial(
     // This vertex shader just reads the results and positions the quad.
     const ellipseAStorage: any = storage(buffers.ellipseA!, "vec4", count);
     const ellipseBStorage: any = storage(buffers.ellipseB!, "vec4", count);
+    // Splat centres (model space) — needed for beam-cone lighting (the precomputed
+    // ellipse path does not otherwise read positions).
+    const positionsStorage: any = storage(buffers.positions, "vec4", count);
 
     vertexNode = Fn(() => {
       const splatIdx: any = sortedIndicesStorage.element(instanceIndex);
@@ -178,6 +245,7 @@ export function createSplatMaterial(
       const ellA: any = ellipseAStorage.element(splatIdx);
       const ellB: any = ellipseBStorage.element(splatIdx);
       const colorData: any = colorsStorage.element(splatIdx);
+      const center: any = positionsStorage.element(splatIdx).xyz;
 
       const radius1: any = ellA.x;
       const radius2: any = ellA.y;
@@ -205,7 +273,11 @@ export function createSplatMaterial(
       );
 
       // Pass varyings to fragment
-      vColor.assign(linearizeCapturedColor(vec3(colorData.x, colorData.y, colorData.z)).mul(uBrightness));
+      vColor.assign(
+        linearizeCapturedColor(vec3(colorData.x, colorData.y, colorData.z))
+          .mul(uBrightness)
+          .add(beamContribution(modelWorldMatrix.mul(vec4(center, 1.0)).xyz))
+      );
       vOpacity.assign(colorData.w.mul(uOpacity));
       vQuadUV.assign(quadPos);
 
@@ -369,7 +441,11 @@ export function createSplatMaterial(
       );
 
       // Pass varyings to fragment
-      vColor.assign(linearizeCapturedColor(vec3(colorData.x, colorData.y, colorData.z)).mul(uBrightness));
+      vColor.assign(
+        linearizeCapturedColor(vec3(colorData.x, colorData.y, colorData.z))
+          .mul(uBrightness)
+          .add(beamContribution(modelWorldMatrix.mul(vec4(center, 1.0)).xyz))
+      );
       vOpacity.assign(colorData.w.mul(uOpacity));
       vQuadUV.assign(quadPos);
 
@@ -426,7 +502,13 @@ export function createSplatMaterial(
       focalY: uFocalY as unknown as { value: number },
       cameraNear: uCameraNear as unknown as { value: number },
       sizeScale: uSizeScale as unknown as { value: number },
-      isOrthographic: uIsOrthographic as unknown as { value: number }
+      isOrthographic: uIsOrthographic as unknown as { value: number },
+      beamCount: uBeamCount as unknown as { value: number },
+      beamPos: beamPosArr,
+      beamDir: beamDirArr,
+      beamColor: beamColorArr,
+      beamParams: beamParamsArr,
+      maxBeams: MAX_BEAMS
     }
   };
 }

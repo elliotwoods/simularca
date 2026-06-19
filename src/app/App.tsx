@@ -7,6 +7,7 @@ import { installRendererDebugBridge } from "@/app/liveDebugBridge";
 import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
 import { isMacPlatform, isViewportFullscreenShortcut } from "@/app/viewportFullscreenShortcut";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
+import { copySelection, duplicateSelection, pasteClipboard } from "@/features/actors/actorClipboard";
 import { interpolateCameraState } from "@/features/camera/cycleTween";
 import {
   DEFAULT_CAMERA_TRANSITION_DURATION_MS,
@@ -1275,6 +1276,25 @@ export function App() {
           actions.redo();
         } else {
           actions.undo();
+        }
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
+        const key = event.key.toLowerCase();
+        if (key === "c") {
+          event.preventDefault();
+          void copySelection(kernel);
+          return;
+        }
+        if (key === "v") {
+          event.preventDefault();
+          void pasteClipboard(kernel);
+          return;
+        }
+        if (key === "d") {
+          event.preventDefault();
+          void duplicateSelection(kernel);
+          return;
         }
       }
     };

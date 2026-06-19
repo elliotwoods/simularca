@@ -537,6 +537,27 @@ export interface VolumetricRayFieldResource {
   suggestedMaxSamples: number;
 }
 
+/**
+ * A world-space beam cone published by a plugin actor (e.g. a theatre light) for
+ * consumers that don't respond to THREE lights — notably the gaussian-splat material,
+ * which samples these cones to brighten splats within the beam.
+ */
+export interface BeamLight {
+  /** World-space apex (lens) position. */
+  position: [number, number, number];
+  /** World-space unit direction along the beam axis. */
+  direction: [number, number, number];
+  /** Cosine of the cone half-angle. */
+  cosHalfAngle: number;
+  /** Linear RGB tint (0..1). */
+  color: [number, number, number];
+  intensity: number;
+  /** Maximum reach, in metres. */
+  range: number;
+  /** Edge softness, 0 (hard) .. 1 (soft). */
+  penumbra: number;
+}
+
 export interface ConsoleLogEntry {
   kind: "log";
   id: string;

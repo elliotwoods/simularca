@@ -1,0 +1,198 @@
+import { createId } from "@/core/ids";
+import type { ActorNode, ComponentNode, ParameterValues } from "@/core/types";
+
+/**
+ * Pure, schema-agnostic actor cloning. Given a snapshot of the actor/component
+ * records and a set of root actor ids, produces fresh clones of each root's
+ * whole subtree with new ids, ready to be inserted into the store.
+ *
+ * The schema knowledge (which params hold actor references) is injected as
+ * `refKeysFor` so this module stays free of `features`/plugin descriptor deps
+ * and is trivially unit-testable. The clipboard orchestrators in
+ * `actorClipboard.ts` build that resolver from the live descriptor registry.
+ */
+
+export interface ActorRefKeys {
+  /** Param keys whose value is a single actor id (e.g. `actor-ref`). */
+  refKeys: string[];
+  /** Param keys whose value is an array of actor ids (e.g. `actor-ref-list`). */
+  refListKeys: string[];
+}
+
+export type RefKeyResolver = (actor: ActorNode) => ActorRefKeys;
+
+export interface DuplicateSource {
+  actors: Record<string, ActorNode>;
+  components: Record<string, ComponentNode>;
+}
+
+export interface DuplicateOptions {
+  /**
+   * Resolves the new parent id for a duplicated root actor, given the original
+   * root. Paste passes a constant target parent; duplicate keeps each root's
+   * own original parent (sibling-of-original).
+   */
+  resolveParentId: (originalRoot: ActorNode) => string | null;
+}
+
+export interface DuplicateResult {
+  actors: ActorNode[];
+  components: ComponentNode[];
+  /** New ids of the top-level (root) clones, in input order. */
+  newTopLevelIds: string[];
+  /** Old id -> new id, covering every actor and component in the subtrees. */
+  idMap: Record<string, string>;
+}
+
+/**
+ * From an arbitrary set of actor ids, keep only those that are NOT descendants
+ * of another id in the set. Ensures a parent + child both being selected
+ * doesn't duplicate the child twice (it comes along via the parent's subtree).
+ * Missing ids are dropped; input order is preserved.
+ */
+export function filterTopLevelRoots(actors: Record<string, ActorNode>, ids: string[]): string[] {
+  const idSet = new Set(ids.filter((id) => actors[id]));
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const actor = actors[id];
+    if (!actor || seen.has(id)) {
+      continue;
+    }
+    let hasSelectedAncestor = false;
+    let parentId = actor.parentActorId;
+    const guard = new Set<string>();
+    while (parentId) {
+      if (guard.has(parentId)) {
+        break; // defensive cycle guard
+      }
+      guard.add(parentId);
+      if (idSet.has(parentId)) {
+        hasSelectedAncestor = true;
+        break;
+      }
+      parentId = actors[parentId]?.parentActorId ?? null;
+    }
+    if (!hasSelectedAncestor) {
+      result.push(id);
+      seen.add(id);
+    }
+  }
+  return result;
+}
+
+/**
+ * DFS the subtrees rooted at the top-level roots of `rootIds`, returning the
+ * ordered old actor ids and the component ids they own.
+ */
+export function collectSubtreeIds(
+  actors: Record<string, ActorNode>,
+  rootIds: string[]
+): { roots: string[]; actorIds: string[]; componentIds: string[] } {
+  const roots = filterTopLevelRoots(actors, rootIds);
+  const actorIds: string[] = [];
+  const actorIdSet = new Set<string>();
+  const componentIds: string[] = [];
+  const visit = (id: string): void => {
+    const actor = actors[id];
+    if (!actor || actorIdSet.has(id)) {
+      return;
+    }
+    actorIdSet.add(id);
+    actorIds.push(id);
+    for (const componentId of actor.componentIds) {
+      componentIds.push(componentId);
+    }
+    for (const childId of actor.childActorIds) {
+      visit(childId);
+    }
+  };
+  for (const rootId of roots) {
+    visit(rootId);
+  }
+  return { roots, actorIds, componentIds };
+}
+
+function remapParams(
+  actor: ActorNode,
+  idMap: Record<string, string>,
+  refKeysFor: RefKeyResolver
+): ParameterValues {
+  const cloned = structuredClone(actor.params);
+  const { refKeys, refListKeys } = refKeysFor(actor);
+  for (const key of refKeys) {
+    const value = cloned[key];
+    if (typeof value === "string" && idMap[value]) {
+      cloned[key] = idMap[value];
+    }
+  }
+  for (const key of refListKeys) {
+    const value = cloned[key];
+    if (Array.isArray(value)) {
+      cloned[key] = (value as unknown[]).map((entry) =>
+        typeof entry === "string" && idMap[entry] ? idMap[entry] : entry
+      ) as ParameterValues[string];
+    }
+  }
+  return cloned;
+}
+
+export function duplicateActorSubtrees(
+  source: DuplicateSource,
+  rootIds: string[],
+  options: DuplicateOptions,
+  refKeysFor: RefKeyResolver
+): DuplicateResult {
+  const { actors, components } = source;
+  const { roots, actorIds, componentIds } = collectSubtreeIds(actors, rootIds);
+
+  // Build the id map for the whole subtree FIRST so references between cloned
+  // actors (including parent -> child) resolve forward during cloning.
+  const idMap: Record<string, string> = {};
+  for (const oldId of actorIds) {
+    idMap[oldId] = createId("actor");
+  }
+  for (const oldId of componentIds) {
+    if (components[oldId]) {
+      idMap[oldId] = createId("comp");
+    }
+  }
+
+  const rootSet = new Set(roots);
+
+  const clonedActors: ActorNode[] = actorIds.map((oldId) => {
+    const old = actors[oldId]!;
+    const isRoot = rootSet.has(oldId);
+    const mappedParent = old.parentActorId ? idMap[old.parentActorId] : undefined;
+    const newParentId = isRoot ? options.resolveParentId(old) : (mappedParent ?? null);
+    return {
+      ...old,
+      id: idMap[oldId]!,
+      parentActorId: newParentId,
+      childActorIds: old.childActorIds.filter((childId) => idMap[childId]).map((childId) => idMap[childId]!),
+      componentIds: old.componentIds.filter((componentId) => idMap[componentId]).map((componentId) => idMap[componentId]!),
+      transform: structuredClone(old.transform),
+      params: remapParams(old, idMap, refKeysFor)
+    } satisfies ActorNode;
+  });
+
+  const clonedComponents: ComponentNode[] = componentIds
+    .filter((oldId) => components[oldId])
+    .map((oldId) => {
+      const old = components[oldId]!;
+      const mappedParent = old.parentActorId ? idMap[old.parentActorId] : undefined;
+      return {
+        ...old,
+        id: idMap[oldId]!,
+        parentActorId: mappedParent ?? old.parentActorId,
+        params: structuredClone(old.params)
+      } satisfies ComponentNode;
+    });
+
+  return {
+    actors: clonedActors,
+    components: clonedComponents,
+    newTopLevelIds: roots.map((id) => idMap[id]!),
+    idMap
+  };
+}

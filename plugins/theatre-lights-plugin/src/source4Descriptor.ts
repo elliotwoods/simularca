@@ -27,11 +27,13 @@ import {
   aimChildQuaternion,
   applyBeamAppearance,
   applyBodyAppearance,
+  applySpotLight,
   createLightObject,
   disposeLightObject,
   getUserData,
   rebuildBeamGeometry,
-  resolveRefs
+  resolveRefs,
+  type LightObjectRefs
 } from "./lightGeometry";
 
 export const SOURCE4_DESCRIPTOR_ID = "plugin.theatre.source4";
@@ -68,6 +70,7 @@ function buildBeamParams(params: ParameterValues): BeamParams {
     zoomBarrel: str(params, "zoomBarrel", DEFAULT_ZOOM_LABEL),
     zoomAngleDeg: num(params, "zoomAngleDeg", 36),
     throwDistance: num(params, "throwDistance", 5),
+    previewLength: num(params, "previewLength", 8),
     edgeQuality: num(params, "edgeQuality", 0.5),
     shutterTop: num(params, "shutterTop", 0),
     shutterBottom: num(params, "shutterBottom", 0),
@@ -134,7 +137,19 @@ const LIGHT_ACTOR_SCHEMA: ParameterSchema = {
       groupKey: "beam",
       groupLabel: "Beam",
       defaultValue: 5,
-      description: "Distance the beam outline is drawn to; field diameter is measured here."
+      description: "Focus distance — where the field diameter is quoted."
+    },
+    {
+      key: "previewLength",
+      label: "Preview Length",
+      type: "number",
+      min: 0.1,
+      step: 0.1,
+      unit: "m",
+      groupKey: "beam",
+      groupLabel: "Beam",
+      defaultValue: 8,
+      description: "How far the beam cone (and the real light) reaches — independent of focus. Increase to show coverage on far objects."
     },
     {
       key: "edgeQuality",
@@ -168,7 +183,29 @@ const LIGHT_ACTOR_SCHEMA: ParameterSchema = {
       groupKey: "lamp",
       groupLabel: "Lamp",
       defaultValue: 100,
-      description: "Scales reported output and the beam wireframe brightness (no real illumination in v1)."
+      description: "Scales reported output, beam wireframe brightness, and the real-light intensity."
+    },
+    {
+      key: "castLight",
+      label: "Cast Light",
+      type: "boolean",
+      groupKey: "lamp",
+      groupLabel: "Lamp",
+      defaultValue: true,
+      description: "Emit a real light that illuminates meshes/primitives and gaussian splats inside the beam (additive, no shadows)."
+    },
+    {
+      key: "lightIntensity",
+      label: "Light Intensity",
+      type: "number",
+      min: 0,
+      max: 20,
+      step: 0.5,
+      groupKey: "lamp",
+      groupLabel: "Lamp",
+      defaultValue: 4,
+      description: "Brightness of the real beam light. The scene is IBL-dominant, so tune to taste.",
+      visibleWhen: [{ key: "castLight", equals: true }]
     },
     {
       key: "gelMode",
@@ -331,6 +368,7 @@ function buildStatusValues(params: ParameterValues, beamParams: BeamParams, aimL
       ? `${getZoomBarrel(beamParams.zoomBarrel)?.label ?? beamParams.zoomBarrel}`
       : `${getLensSpec(beamParams.lensTube)?.label ?? beamParams.lensTube} tube`;
   const edge = clamp(num(params, "edgeQuality", 0.5), 0, 1);
+  const previewLength = Math.max(0.1, beamParams.previewLength);
   const shutters = `T${num(params, "shutterTop", 0)} B${num(params, "shutterBottom", 0)} L${num(params, "shutterLeft", 0)} R${num(params, "shutterRight", 0)} %`;
 
   let gelText = "None";
@@ -340,19 +378,88 @@ function buildStatusValues(params: ParameterValues, beamParams: BeamParams, aimL
     gelText = tint.approximate ? `${tint.label} (approx)` : tint.label;
   }
 
+  const castLight = bool(params, "castLight", true);
+  const lightIntensity = clamp(num(params, "lightIntensity", 4), 0, 20);
+  const lightText = castLight ? `On · ${(lightIntensity * (dimming / 100)).toFixed(1)}` : "Off";
+
   return {
     type: "Source Four",
     lens: lensLabel,
     fieldAngle: `${fieldAngle.toFixed(1)}°`,
     throw: `${throwM.toFixed(2)} m`,
     fieldDiameter: `${fieldDiameterAtThrow(fieldAngle, throwM).toFixed(2)} m`,
+    previewLength: `${previewLength.toFixed(2)} m`,
+    coverageDiameter: `${fieldDiameterAtThrow(fieldAngle, previewLength).toFixed(2)} m`,
     lamp: lamp ? lamp.label : "—",
     output: `${output} lm @ ${Math.round(dimming)}%${lamp ? ` · ${lamp.cct}K` : ""}`,
+    light: lightText,
     gel: gelText,
     shutters,
     aim: aimLabel,
     edge: edge <= 0.01 ? "Hard" : `Soft ${Math.round(edge * 100)}%`
   };
+}
+
+/**
+ * Drive the real beam light: a THREE.SpotLight illuminates standard meshes/primitives,
+ * and (for gaussian splats, which ignore THREE lights) the world-space cone is published
+ * to the host beam-light registry for the splat shader to sample.
+ */
+function applyIllumination(
+  context: SceneHookContext,
+  refs: LightObjectRefs,
+  params: ParameterValues,
+  beamParams: BeamParams,
+  colorHex: string
+): void {
+  const castLight = bool(params, "castLight", true);
+  const dimming = clamp(num(params, "dimming", 100), 0, 100);
+  const lightIntensity = clamp(num(params, "lightIntensity", 4), 0, 20);
+  const intensity = castLight ? lightIntensity * (dimming / 100) : 0;
+  const on = castLight && intensity > 1e-4;
+
+  const fieldAngle = resolveFieldAngleDeg(beamParams);
+  const halfAngleRad = Math.min(Math.max((fieldAngle * Math.PI) / 180 / 2, 0.01), Math.PI / 2 - 0.01);
+  const edge = clamp(num(params, "edgeQuality", 0.5), 0, 1);
+  const range = Math.max(0.1, beamParams.previewLength);
+
+  // Meshes / primitives: a real spotlight under the aim group (follows look-at).
+  if (refs.spot) {
+    applySpotLight(refs.spot, {
+      visible: on,
+      colorHex,
+      intensity,
+      angleRad: halfAngleRad,
+      penumbra: edge,
+      distance: range,
+      decay: 1
+    });
+  }
+
+  // Gaussian splats: publish the world-space cone for the splat shader to sample.
+  if (typeof context.setBeamLights === "function") {
+    if (on) {
+      refs.aim.updateWorldMatrix(true, false);
+      const apex = refs.aim.getWorldPosition(new THREE.Vector3());
+      const dir = new THREE.Vector3(0, 0, -1)
+        .applyQuaternion(refs.aim.getWorldQuaternion(new THREE.Quaternion()))
+        .normalize();
+      const color = new THREE.Color(colorHex);
+      context.setBeamLights(context.actor.id, [
+        {
+          position: [apex.x, apex.y, apex.z],
+          direction: [dir.x, dir.y, dir.z],
+          cosHalfAngle: Math.cos(halfAngleRad),
+          color: [color.r, color.g, color.b],
+          intensity,
+          range,
+          penumbra: edge
+        }
+      ]);
+    } else {
+      context.setBeamLights(context.actor.id, []);
+    }
+  }
 }
 
 function applyLookAt(context: SceneHookContext, root: THREE.Object3D, aim: THREE.Object3D, params: ParameterValues): string {
@@ -432,6 +539,9 @@ export const source4Descriptor: ReloadableDescriptor<Source4Runtime> = {
 
       // Continuous aim (visual): orient the aim child toward the target.
       const aimLabel = applyLookAt(context, refs.root, refs.aim, params);
+
+      // Real illumination: spotlight (meshes) + beam-light registry (splats).
+      applyIllumination(context, refs, params, beamParams, tint.hex);
 
       // Throttled status: on change, or every STATUS_REFRESH_FRAMES frames.
       data.frame += 1;

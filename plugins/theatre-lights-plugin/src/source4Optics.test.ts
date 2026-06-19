@@ -4,8 +4,10 @@ import {
   buildBeamSegments,
   effectiveOutputLumens,
   fieldDiameterAtThrow,
+  pointInBeamCone,
   resolveFieldAngleDeg,
   resolveGelHex,
+  type BeamCone,
   type BeamParams
 } from "./source4Optics";
 
@@ -16,6 +18,7 @@ function baseParams(overrides: Partial<BeamParams> = {}): BeamParams {
     zoomBarrel: "25-50",
     zoomAngleDeg: 36,
     throwDistance: 5,
+    previewLength: 5,
     edgeQuality: 0,
     shutterTop: 0,
     shutterBottom: 0,
@@ -67,8 +70,8 @@ describe("field geometry math", () => {
 });
 
 describe("buildBeamSegments", () => {
-  it("emits valid line-segment pairs with apex at origin and boundary at the throw plane", () => {
-    const params = baseParams({ throwDistance: 4 });
+  it("emits valid line-segment pairs with apex at origin and boundary at the preview plane", () => {
+    const params = baseParams({ previewLength: 4 });
     const data = buildBeamSegments(params);
     expect(data.length % 6).toBe(0);
     expect(data.length).toBeGreaterThan(0);
@@ -110,8 +113,43 @@ describe("buildBeamSegments", () => {
     expect(soft.length).toBeGreaterThan(hard.length);
   });
 
-  it("returns nothing for a zero throw", () => {
-    expect(buildBeamSegments(baseParams({ throwDistance: 0 })).length).toBe(0);
+  it("returns nothing for a zero preview length", () => {
+    expect(buildBeamSegments(baseParams({ previewLength: 0 })).length).toBe(0);
+  });
+
+  it("draws the cone to previewLength, independent of throwDistance", () => {
+    const data = buildBeamSegments(baseParams({ throwDistance: 5, previewLength: 20 }));
+    const zs = vertices(data).map(([, , z]) => z);
+    // Boundary vertices sit at the preview plane (-20), not the throw plane (-5).
+    expect(Math.min(...zs)).toBeCloseTo(-20, 6);
+    const R = beamRadiusAtDistance(26, 20);
+    const maxR = Math.max(...vertices(data).map(([x, y]) => Math.hypot(x, y)));
+    expect(maxR).toBeCloseTo(R, 4);
+  });
+});
+
+describe("pointInBeamCone", () => {
+  const cone: BeamCone = {
+    position: [0, 0, 0],
+    direction: [0, 0, -1],
+    cosHalfAngle: Math.cos((20 * Math.PI) / 180), // 40° full field
+    range: 10
+  };
+
+  it("includes a point straight down the axis within range", () => {
+    expect(pointInBeamCone([0, 0, -5], cone)).toBe(true);
+  });
+
+  it("excludes a point outside the half-angle", () => {
+    expect(pointInBeamCone([6, 0, -5], cone)).toBe(false); // ~50° off-axis
+  });
+
+  it("excludes a point beyond the range", () => {
+    expect(pointInBeamCone([0, 0, -12], cone)).toBe(false);
+  });
+
+  it("excludes a point behind the apex", () => {
+    expect(pointInBeamCone([0, 0, 5], cone)).toBe(false);
   });
 });
 

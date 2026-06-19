@@ -28,6 +28,7 @@ import type {
   ActorNode,
   ActorRuntimeStatus,
   AppState,
+  BeamLight,
   DxfDrawingPlane,
   DxfInputUnits,
   DxfLayerStateMap,
@@ -678,6 +679,9 @@ export class SceneController {
   private axesHelperSignature = "";
   private readonly actorObjects = new Map<string, any>();
   private readonly pluginDescriptorByActorId = new Map<string, ReloadableDescriptor | null>();
+  /** World-space beam cones published by plugin actors (e.g. theatre lights) via the
+   *  scene-hook `setBeamLights`; consumed by `getBeamLights` (e.g. the splat material). */
+  private readonly beamLightsByActorId = new Map<string, BeamLight[]>();
   private readonly gaussianAssetByActorId = new Map<string, string>();
   private readonly gaussianReloadTokenByActorId = new Map<string, number>();
   private readonly meshAssetByActorId = new Map<string, string>();
@@ -936,6 +940,7 @@ export class SceneController {
             object.parent?.remove(object);
           }
           this.actorObjects.delete(existing);
+          this.beamLightsByActorId.delete(existing);
           this.gaussianAssetByActorId.delete(existing);
           this.gaussianReloadTokenByActorId.delete(existing);
           this.meshAssetByActorId.delete(existing);
@@ -5014,6 +5019,22 @@ export class SceneController {
           getCurveSignature: (actorId) => getProjectedPolylineSignature(actorId),
           getMistVolumeResource: (actorId) => this.mistVolumeController.getResource(actorId),
           getVolumetricRayResource: (actorId) => this.pluginActorRuntimeController.getVolumetricResource(actorId),
+          setBeamLights: (actorId: string, lights: BeamLight[]) => {
+            if (lights.length > 0) {
+              this.beamLightsByActorId.set(actorId, lights);
+            } else {
+              this.beamLightsByActorId.delete(actorId);
+            }
+          },
+          getBeamLights: (): BeamLight[] => {
+            const all: BeamLight[] = [];
+            for (const list of this.beamLightsByActorId.values()) {
+              for (const light of list) {
+                all.push(light);
+              }
+            }
+            return all;
+          },
           profileChunk: <T,>(label: string, run: () => T): T => this.kernel.profiler.withChunk(label, run),
           setActorStatus: (status: ActorRuntimeStatus | null) => {
             this.kernel.store.getState().actions.setActorStatus(actor.id, status);

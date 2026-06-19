@@ -7,9 +7,13 @@ import { applyLineOpacity, normalizeBackgroundColor, type SceneController } from
 // "looking straight down a world axis" (top/front/side). Matches the default
 // tolerance used by isCameraFacingDirection in viewUtils.
 const AXIS_ALIGNED_DOT = 0.9995;
-// Below this on-screen spacing (in CSS pixels) the minor lines are dropped and
-// only major lines are drawn, so a zoomed-out ortho view stays legible/cheap.
-const MIN_MINOR_PIXEL_SPACING = 4;
+// At or below this on-screen spacing (in CSS pixels) the minor lines are fully
+// faded out and dropped, so a zoomed-out ortho view stays legible/cheap.
+const MINOR_FADE_MIN_PIXEL_SPACING = 4;
+// At or above this on-screen spacing the minor lines are drawn at full opacity.
+// Between the two bounds they fade linearly with zoom so the subgrid eases in
+// and out instead of popping as the boundary is crossed.
+const MINOR_FADE_FULL_PIXEL_SPACING = 12;
 // Hard safety cap on the number of grid lines generated per axis.
 const MAX_LINES_PER_AXIS = 4000;
 const TICK_EPSILON = 1e-6;
@@ -29,6 +33,14 @@ interface GridGeometryRequest {
   majorColor: string;
   minorColor: string;
   opacity: number;
+}
+
+interface GridUpdate {
+  // Geometry-relevant fields only; serialized into the rebuild signature.
+  request: GridGeometryRequest;
+  // Per-frame minor-line opacity multiplier (0..1). Kept out of `request` so a
+  // continuous zoom fade does not force a geometry rebuild every frame.
+  minorFade: number;
 }
 
 // In-plane axes (lowest index first) for a grid whose normal is the given axis.
@@ -54,6 +66,19 @@ function setComponent(target: [number, number, number], axisU: number, axisV: nu
 function isMajorTick(value: number, majorPitch: number): boolean {
   const ratio = value / majorPitch;
   return Math.abs(ratio - Math.round(ratio)) < 1e-4;
+}
+
+// Opacity multiplier (0..1) for the minor grid lines given their on-screen
+// spacing in CSS pixels. Fully transparent at/below MINOR_FADE_MIN_PIXEL_SPACING,
+// fully opaque at/above MINOR_FADE_FULL_PIXEL_SPACING, linear in between.
+export function minorFadeForSpacing(minorPixelSpacing: number): number {
+  if (Number.isNaN(minorPixelSpacing)) {
+    return 0;
+  }
+  const span = MINOR_FADE_FULL_PIXEL_SPACING - MINOR_FADE_MIN_PIXEL_SPACING;
+  const t = (minorPixelSpacing - MINOR_FADE_MIN_PIXEL_SPACING) / span;
+  // Clamp also collapses +Infinity (extreme zoom-in) to fully opaque.
+  return Math.max(0, Math.min(1, t));
 }
 
 function lineMaterial(color: string): THREE.LineBasicMaterial {
@@ -113,18 +138,19 @@ export class SceneGridController {
       this.currentCamera.updateProjectionMatrix();
     }
 
-    const request = this.computeRequest(grid);
+    const { request, minorFade } = this.computeRequest(grid);
     const signature = JSON.stringify(request);
     if (signature !== this.signature) {
       this.rebuild(request);
       this.signature = signature;
-    } else {
-      applyLineOpacity(this.minorSegments ?? {}, request.opacity);
-      applyLineOpacity(this.majorSegments ?? {}, request.opacity);
     }
+    // Opacity is applied every frame (not folded into the signature) so the
+    // minor lines can fade smoothly with zoom without rebuilding geometry.
+    applyLineOpacity(this.minorSegments ?? {}, request.opacity * minorFade);
+    applyLineOpacity(this.majorSegments ?? {}, request.opacity);
   }
 
-  private computeRequest(grid: SceneGridSettings): GridGeometryRequest {
+  private computeRequest(grid: SceneGridSettings): GridUpdate {
     const minorPitch = Math.max(1e-3, grid.minorPitch);
     const majorPitch = Math.max(minorPitch, grid.majorPitch);
     const majorColor = normalizeBackgroundColor(grid.majorColor);
@@ -168,7 +194,7 @@ export class SceneGridController {
     majorColor: string,
     minorColor: string,
     opacity: number
-  ): GridGeometryRequest {
+  ): GridUpdate {
     const [axisU, axisV] = inPlaneAxes(normalAxis);
     const camera = this.currentCamera as THREE.OrthographicCamera;
 
@@ -200,9 +226,27 @@ export class SceneGridController {
 
     const worldHeight = (camera.top - camera.bottom) / Math.max(1e-6, camera.zoom);
     const minorPixelSpacing = (this.viewportHeight * minorPitch) / Math.max(1e-6, worldHeight);
-    const drawMinor = minorPixelSpacing >= MIN_MINOR_PIXEL_SPACING;
+    const minorFade = minorFadeForSpacing(minorPixelSpacing);
+    // Generate minor geometry whenever it is at all visible; the continuous
+    // fade itself is applied per-frame via opacity, not baked into geometry.
+    const drawMinor = minorFade > 0;
 
-    return { normalAxis, axisU, axisV, uMin, uMax, vMin, vMax, minorPitch, majorPitch, drawMinor, majorColor, minorColor, opacity };
+    const request: GridGeometryRequest = {
+      normalAxis,
+      axisU,
+      axisV,
+      uMin,
+      uMax,
+      vMin,
+      vMax,
+      minorPitch,
+      majorPitch,
+      drawMinor,
+      majorColor,
+      minorColor,
+      opacity
+    };
+    return { request, minorFade };
   }
 
   private computeFixedRequest(
@@ -212,9 +256,9 @@ export class SceneGridController {
     majorColor: string,
     minorColor: string,
     opacity: number
-  ): GridGeometryRequest {
+  ): GridUpdate {
     const half = Math.max(0.001, size) / 2;
-    return {
+    const request: GridGeometryRequest = {
       normalAxis: 1,
       axisU: 0,
       axisV: 2,
@@ -229,6 +273,9 @@ export class SceneGridController {
       minorColor,
       opacity
     };
+    // The fixed ground-plane grid (non-ortho fallback) keeps minor lines at full
+    // strength; zoom-based fading only applies to the axis-aligned ortho fill.
+    return { request, minorFade: 1 };
   }
 
   private rebuild(request: GridGeometryRequest): void {
@@ -253,8 +300,8 @@ export class SceneGridController {
       this.majorSegments = this.makeSegments(majorPositions, this.majorMaterial);
       this.root.add(this.majorSegments);
     }
-    applyLineOpacity(this.minorSegments ?? {}, request.opacity);
-    applyLineOpacity(this.majorSegments ?? {}, request.opacity);
+    // Opacity (including the zoom fade for minor lines) is applied per-frame in
+    // update(), so we intentionally do not set it here.
   }
 
   // Emits a line at every tick of `tickAxis` spanning [spanMin, spanMax]. When

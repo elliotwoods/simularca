@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { createAppStore } from "@/core/store/appStore";
+import type { ActorNode } from "@/core/types";
+
+function buildActor(over: Partial<ActorNode> & { id: string }): ActorNode {
+  return {
+    id: over.id,
+    name: over.name ?? over.id,
+    enabled: over.enabled ?? true,
+    kind: "actor",
+    actorType: over.actorType ?? "empty",
+    visibilityMode: over.visibilityMode ?? "visible",
+    pluginType: over.pluginType,
+    parentActorId: over.parentActorId ?? null,
+    childActorIds: over.childActorIds ?? [],
+    componentIds: over.componentIds ?? [],
+    transform: over.transform ?? { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+    params: over.params ?? {}
+  };
+}
 
 describe("appStore undo/redo", () => {
   it("undoes and redoes actor creation", () => {
@@ -413,6 +431,106 @@ describe("appStore viewer permissions", () => {
     expect(id).not.toBe("");
     store.getState().actions.updateActorParams(id, { foo: 1 });
     expect(store.getState().state.actors[id]?.params.foo).toBe(1);
+  });
+});
+
+describe("appStore insertDuplicatedActors", () => {
+  it("inserts a subtree, links roots, selects them, dirties, and bumps stats", () => {
+    const store = createAppStore("electron-rw");
+    const before = Object.keys(store.getState().state.actors).length;
+
+    const inserted = store.getState().actions.insertDuplicatedActors({
+      actors: [
+        buildActor({ id: "root", name: "Root", childActorIds: ["child"] }),
+        buildActor({ id: "child", name: "Child", parentActorId: "root" })
+      ],
+      components: [],
+      newTopLevelIds: ["root"]
+    });
+
+    const state = store.getState().state;
+    expect(inserted).toEqual(["root"]);
+    expect(Object.keys(state.actors).length).toBe(before + 2);
+    expect(state.scene.actorIds).toContain("root");
+    expect(state.actors.child?.parentActorId).toBe("root");
+    expect(state.selection).toEqual([{ kind: "actor", id: "root" }]);
+    expect(state.dirty).toBe(true);
+    expect(state.stats.actorCount).toBe(before + 2);
+  });
+
+  it("links a root under its own parentActorId when that parent exists", () => {
+    const store = createAppStore("electron-rw");
+    const parentId = store.getState().actions.createActor({ actorType: "empty", name: "Parent" });
+
+    store.getState().actions.insertDuplicatedActors({
+      actors: [buildActor({ id: "dup", name: "Dup", parentActorId: parentId })],
+      components: [],
+      newTopLevelIds: ["dup"]
+    });
+
+    expect(store.getState().state.actors[parentId]?.childActorIds).toContain("dup");
+    expect(store.getState().state.scene.actorIds).not.toContain("dup");
+  });
+
+  it("de-duplicates top-level names against existing actors", () => {
+    const store = createAppStore("electron-rw");
+    store.getState().actions.createActor({ actorType: "empty", name: "Tree" });
+
+    store.getState().actions.insertDuplicatedActors({
+      actors: [buildActor({ id: "dup", name: "Tree" })],
+      components: [],
+      newTopLevelIds: ["dup"]
+    });
+
+    expect(store.getState().state.actors.dup?.name).toBe("Tree2");
+  });
+
+  it("inserts in a single undoable step", () => {
+    const store = createAppStore("electron-rw");
+    const before = Object.keys(store.getState().state.actors).length;
+    const historyBefore = store.getState().historyPast.length;
+
+    store.getState().actions.insertDuplicatedActors({
+      actors: [
+        buildActor({ id: "root", childActorIds: ["child"] }),
+        buildActor({ id: "child", parentActorId: "root" })
+      ],
+      components: [],
+      newTopLevelIds: ["root"]
+    });
+
+    expect(store.getState().historyPast.length).toBe(historyBefore + 1);
+    store.getState().actions.undo();
+    expect(Object.keys(store.getState().state.actors).length).toBe(before);
+    store.getState().actions.redo();
+    expect(Object.keys(store.getState().state.actors).length).toBe(before + 2);
+  });
+
+  it("is blocked in web-ro mode without canCreateActors", () => {
+    const store = createAppStore("web-ro");
+    store.setState((s) => ({
+      ...s,
+      state: {
+        ...s.state,
+        viewerPermissions: {
+          canEditParameters: false,
+          canToggleVisibility: false,
+          canCreateActors: false,
+          canDeleteActors: false,
+          canTransformActors: false
+        }
+      }
+    }));
+    const before = Object.keys(store.getState().state.actors).length;
+
+    const inserted = store.getState().actions.insertDuplicatedActors({
+      actors: [buildActor({ id: "dup" })],
+      components: [],
+      newTopLevelIds: ["dup"]
+    });
+
+    expect(inserted).toEqual([]);
+    expect(Object.keys(store.getState().state.actors).length).toBe(before);
   });
 });
 

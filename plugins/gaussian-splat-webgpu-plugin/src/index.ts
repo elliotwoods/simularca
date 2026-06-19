@@ -36,6 +36,15 @@ export interface ReloadableDescriptor {
       profileChunk?<T>(label: string, run: () => T): T;
       setActorStatus(status: unknown): void;
       readAssetBytes(assetId: string): Promise<Uint8Array>;
+      getBeamLights?(): Array<{
+        position: [number, number, number];
+        direction: [number, number, number];
+        cosHalfAngle: number;
+        color: [number, number, number];
+        intensity: number;
+        range: number;
+        penumbra: number;
+      }>;
     }): void;
     disposeObject?(args: { actor: unknown; state: unknown; object: unknown }): void;
   };

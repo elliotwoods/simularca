@@ -4,6 +4,7 @@ import type {
   ActorStatusValue,
   AppState,
   ActorType,
+  BeamLight,
   MistVolumeResource,
   VolumetricRayFieldResource,
   ParameterSchema,
@@ -60,6 +61,13 @@ export interface SceneHookContext {
   getCurveSignature(actorId: string): string | null;
   getMistVolumeResource(actorId: string): MistVolumeResource | null;
   getVolumetricRayResource(actorId: string): VolumetricRayFieldResource | null;
+  /**
+   * Publish this actor's world-space beam cones for consumers that don't use THREE
+   * lights (e.g. the gaussian-splat material). Pass `[]` to clear this actor's cones.
+   */
+  setBeamLights(actorId: string, lights: BeamLight[]): void;
+  /** All beam cones currently published across every actor. */
+  getBeamLights(): BeamLight[];
   profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: ActorRuntimeStatus | null): void;
   /**

@@ -50,6 +50,17 @@ const COLOR_SPACE_SRGB = 1;
 const COLOR_SPACE_IPHONE_SDR = 2;
 const COLOR_SPACE_APPLE_LOG = 3;
 
+/** A world-space beam cone published by a theatre-light actor (host registry). */
+interface BeamLight {
+  position: [number, number, number];
+  direction: [number, number, number];
+  cosHalfAngle: number;
+  color: [number, number, number];
+  intensity: number;
+  range: number;
+  penumbra: number;
+}
+
 /** Context shape passed from syncObject (matches plugin SceneHookContext subset). */
 interface SyncContext {
   actor: { id: string; params: Record<string, unknown>; enabled?: boolean; visibilityMode?: string };
@@ -57,6 +68,8 @@ interface SyncContext {
   profileChunk?<T>(label: string, run: () => T): T;
   setActorStatus(status: unknown): void;
   readAssetBytes(assetId: string): Promise<Uint8Array>;
+  /** Beam cones to brighten splats within (optional; older hosts omit it). */
+  getBeamLights?(): BeamLight[];
 }
 
 export class SplatController {
@@ -166,8 +179,28 @@ export class SplatController {
     if (this.mesh && this.uniforms) {
       this.runProfileChunk("Uniform update", () => {
         this.updateUniforms(opacity, brightness, scaleFactor, splatSizeScale, colorInputSpace);
+        this.applyBeamLights(context);
       });
     }
+  }
+
+  /** Upload beam cones (from the host registry) into the splat material's uniforms so
+   *  splats inside a theatre-light beam are brightened. */
+  private applyBeamLights(context: SyncContext): void {
+    const u = this.uniforms;
+    if (!u) {
+      return;
+    }
+    const lights = typeof context.getBeamLights === "function" ? context.getBeamLights() : [];
+    const n = Math.min(lights.length, u.maxBeams);
+    for (let i = 0; i < n; i += 1) {
+      const b = lights[i]!;
+      u.beamPos[i]!.set(b.position[0], b.position[1], b.position[2]);
+      u.beamDir[i]!.set(b.direction[0], b.direction[1], b.direction[2]);
+      u.beamColor[i]!.set(b.color[0], b.color[1], b.color[2]);
+      u.beamParams[i]!.set(b.cosHalfAngle, b.intensity, b.range, b.penumbra);
+    }
+    u.beamCount.value = n;
   }
 
   dispose(): void {

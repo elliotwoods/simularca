@@ -654,9 +654,43 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                               <FontAwesomeIcon icon={faXmark} />
                             </button>
                           </div>
-                          <span className="titlebar-project-list-indicator" aria-hidden="true">
-                            {isDefaultProject(entry.uuid) ? <FontAwesomeIcon icon={faStar} /> : null}
-                          </span>
+                          {isReadOnly ? (
+                            <span className="titlebar-project-list-indicator" aria-hidden="true">
+                              {isDefaultProject(entry.uuid) ? <FontAwesomeIcon icon={faStar} /> : null}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className={`titlebar-project-action titlebar-star-button${
+                                isDefaultProject(entry.uuid) ? " is-default" : " is-empty"
+                              }`}
+                              aria-pressed={isDefaultProject(entry.uuid)}
+                              title={
+                                isDefaultProject(entry.uuid)
+                                  ? "Default project (click to unset)"
+                                  : "Set as default project"
+                              }
+                              onClick={() => {
+                                const starred = isDefaultProject(entry.uuid);
+                                const snapshotName = isActive
+                                  ? state.activeSnapshotName
+                                  : entry.lastSnapshotName;
+                                void kernel.projectService
+                                  .setDefault(
+                                    starred
+                                      ? null
+                                      : {
+                                          uuid: entry.uuid,
+                                          path: entry.path,
+                                          lastSnapshotName: snapshotName
+                                        }
+                                  )
+                                  .then(refreshDefaults);
+                              }}
+                            >
+                              <FontAwesomeIcon icon={faStar} />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -886,9 +920,43 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
                               </span>
                             </button>
                             <div className="titlebar-project-snapshot-side">
-                              <span className="titlebar-project-snapshot-default-indicator" aria-hidden="true">
-                                {isDefaultSnapshot(snapshot.name) ? <FontAwesomeIcon icon={faStar} /> : null}
-                              </span>
+                              {isReadOnly ? (
+                                <span className="titlebar-project-snapshot-default-indicator" aria-hidden="true">
+                                  {isDefaultSnapshot(snapshot.name) ? <FontAwesomeIcon icon={faStar} /> : null}
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className={`titlebar-project-snapshot-action titlebar-star-button${
+                                    isDefaultSnapshot(snapshot.name) ? " is-default" : " is-empty"
+                                  }`}
+                                  aria-pressed={isDefaultSnapshot(snapshot.name)}
+                                  title={
+                                    isDefaultSnapshot(snapshot.name)
+                                      ? "Default snapshot (click to unset)"
+                                      : "Set as default snapshot"
+                                  }
+                                  onClick={() => {
+                                    if (!activeProject) {
+                                      return;
+                                    }
+                                    const starred = isDefaultSnapshot(snapshot.name);
+                                    void kernel.projectService
+                                      .setDefault(
+                                        starred
+                                          ? null
+                                          : {
+                                              uuid: activeProject.uuid,
+                                              path: activeProject.path,
+                                              lastSnapshotName: snapshot.name
+                                            }
+                                      )
+                                      .then(refreshDefaults);
+                                  }}
+                                >
+                                  <FontAwesomeIcon icon={faStar} />
+                                </button>
+                              )}
                               {!isReadOnly ? (
                                 <div className="titlebar-project-snapshot-actions">
                                   <button
