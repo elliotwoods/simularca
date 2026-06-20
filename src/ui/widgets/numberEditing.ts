@@ -74,11 +74,43 @@ export function inferDisplayPrecision(precision?: number, step?: number): number
   return asText.length - decimalIndex - 1;
 }
 
+const MAX_EXPRESSION_LENGTH = 256;
+
+/**
+ * Evaluate a text formula (a JS expression) to a finite number, or null.
+ *
+ * Common math helpers and constants are exposed in scope so expressions like
+ * `sqrt(2)`, `pi * 3`, or `max(1, 2)` work in addition to `Math.sqrt(2)`.
+ * Anything that throws, returns a non-number, or returns a non-finite value
+ * yields null.
+ */
+export function evaluateNumberExpression(source: string): number | null {
+  const trimmed = source.trim();
+  if (!trimmed || trimmed.length > MAX_EXPRESSION_LENGTH) {
+    return null;
+  }
+  try {
+    const evaluator = new Function(
+      `'use strict';` +
+        `const { abs, sqrt, cbrt, sign, sin, cos, tan, asin, acos, atan, atan2, min, max, round, floor, ceil, trunc, pow, log, log2, log10, exp, hypot } = Math;` +
+        `const pi = Math.PI; const e = Math.E; const tau = Math.PI * 2;` +
+        `return (${trimmed});`
+    );
+    const result = evaluator();
+    return typeof result === "number" && Number.isFinite(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseDraftNumber(draft: string): number | null {
   const trimmed = draft.trim();
   if (!trimmed) {
     return null;
   }
   const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+  return evaluateNumberExpression(trimmed);
 }

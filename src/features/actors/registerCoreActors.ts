@@ -11,6 +11,7 @@ import { cameraPathActorDescriptor } from "@/features/actors/descriptors/cameraP
 import { crossSectionActorDescriptor } from "@/features/actors/descriptors/crossSectionActor";
 import { dimensionActorDescriptor } from "@/features/actors/descriptors/dimensionActor";
 import { annotationActorDescriptor } from "@/features/actors/descriptors/annotationActor";
+import { arrayActorDescriptor } from "@/features/actors/descriptors/arrayActor";
 
 export function registerCoreActorDescriptors(kernel: AppKernel): void {
   const descriptors = [
@@ -24,7 +25,8 @@ export function registerCoreActorDescriptors(kernel: AppKernel): void {
     cameraPathActorDescriptor,
     crossSectionActorDescriptor,
     dimensionActorDescriptor,
-    annotationActorDescriptor
+    annotationActorDescriptor,
+    arrayActorDescriptor
   ];
   for (const descriptor of descriptors) {
     kernel.descriptorRegistry.register(descriptor);
@@ -41,7 +43,8 @@ export function setupActorHotReload(kernel: AppKernel): void {
     primitiveActorDescriptor,
     curveActorDescriptor,
     cameraPathActorDescriptor,
-    crossSectionActorDescriptor
+    crossSectionActorDescriptor,
+    arrayActorDescriptor
   ]);
 }
 

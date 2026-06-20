@@ -27,6 +27,7 @@ export function BufferedNumberTextInput(props: BufferedNumberTextInputProps) {
   const [draft, setDraft] = useState(() => formatNumberValue(props.value, precision));
   const [editing, setEditing] = useState(false);
   const skipBlurCommitRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!editing) {
@@ -64,6 +65,7 @@ export function BufferedNumberTextInput(props: BufferedNumberTextInputProps) {
   return (
     <span className={wrapperClassName}>
       <input
+        ref={inputRef}
         type="text"
         inputMode={props.inputMode ?? "decimal"}
         className={inputClassName}
@@ -80,11 +82,20 @@ export function BufferedNumberTextInput(props: BufferedNumberTextInputProps) {
             skipBlurCommitRef.current = false;
             return;
           }
+          if (invalid) {
+            // Reject the commit: keep the field open and focused so the user
+            // can fix the formula or press Escape to revert.
+            window.setTimeout(() => inputRef.current?.focus(), 0);
+            return;
+          }
           commitDraft();
         }}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
             event.preventDefault();
+            if (invalid) {
+              return;
+            }
             (event.target as HTMLInputElement).blur();
           }
           if (event.key === "Escape") {

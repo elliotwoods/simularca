@@ -8,6 +8,7 @@ import { keyboardCommandRouter } from "@/app/keyboardCommandRouter";
 import { isMacPlatform, isViewportFullscreenShortcut } from "@/app/viewportFullscreenShortcut";
 import { registerCoreActorDescriptors, setupActorHotReload } from "@/features/actors/registerCoreActors";
 import { copySelection, duplicateSelection, pasteClipboard } from "@/features/actors/actorClipboard";
+import { ArrayReconciler } from "@/features/arrayActor/arrayReconciler";
 import { interpolateCameraState } from "@/features/camera/cycleTween";
 import {
   DEFAULT_CAMERA_TRANSITION_DURATION_MS,
@@ -967,6 +968,8 @@ export function App() {
     kernel.store.getState().actions.setStatus(buildInfoSummary(BUILD_INFO));
     registerCoreActorDescriptors(kernel);
     setupActorHotReload(kernel);
+    const arrayReconciler = new ArrayReconciler(kernel);
+    arrayReconciler.start();
     const unsubscribe = kernel.hotReloadManager.subscribe((event) => {
       if (event.applied) {
         kernel.store.getState().actions.setStatus(`Hot reload applied: ${event.moduleId}`);
@@ -1002,6 +1005,7 @@ export function App() {
       await kernel.projectService.loadDefaultProject();
     })();
     return () => {
+      arrayReconciler.stop();
       unsubscribe();
     };
   }, [kernel]);

@@ -23,6 +23,7 @@ export type ActorType =
   | "cross-section"
   | "dimension"
   | "annotation"
+  | "array"
   | "plugin";
 
 /**
@@ -390,6 +391,15 @@ export interface ActorNode extends SceneNodeBase {
   componentIds: string[];
   transform: TransformTRS;
   params: ParameterValues;
+  /**
+   * Set on actors synthesized by an Array actor's reconciler (points at the
+   * owning Array actor). Every actor in a generated instance subtree carries it.
+   * Generated actors are excluded from project snapshots, undo history, and
+   * direct user editing/selection/duplication/deletion — they are regenerated
+   * from the Array actor's authored template subtree. See
+   * `src/features/arrayActor/arrayReconciler.ts`.
+   */
+  generatedByActorId?: string;
 }
 
 export interface SceneState extends SceneNodeBase {
@@ -448,6 +458,23 @@ export interface SelectionEntry {
   id: string;
 }
 
+/**
+ * Per-section visibility for the top toolbar. Each `false` flag hides that
+ * section; missing/`true` keys are shown. Persisted with the project and
+ * toggled via the toolbar right-click menu (editor). Viewer mode derives its
+ * own values from the publish config.
+ */
+export interface ToolbarVisibility {
+  time?: boolean;
+  edit?: boolean;
+  render?: boolean;
+  profile?: boolean;
+  keyboard?: boolean;
+  materials?: boolean;
+  fps?: boolean;
+  tools?: boolean;
+}
+
 export interface ProjectSnapshotManifest {
   schemaVersion: number;
   appMode: AppMode;
@@ -465,6 +492,7 @@ export interface ProjectSnapshotManifest {
   pluginsEnabled: Record<string, boolean>;
   materials: Record<string, Material>;
   assets: ProjectAssetRef[];
+  toolbarVisibility: ToolbarVisibility;
 }
 
 export interface SceneStats {
@@ -637,6 +665,8 @@ export interface AppState {
   actorStatusByActorId: Record<string, ActorRuntimeStatus>;
   actorFrameTimingsMs: Record<string, number>;
   viewerPermissions?: ViewerPermissions;
+  // Per-project toolbar section visibility (persisted, toggled via right-click menu).
+  toolbarVisibility: ToolbarVisibility;
 }
 
 

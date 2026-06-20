@@ -301,6 +301,39 @@ export function computeActorObjectVisibility(
   return actor.enabled && visibleByMode && (!isDebugOnlyActor(actor) || debugHelpersVisible);
 }
 
+/**
+ * An Array actor's authored template subtree is source data — only its generated
+ * instances render. Returns true when `actor` lies under an Array's authored
+ * template anywhere up its ancestor chain.
+ *
+ * Walk upward: at each Array ancestor, if the child we came from is that array's
+ * authored template (not its generated instance), everything below — including
+ * `actor` — is hidden. If the child is a generated instance, keep walking: the
+ * array itself may be the template of a higher array (nested arrays), in which
+ * case the whole branch is still hidden.
+ */
+export function isHiddenArrayTemplate(actor: ActorNode, actors: Record<string, ActorNode>): boolean {
+  let previous = actor;
+  let cursor = actor.parentActorId;
+  const guard = new Set<string>();
+  while (cursor) {
+    if (guard.has(cursor)) {
+      break;
+    }
+    guard.add(cursor);
+    const ancestor = actors[cursor];
+    if (!ancestor) {
+      break;
+    }
+    if (ancestor.actorType === "array" && previous.generatedByActorId !== ancestor.id) {
+      return true;
+    }
+    previous = ancestor;
+    cursor = ancestor.parentActorId;
+  }
+  return false;
+}
+
 export function resolveMeshAssetId(
   actor: Pick<ActorNode, "params">,
   qualityMode: MistVolumeQualityMode,
@@ -4170,11 +4203,12 @@ export class SceneController {
     if (!object) {
       return;
     }
-    const selection = this.kernel.store.getState().state.selection;
-    const isSelected = selection.some((entry) => entry.kind === "actor" && entry.id === actor.id);
+    const storeState = this.kernel.store.getState().state;
+    const isSelected = storeState.selection.some((entry) => entry.kind === "actor" && entry.id === actor.id);
     object.visible =
       computeActorObjectVisibility(actor, isSelected, this.debugHelpersVisible) &&
-      this.isActorPluginEnabled(actor);
+      this.isActorPluginEnabled(actor) &&
+      !isHiddenArrayTemplate(actor, storeState.actors);
     object.position.set(...actor.transform.position);
     object.rotation.set(...actor.transform.rotation);
     object.scale.set(...actor.transform.scale);

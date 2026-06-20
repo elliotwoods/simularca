@@ -2,6 +2,7 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { produce } from "immer";
 import { createId } from "@/core/ids";
 import { createInitialState } from "@/core/defaults";
+import { stripGeneratedActors } from "@/core/scene/stripGeneratedActors";
 import { createPluginViewInstanceId, createPluginViewTabId } from "@/features/plugins/pluginViews";
 import {
   DEFAULT_CAMERA_TRANSITION_DURATION_MS,
@@ -35,6 +36,7 @@ import type {
   SceneStats,
   SelectionEntry,
   TimeSpeedPreset,
+  ToolbarVisibility,
   ViewerPermissions
 } from "@/core/types";
 import type { AppMode, ProjectAssetRef, ProjectIdentity } from "@/types/ipc";
@@ -59,6 +61,7 @@ export interface AppActions {
   setActiveProject(identity: ProjectIdentity | null): void;
   setSnapshotName(name: string): void;
   setSceneBackgroundColor(color: string): void;
+  setToolbarSectionVisible(section: keyof ToolbarVisibility, visible: boolean): void;
   setSceneRenderSettings(
       settings: Partial<{
         renderEngine: RenderEngine;
@@ -116,6 +119,19 @@ export interface AppActions {
     components: ComponentNode[];
     newTopLevelIds: string[];
   }): string[];
+  /**
+   * Reconcile the generated-instance actors owned by an Array actor in a single
+   * NON-undoable, non-dirtying step: remove the listed generated instance roots
+   * (and their subtrees), then insert freshly-built generated actors/components,
+   * linking each new root under its parent. Used exclusively by the
+   * `ArrayReconciler`; generated actors are excluded from persistence and undo.
+   */
+  applyGeneratedActorDiff(input: {
+    removeRootIds: string[];
+    addActors: ActorNode[];
+    addComponents: ComponentNode[];
+    addRootIds: string[];
+  }): void;
   createDimension(input: {
     start: Landmark;
     end: Landmark;
@@ -186,7 +202,11 @@ export interface AppStore {
 export type AppStoreApi = UseBoundStore<StoreApi<AppStore>>;
 
 function cloneState(state: AppState): AppState {
-  return structuredClone(state);
+  // Keep generated Array-instance actors out of undo/redo history — they are
+  // derived from the authored template and rebuilt by the ArrayReconciler after
+  // any undo/redo restores the authored state.
+  const { actors, scene } = stripGeneratedActors(state.actors, state.scene);
+  return structuredClone({ ...state, actors, scene });
 }
 
 const MAX_CONSOLE_ENTRIES = 500;
@@ -286,6 +306,15 @@ function removeActorRecursive(state: AppState, actorId: string): void {
  * which individual mutations leak through. Legacy publishes have no
  * permissions object → everything stays locked.
  */
+/**
+ * Generated Array-instance actors are owned by the ArrayReconciler. They are not
+ * directly editable; user-initiated mutations targeting them are ignored (the
+ * change belongs on the Array actor's authored template instead).
+ */
+function isGeneratedActor(state: AppState, actorId: string): boolean {
+  return Boolean(state.actors[actorId]?.generatedByActorId);
+}
+
 function mutationAllowed(state: AppState, permission: keyof ViewerPermissions): boolean {
   if (state.mode !== "web-ro") {
     return true;
@@ -507,6 +536,15 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         set({
           state: produce(get().state, (draft) => {
             draft.scene.backgroundColor = color;
+            draft.dirty = true;
+          })
+        });
+      },
+      setToolbarSectionVisible(section, visible) {
+        withHistory(get, set, "Toggle toolbar section");
+        set({
+          state: produce(get().state, (draft) => {
+            draft.toolbarVisibility = { ...draft.toolbarVisibility, [section]: visible };
             draft.dirty = true;
           })
         });
@@ -758,6 +796,46 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         });
         return newTopLevelIds.filter((id) => get().state.actors[id]);
       },
+      applyGeneratedActorDiff({ removeRootIds, addActors, addComponents, addRootIds }) {
+        if (removeRootIds.length === 0 && addActors.length === 0) {
+          return;
+        }
+        // Intentionally NOT wrapped in withHistory and does not set `dirty`:
+        // generated instance actors are derived from the Array actor's authored
+        // template and are never persisted or undone directly.
+        set({
+          state: produce(get().state, (draft) => {
+            for (const id of removeRootIds) {
+              removeActorRecursive(draft, id);
+            }
+            for (const component of addComponents) {
+              draft.components[component.id] = structuredClone(component);
+            }
+            for (const actor of addActors) {
+              draft.actors[actor.id] = structuredClone(actor);
+            }
+            for (const id of addRootIds) {
+              const actor = draft.actors[id];
+              if (!actor) {
+                continue;
+              }
+              const parent = actor.parentActorId ? draft.actors[actor.parentActorId] : null;
+              if (parent) {
+                if (!parent.childActorIds.includes(id)) {
+                  parent.childActorIds.push(id);
+                }
+              } else {
+                actor.parentActorId = null;
+                if (!draft.scene.actorIds.includes(id)) {
+                  draft.scene.actorIds.push(id);
+                }
+              }
+            }
+            draft.stats.actorCount = Object.keys(draft.actors).length;
+            draft.stats.actorCountEnabled = Object.values(draft.actors).filter((entry) => entry.enabled).length;
+          })
+        });
+      },
       createDimension({ start, end, axis = "direct", offsetDir, extensionGap }) {
         if (!mutationAllowed(get().state, "canCreateActors")) {
           return "";
@@ -879,6 +957,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
         if (!mutationAllowed(get().state, "canTransformActors")) {
           return;
         }
+        if (isGeneratedActor(get().state, actorId)) {
+          return;
+        }
         withHistory(get, set, "Transform actor");
         set({
           state: produce(get().state, (draft) => {
@@ -956,14 +1037,25 @@ export function createAppStore(mode: AppMode): AppStoreApi {
       select(nodes, additive = false) {
         set({
           state: produce(get().state, (draft) => {
+            // A click on a generated Array instance selects its owning Array actor
+            // instead — generated actors are not directly selectable/editable.
+            const remapped = nodes.map((entry) => {
+              if (entry.kind !== "actor") {
+                return entry;
+              }
+              const owner = draft.actors[entry.id]?.generatedByActorId;
+              return owner ? { ...entry, id: owner } : entry;
+            });
+            const dedupe = (list: SelectionEntry[]): SelectionEntry[] =>
+              list.filter(
+                (entry, index) =>
+                  list.findIndex((candidate) => candidate.kind === entry.kind && candidate.id === entry.id) === index
+              );
             if (!additive) {
-              draft.selection = nodes;
+              draft.selection = dedupe(remapped);
               return;
             }
-            const merged = [...draft.selection, ...nodes];
-            draft.selection = merged.filter(
-              (entry, index, list) => list.findIndex((candidate) => candidate.kind === entry.kind && candidate.id === entry.id) === index
-            );
+            draft.selection = dedupe([...draft.selection, ...remapped]);
           })
         });
       },
@@ -976,6 +1068,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
       },
       reorderActor(actorId, newParentId, index) {
         if (!mutationAllowed(get().state, "canCreateActors")) {
+          return;
+        }
+        if (isGeneratedActor(get().state, actorId)) {
           return;
         }
         withHistory(get, set, "Reparent actor");
@@ -1040,6 +1135,9 @@ export function createAppStore(mode: AppMode): AppStoreApi {
       },
       updateActorParams(actorId, partial) {
         if (!mutationAllowed(get().state, "canEditParameters")) {
+          return;
+        }
+        if (isGeneratedActor(get().state, actorId)) {
           return;
         }
         withHistory(get, set, "Update actor params");

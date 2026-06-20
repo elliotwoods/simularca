@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { BufferedNumberTextInput } from "@/ui/widgets/BufferedNumberTextInput";
 import { DigitScrubInput } from "@/ui/widgets/DigitScrubInput";
 import { NumberField } from "@/ui/widgets/NumberField";
-import { inferDisplayPrecision } from "@/ui/widgets/numberEditing";
+import { evaluateNumberExpression, inferDisplayPrecision, parseDraftNumber } from "@/ui/widgets/numberEditing";
 
 class ResizeObserverMock {
   observe() {}
@@ -120,7 +120,7 @@ describe("DigitScrubInput", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("keeps invalid text local until commit and reverts on invalid enter", () => {
+  it("rejects an invalid enter, keeping the field open until escape reverts it", () => {
     const onChange = vi.fn();
     const { container } = renderElement(
       React.createElement(DigitScrubInput, {
@@ -140,9 +140,81 @@ describe("DigitScrubInput", () => {
     input.focus();
     keydown(input, "Enter");
 
+    // Invalid enter is rejected: nothing committed, field stays open.
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector('input[type="text"]')).not.toBeNull();
+
+    // Escape abandons the edit and reverts to the previous value.
+    keydown(input, "Escape");
     expect(onChange).not.toHaveBeenCalled();
     expect(container.querySelector('input[type="text"]')).toBeNull();
     expect(container.textContent).toContain("1.50");
+  });
+
+  it("evaluates a formula on enter", () => {
+    const onChange = vi.fn();
+    const { container } = renderElement(
+      React.createElement(DigitScrubInput, {
+        value: 1,
+        precision: 2,
+        onChange
+      })
+    );
+
+    click(container.querySelector("button") as HTMLButtonElement);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+    dispatchInputValue(input, "9.4/2");
+
+    expect(container.querySelector(".widget-buffered-number-indicator")).toBeNull();
+
+    input.focus();
+    keydown(input, "Enter");
+
+    expect(onChange).toHaveBeenCalledWith(4.7);
+    expect(container.querySelector('input[type="text"]')).toBeNull();
+  });
+
+  it("snaps an evaluated formula to the step constraint", () => {
+    const onChange = vi.fn();
+    const { container } = renderElement(
+      React.createElement(DigitScrubInput, {
+        value: 1,
+        precision: 2,
+        step: 0.1,
+        onChange
+      })
+    );
+
+    click(container.querySelector("button") as HTMLButtonElement);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+    dispatchInputValue(input, "(1+2)*3/7");
+    blur(input);
+
+    // (1+2)*3/7 = 1.2857..., snapped to step 0.1 -> 1.3
+    expect(onChange).toHaveBeenCalledWith(1.3);
+  });
+
+  it("rejects an incomplete formula on enter", () => {
+    const onChange = vi.fn();
+    const { container } = renderElement(
+      React.createElement(DigitScrubInput, {
+        value: 1.5,
+        precision: 2,
+        onChange
+      })
+    );
+
+    click(container.querySelector("button") as HTMLButtonElement);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+    dispatchInputValue(input, "9.4/");
+
+    expect(container.querySelector(".widget-buffered-number-indicator")?.textContent).toBe("!");
+
+    input.focus();
+    keydown(input, "Enter");
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector('input[type="text"]')).not.toBeNull();
   });
 
   it("snaps stepped text commits on blur", () => {
@@ -241,7 +313,7 @@ describe("DigitScrubInput", () => {
 });
 
 describe("BufferedNumberTextInput", () => {
-  it("does not apply invalid drafts and restores the committed value on blur", () => {
+  it("rejects invalid drafts on blur, keeping the draft until escape reverts it", () => {
     const onChange = vi.fn();
     const { container } = renderElement(
       React.createElement(BufferedNumberTextInput, {
@@ -263,8 +335,37 @@ describe("BufferedNumberTextInput", () => {
 
     blur(input);
 
+    // Invalid blur is rejected: nothing committed and the draft is preserved.
+    expect(onChange).not.toHaveBeenCalled();
+    expect((container.querySelector('input[type="text"]') as HTMLInputElement).value).toBe("1e-");
+
+    // Escape abandons the edit and restores the committed value.
+    keydown(input, "Escape");
     expect(onChange).not.toHaveBeenCalled();
     expect((container.querySelector('input[type="text"]') as HTMLInputElement).value).toBe("24");
+  });
+
+  it("evaluates a formula on enter", () => {
+    const onChange = vi.fn();
+    const { container } = renderElement(
+      React.createElement(BufferedNumberTextInput, {
+        value: 24,
+        precision: 1,
+        onChange
+      })
+    );
+
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+    act(() => {
+      input.focus();
+    });
+    dispatchInputValue(input, "9.4/2");
+
+    expect(container.querySelector(".widget-buffered-number-indicator")).toBeNull();
+
+    keydown(input, "Enter");
+
+    expect(onChange).toHaveBeenCalledWith(4.7);
   });
 });
 
@@ -301,6 +402,36 @@ describe("NumberField", () => {
     expect(container.textContent).toContain("12");
     expect(container.textContent).not.toContain("12.0");
     expect(container.textContent).not.toContain("12.00");
+  });
+});
+
+describe("parseDraftNumber", () => {
+  it("reads a plain number directly (number-first priority)", () => {
+    expect(parseDraftNumber("2")).toBe(2);
+    expect(parseDraftNumber("-3.5")).toBe(-3.5);
+    expect(parseDraftNumber("1e3")).toBe(1000);
+  });
+
+  it("evaluates a formula when the text is not a plain number", () => {
+    expect(parseDraftNumber("9.4/2")).toBe(4.7);
+    expect(parseDraftNumber("(1+2)*3")).toBe(9);
+    expect(parseDraftNumber("2 ** 10")).toBe(1024);
+    expect(parseDraftNumber("sqrt(16)")).toBe(4);
+    expect(parseDraftNumber("pi")).toBeCloseTo(Math.PI);
+  });
+
+  it("returns null for empty or invalid input", () => {
+    expect(parseDraftNumber("")).toBeNull();
+    expect(parseDraftNumber("   ")).toBeNull();
+    expect(parseDraftNumber("9.4/")).toBeNull();
+    expect(parseDraftNumber("abc")).toBeNull();
+  });
+
+  it("rejects expressions that do not resolve to a finite number", () => {
+    expect(evaluateNumberExpression("1/0")).toBeNull();
+    expect(evaluateNumberExpression("'5'")).toBeNull();
+    expect(evaluateNumberExpression("[1,2]")).toBeNull();
+    expect(evaluateNumberExpression("x".repeat(300))).toBeNull();
   });
 });
 

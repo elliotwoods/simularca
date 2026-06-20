@@ -10,7 +10,8 @@ import type {
   ScenePostProcessingSettings,
   RenderEngine,
   SceneState,
-  TimeState
+  TimeState,
+  ToolbarVisibility
 } from "./types";
 import type { ProjectIdentity } from "@/types/ipc";
 
@@ -170,6 +171,16 @@ export const DEFAULT_TIME: TimeState = {
 export const DEFAULT_SLOW_FRAME_DIAGNOSTICS_ENABLED = false;
 export const DEFAULT_SLOW_FRAME_DIAGNOSTICS_THRESHOLD_MS = 100;
 export const DEFAULT_HEARTBEAT_LOGGING_ENABLED = false;
+export const DEFAULT_TOOLBAR_VISIBILITY: ToolbarVisibility = {
+  time: true,
+  edit: true,
+  render: true,
+  profile: true,
+  keyboard: true,
+  materials: true,
+  fps: true,
+  tools: true
+};
 export const DEFAULT_FRAME_PACING: SceneFramePacingSettings = {
   mode: "vsync",
   targetFps: 60
@@ -331,7 +342,8 @@ export function createInitialState(
     consoleEntries: [],
     actorStatusByActorId: {},
     actorFrameTimingsMs: {},
-    viewerPermissions: undefined
+    viewerPermissions: undefined,
+    toolbarVisibility: { ...DEFAULT_TOOLBAR_VISIBILITY }
   };
 }
 

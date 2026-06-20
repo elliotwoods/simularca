@@ -1,4 +1,5 @@
 import { PROJECT_SCHEMA_VERSION, type AppState, type ProjectSnapshotManifest } from "@/core/types";
+import { stripGeneratedActors } from "@/core/scene/stripGeneratedActors";
 
 export function buildProjectSnapshotManifest(
   state: AppState,
@@ -6,6 +7,8 @@ export function buildProjectSnapshotManifest(
   options: { projectName?: string } = {}
 ): ProjectSnapshotManifest {
   const nowIso = new Date().toISOString();
+  // Generated Array-instance actors are derived state — never persist them.
+  const { actors, scene } = stripGeneratedActors(state.actors, state.scene);
   return {
     schemaVersion: PROJECT_SCHEMA_VERSION,
     appMode: mode,
@@ -13,8 +16,8 @@ export function buildProjectSnapshotManifest(
     snapshotName: state.activeSnapshotName,
     createdAtIso: nowIso,
     updatedAtIso: nowIso,
-    scene: structuredClone(state.scene),
-    actors: structuredClone(state.actors),
+    scene: structuredClone(scene),
+    actors: structuredClone(actors),
     components: structuredClone(state.components),
     camera: structuredClone(state.camera),
     lastPerspectiveCamera: structuredClone(state.lastPerspectiveCamera),
@@ -22,6 +25,7 @@ export function buildProjectSnapshotManifest(
     pluginViews: structuredClone(state.pluginViews),
     pluginsEnabled: structuredClone(state.pluginsEnabled),
     materials: structuredClone(state.materials),
-    assets: structuredClone(state.assets)
+    assets: structuredClone(state.assets),
+    toolbarVisibility: structuredClone(state.toolbarVisibility)
   };
 }

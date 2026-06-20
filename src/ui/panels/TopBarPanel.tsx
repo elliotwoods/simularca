@@ -4,6 +4,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCamera,
   faChartColumn,
+  faCheck,
   faCirclePause,
   faCirclePlay,
   faForwardStep,
@@ -32,6 +33,17 @@ const MAX_CUSTOM_TARGET_FPS = 240;
 const TOOLBAR_LAYOUT_MODES = ["full", "compact", "wrapped", "scroll"] as const;
 
 type ToolbarLayoutMode = (typeof TOOLBAR_LAYOUT_MODES)[number];
+
+const TOOLBAR_SECTIONS: { key: keyof TopBarPanelVisibility; label: string }[] = [
+  { key: "time", label: "Time" },
+  { key: "tools", label: "Tools" },
+  { key: "edit", label: "Edit" },
+  { key: "render", label: "Render" },
+  { key: "profile", label: "Profile" },
+  { key: "materials", label: "Materials" },
+  { key: "fps", label: "FPS" },
+  { key: "keyboard", label: "Keyboard" }
+];
 
 function formatSpeed(speed: TimeSpeedPreset): string {
   if (speed >= 1) {
@@ -106,6 +118,9 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const [materialsModalOpen, setMaterialsModalOpen] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [fpsMenuOpen, setFpsMenuOpen] = useState(false);
+  const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const [toolbarMenuPosition, setToolbarMenuPosition] = useState({ top: 0, left: 0 });
+  const toolbarMenuRef = useRef<HTMLDivElement | null>(null);
   const [customTargetOpen, setCustomTargetOpen] = useState(false);
   const [customTargetDraft, setCustomTargetDraft] = useState("60");
   const [toolbarLayoutMode, setToolbarLayoutMode] = useState<ToolbarLayoutMode>("full");
@@ -120,7 +135,9 @@ export function TopBarPanel(props: TopBarPanelProps) {
   const [fpsMenuPosition, setFpsMenuPosition] = useState({ top: 0, left: 0, minWidth: 210 });
 
   const isReadOnly = state.mode === "web-ro";
-  const visibility = props.visibility;
+  // Viewer mode passes an explicit visibility prop (from publish config); the editor
+  // falls back to the per-project persisted toolbar visibility toggled via right-click.
+  const visibility = props.visibility ?? state.toolbarVisibility;
   const showSection = (key: keyof TopBarPanelVisibility, defaultVisible = true): boolean => {
     if (!visibility) return defaultVisible;
     const value = visibility[key];
@@ -280,6 +297,41 @@ export function TopBarPanel(props: TopBarPanelProps) {
     };
   }, [fpsMenuOpen]);
 
+  const handleToolbarContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (isReadOnly) {
+      return;
+    }
+    event.preventDefault();
+    const estWidth = 200;
+    const left = Math.max(8, Math.min(event.clientX, window.innerWidth - estWidth - 8));
+    const top = Math.max(8, Math.min(event.clientY, window.innerHeight - 8));
+    setToolbarMenuPosition({ top, left });
+    setToolbarMenuOpen(true);
+  };
+
+  useEffect(() => {
+    if (!toolbarMenuOpen) {
+      return;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !toolbarMenuRef.current?.contains(target)) {
+        setToolbarMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setToolbarMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [toolbarMenuOpen]);
+
   useEffect(() => {
     if (fpsMenuOpen && customTargetOpen) {
       customTargetInputRef.current?.focus();
@@ -376,6 +428,7 @@ export function TopBarPanel(props: TopBarPanelProps) {
       ref={toolbarRef}
       className={`top-toolbar${toolbarLayoutMode === "compact" || toolbarLayoutMode === "wrapped" || toolbarLayoutMode === "scroll" ? " is-compact" : ""}${toolbarLayoutMode === "wrapped" ? " is-wrapped" : ""}${toolbarLayoutMode === "scroll" ? " is-scroll" : ""}`}
       data-layout-mode={toolbarLayoutMode}
+      onContextMenu={handleToolbarContextMenu}
     >
       {showTime ? (
       <div className="toolbar-group">
@@ -677,6 +730,41 @@ export function TopBarPanel(props: TopBarPanelProps) {
       ) : null}
       <MaterialsModal open={materialsModalOpen} onClose={() => setMaterialsModalOpen(false)} />
       <PublishModal open={publishModalOpen} onClose={() => setPublishModalOpen(false)} />
+      {toolbarMenuOpen
+        ? createPortal(
+            <div
+              ref={toolbarMenuRef}
+              className="toolbar-section-menu"
+              style={{ top: `${toolbarMenuPosition.top}px`, left: `${toolbarMenuPosition.left}px` }}
+              role="menu"
+              aria-label="Toolbar sections"
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <div className="toolbar-fps-popover-title">Toolbars</div>
+              {TOOLBAR_SECTIONS.map(({ key, label }) => {
+                const checked = visibility?.[key] ?? true;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={checked}
+                    className={`toolbar-section-option${checked ? " is-active" : ""}`}
+                    onClick={() => kernel.store.getState().actions.setToolbarSectionVisible(key, !checked)}
+                  >
+                    <FontAwesomeIcon
+                      icon={faCheck}
+                      className="toolbar-section-check"
+                      style={{ visibility: checked ? "visible" : "hidden" }}
+                    />
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }

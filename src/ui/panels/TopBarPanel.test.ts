@@ -232,6 +232,73 @@ describe("TopBarPanel screenshot button", () => {
     });
   });
 
+  it("toggles toolbar section visibility from the right-click menu and persists it to the store", async () => {
+    const kernel = createKernelStub();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          KernelProvider as React.ComponentType<{ kernel: AppKernel; children?: React.ReactNode }>,
+          { kernel },
+          React.createElement(TopBarPanel, {
+            onToggleKeyboardMap: () => undefined,
+            onOpenRender: () => undefined,
+            onOpenPrint: () => undefined,
+            onOpenProfiling: () => undefined,
+            profilingState: idleProfilingState,
+            onCaptureViewportScreenshot: () => undefined,
+            canCaptureViewportScreenshot: true,
+            viewportScreenshotBusy: false,
+            requestTextInput: async () => null
+          })
+        )
+      );
+    });
+
+    const toolbar = container.querySelector(".top-toolbar") as HTMLDivElement | null;
+    expect(toolbar).not.toBeNull();
+
+    // No menu until right-clicked.
+    expect(document.querySelector(".toolbar-section-menu")).toBeNull();
+
+    await act(async () => {
+      toolbar?.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 8 })
+      );
+    });
+
+    const menu = document.querySelector(".toolbar-section-menu") as HTMLDivElement | null;
+    expect(menu).not.toBeNull();
+    const options = menu!.querySelectorAll("button[role='menuitemcheckbox']");
+    expect(options.length).toBe(8);
+
+    const fpsOption = Array.from(options).find((el) => el.textContent?.includes("FPS")) as
+      | HTMLButtonElement
+      | undefined;
+    expect(fpsOption).toBeTruthy();
+    expect(fpsOption?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      fpsOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Store now records the section as hidden, and the menu stays open with the
+    // updated check state so multiple sections can be toggled in one pass.
+    expect(kernel.store.getState().state.toolbarVisibility.fps).toBe(false);
+    expect(kernel.store.getState().state.dirty).toBe(true);
+    const fpsOptionAfter = Array.from(
+      document.querySelectorAll(".toolbar-section-menu button[role='menuitemcheckbox']")
+    ).find((el) => el.textContent?.includes("FPS")) as HTMLButtonElement | undefined;
+    expect(fpsOptionAfter?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("opens performance profile capture from the toolbar button", async () => {
     const kernel = createKernelStub();
     const onOpenProfiling = vi.fn();

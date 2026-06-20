@@ -339,6 +339,7 @@ export class ProjectService {
       pluginsEnabled: canonicalized.pluginsEnabled,
       materials: canonicalized.materials,
       assets: canonicalized.assets,
+      toolbarVisibility: canonicalized.toolbarVisibility,
       dirty: false
     });
     this.store.getState().actions.setStats({

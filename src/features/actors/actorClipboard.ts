@@ -4,6 +4,7 @@ import {
   collectSubtreeIds,
   duplicateActorSubtrees,
   filterTopLevelRoots,
+  pruneGeneratedActors,
   type RefKeyResolver
 } from "@/features/actors/actorDuplication";
 
@@ -105,14 +106,17 @@ function selectedActorIds(kernel: AppKernel): string[] {
 /** Serialize the selected actors' subtrees to the system clipboard. */
 export async function copySelection(kernel: AppKernel): Promise<void> {
   const state = kernel.store.getState().state;
-  const { roots, actorIds, componentIds } = collectSubtreeIds(state.actors, selectedActorIds(kernel));
+  // Operate on the authored view so generated Array instances are never copied.
+  const authored = pruneGeneratedActors(state.actors);
+  const ids = selectedActorIds(kernel).filter((id) => authored[id]);
+  const { roots, actorIds, componentIds } = collectSubtreeIds(authored, ids);
   if (roots.length === 0) {
     return;
   }
   const payload: ActorClipboardPayload = {
     __simularcaClipboard: CLIPBOARD_TAG,
     version: CLIPBOARD_VERSION,
-    actors: actorIds.map((id) => structuredClone(state.actors[id]!)),
+    actors: actorIds.map((id) => structuredClone(authored[id]!)),
     components: componentIds.filter((id) => state.components[id]).map((id) => structuredClone(state.components[id]!)),
     rootIds: roots
   };
@@ -201,12 +205,15 @@ export async function pasteClipboard(kernel: AppKernel): Promise<void> {
  */
 export function duplicateSelection(kernel: AppKernel): void {
   const state = kernel.store.getState().state;
-  const ids = selectedActorIds(kernel);
-  if (filterTopLevelRoots(state.actors, ids).length === 0) {
+  // Authored view: duplicating an Array actor yields only its template; the
+  // duplicate's own generated instances are rebuilt by the reconciler.
+  const authored = pruneGeneratedActors(state.actors);
+  const ids = selectedActorIds(kernel).filter((id) => authored[id]);
+  if (filterTopLevelRoots(authored, ids).length === 0) {
     return;
   }
   const result = duplicateActorSubtrees(
-    { actors: state.actors, components: state.components },
+    { actors: authored, components: state.components },
     ids,
     { resolveParentId: (original) => original.parentActorId },
     buildRefKeyResolver(kernel)

@@ -184,7 +184,13 @@ function ActorItem(props: ActorItemProps) {
   const visibilityMode = props.actor.visibilityMode ?? "visible";
   const siblingIds = props.actor.parentActorId ? (actors[props.actor.parentActorId]?.childActorIds ?? []) : rootActorIds;
   const siblingIndex = siblingIds.indexOf(props.actor.id);
-  const visibleChildren = props.actor.childActorIds.map((childId) => actors[childId]).filter((actor): actor is ActorNode => Boolean(actor));
+  const childActors = props.actor.childActorIds
+    .map((childId) => actors[childId])
+    .filter((actor): actor is ActorNode => Boolean(actor));
+  // Generated Array-instance actors are shown read-only in a collapsed group, not
+  // as individually editable rows.
+  const visibleChildren = childActors.filter((actor) => !actor.generatedByActorId);
+  const generatedChildren = childActors.filter((actor) => actor.generatedByActorId);
   const hasExpandedChildren = expanded && visibleChildren.length > 0;
   const rowIndent = indentPx(props.depth);
   const beforeTarget: DragDropTarget = {
@@ -381,6 +387,13 @@ function ActorItem(props: ActorItemProps) {
             />
           ))
         : null}
+      {expanded && generatedChildren.length > 0 ? (
+        <GeneratedInstancesGroup
+          ownerActorId={props.actor.id}
+          instances={generatedChildren}
+          depth={props.depth + 1}
+        />
+      ) : null}
       {hasExpandedChildren ? (
         <>
           <SceneTreeDropGap
@@ -395,6 +408,58 @@ function ActorItem(props: ActorItemProps) {
           />
         </>
       ) : null}
+    </div>
+  );
+}
+
+function GeneratedInstancesGroup(props: { ownerActorId: string; instances: ActorNode[]; depth: number }) {
+  const kernel = useKernel();
+  const [open, setOpen] = useState(false);
+  const selectOwner = () => {
+    kernel.store.getState().actions.select([{ kind: "actor", id: props.ownerActorId }]);
+  };
+  return (
+    <div className="scene-tree-item scene-tree-generated">
+      <div
+        className="scene-tree-item-row scene-tree-generated-group"
+        style={{ paddingLeft: `${indentPx(props.depth)}px`, opacity: 0.6 }}
+      >
+        <button
+          className="scene-tree-expand"
+          type="button"
+          title={open ? "Collapse" : "Expand"}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <FontAwesomeIcon icon={open ? faChevronDown : faChevronRight} />
+        </button>
+        <button
+          className="scene-tree-label"
+          type="button"
+          title="Generated array instances (read-only)"
+          onClick={selectOwner}
+        >
+          {props.instances.length} instance{props.instances.length === 1 ? "" : "s"}
+        </button>
+      </div>
+      {open
+        ? props.instances.map((instance) => (
+            <div
+              key={instance.id}
+              className="scene-tree-item-row scene-tree-generated-instance"
+              style={{ paddingLeft: `${indentPx(props.depth + 1)}px`, opacity: 0.5 }}
+            >
+              <span className="scene-tree-expand placeholder" />
+              <button
+                className="scene-tree-label"
+                type="button"
+                title="Generated instance (read-only)"
+                onClick={selectOwner}
+              >
+                {instance.name}
+              </button>
+            </div>
+          ))
+        : null}
     </div>
   );
 }

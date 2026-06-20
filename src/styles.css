@@ -458,6 +458,48 @@ body {
   text-align: left;
 }
 
+.toolbar-section-menu {
+  position: fixed;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  min-width: 180px;
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(180deg, #112033 0%, #0c1726 100%);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.32);
+  z-index: 40;
+}
+
+.toolbar-section-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: #102033;
+  color: var(--text);
+  text-align: left;
+}
+
+.toolbar-section-option span {
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.toolbar-section-check {
+  width: 12px;
+  flex: 0 0 auto;
+  color: var(--accent, #6fb4ff);
+}
+
+.toolbar-section-option:hover,
+.toolbar-section-option:focus-visible,
+.toolbar-section-option.is-active {
+  border-color: var(--line-strong);
+  background: #16304b;
+}
+
 .toolbar-fps-option span {
   font-size: 12px;
   font-family: var(--font-mono);

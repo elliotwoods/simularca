@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { DEFAULT_RENDER_ENGINE, DEFAULT_SCENE_COLOR_BUFFER_PRECISION, DEFAULT_SCENE_HELPERS } from "@/core/defaults";
+import {
+  DEFAULT_RENDER_ENGINE,
+  DEFAULT_SCENE_COLOR_BUFFER_PRECISION,
+  DEFAULT_SCENE_HELPERS,
+  DEFAULT_TOOLBAR_VISIBILITY
+} from "@/core/defaults";
 import { PROJECT_SCHEMA_VERSION } from "@/core/types";
 import type { ProjectSnapshotManifest } from "@/core/types";
 
@@ -194,6 +199,7 @@ const actorSchema = z.object({
     "cross-section",
     "dimension",
     "annotation",
+    "array",
     "plugin"
   ]),
   visibilityMode: z.enum(["visible", "hidden", "selected"]).default("visible"),
@@ -206,7 +212,10 @@ const actorSchema = z.object({
     rotation: vector3Schema,
     scale: vector3Schema
   }),
-  params: z.record(parameterValueSchema)
+  params: z.record(parameterValueSchema),
+  // Tolerated for forward-compat: generated Array-instance actors are stripped
+  // before save, but parse cleanly if a hand-edited file carries the flag.
+  generatedByActorId: z.string().optional()
 });
 
 const componentSchema = z.object({
@@ -468,7 +477,19 @@ const projectSnapshotSchema = z.object({
       lodTriangleCount: z.number().optional(),
       lodOriginalTriangleCount: z.number().optional()
     })
-  )
+  ),
+  toolbarVisibility: z
+    .object({
+      time: z.boolean().optional(),
+      edit: z.boolean().optional(),
+      render: z.boolean().optional(),
+      profile: z.boolean().optional(),
+      keyboard: z.boolean().optional(),
+      materials: z.boolean().optional(),
+      fps: z.boolean().optional(),
+      tools: z.boolean().optional()
+    })
+    .default(structuredClone(DEFAULT_TOOLBAR_VISIBILITY))
 });
 
 export function parseProjectSnapshot(payload: string): ProjectSnapshotManifest {

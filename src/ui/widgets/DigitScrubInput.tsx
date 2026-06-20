@@ -346,11 +346,20 @@ export function DigitScrubInput(props: DigitScrubInputProps) {
               skipBlurCommitRef.current = false;
               return;
             }
+            if (invalidDraft) {
+              // Reject the commit: keep the field open and focused so the user
+              // can fix the formula or press Escape to revert.
+              window.setTimeout(() => editInputRef.current?.focus(), 0);
+              return;
+            }
             commitDraft();
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
+              if (invalidDraft) {
+                return;
+              }
               (event.target as HTMLInputElement).blur();
             }
             if (event.key === "Escape") {
