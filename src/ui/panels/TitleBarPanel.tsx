@@ -34,6 +34,17 @@ interface TitleBarPanelProps {
   }): Promise<string | null>;
 }
 
+function generateDefaultSnapshotName(existingNames: string[]): string {
+  const now = new Date();
+  const base = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (!existingNames.includes(base)) return base;
+  for (let i = 0; i < 25; i++) {
+    const candidate = `${base}${String.fromCharCode(66 + i)}`; // 66 = 'B'
+    if (!existingNames.includes(candidate)) return candidate;
+  }
+  return base; // fallback (26+ snapshots same day — extremely unlikely)
+}
+
 export function TitleBarPanel(props: TitleBarPanelProps) {
   const kernel = useKernel();
   const state = useAppStore((store) => store.state);
@@ -512,7 +523,7 @@ export function TitleBarPanel(props: TitleBarPanelProps) {
     setEditingSnapshot({
       mode: "create",
       originalName: null,
-      value: "",
+      value: generateDefaultSnapshotName(snapshotOptions.map((o) => o.name)),
       error: null
     });
   };

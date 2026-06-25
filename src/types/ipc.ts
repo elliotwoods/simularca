@@ -706,6 +706,7 @@ export interface ElectronApi {
   discoverExternalPlugins(): Promise<ExternalPluginCandidate[]>;
   getGitDirtyStatus(args: GitDirtyStatusRequest): Promise<GitDirtyStatusResponse>;
   writeClipboardImagePng(args: { pngBytes: Uint8Array }): Promise<void>;
+  printPagePng(args: { pngBytes: Uint8Array; defaultFileName?: string }): Promise<{ path: string } | null>;
   printPagePdf(args: {
     pngBytes: Uint8Array;
     paper: "a4" | "a3";

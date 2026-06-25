@@ -66,6 +66,21 @@ describe("linear placements", () => {
     expectVecClose(positionOf(placements[0]!), [0, 0, 0]);
   });
 
+  it("uses per-step spacing when sized by Spacing", () => {
+    const p = readArrayParams({
+      pattern: "linear",
+      linearCount: 5,
+      linearSizing: "Spacing",
+      linearSpacing: [1, 0, 0],
+      linearCentered: true
+    });
+    const placements = computePlacements(p);
+    expect(placements).toHaveLength(5);
+    expectVecClose(positionOf(placements[0]!), [-2, 0, 0]);
+    expectVecClose(positionOf(placements[1]!), [-1, 0, 0]);
+    expectVecClose(positionOf(placements[4]!), [2, 0, 0]);
+  });
+
   it("never orients linear instances", () => {
     const placements = computePlacements(readArrayParams({ pattern: "linear", linearCount: 3, linearExtent: [3, 0, 0] }));
     for (const m of placements) {
@@ -106,6 +121,24 @@ describe("grid placements", () => {
     const placements = computePlacements(p);
     expectVecClose(positionOf(placements[0]!), [0, 0, 0]);
     expectVecClose(positionOf(placements[1]!), [2, 0, 0]);
+  });
+
+  it("derives per-axis spacing from extent when sized by Extents", () => {
+    const p = readArrayParams({
+      pattern: "grid",
+      gridCountX: 3,
+      gridCountY: 1,
+      gridCountZ: 1,
+      gridSizing: "Extents",
+      gridExtent: [4, 0, 0],
+      gridCentered: true
+    });
+    const placements = computePlacements(p);
+    expect(placements).toHaveLength(3);
+    // Extent 4 over 3 instances => spacing 2, centered about the origin.
+    expectVecClose(positionOf(placements[0]!), [-2, 0, 0]);
+    expectVecClose(positionOf(placements[1]!), [0, 0, 0]);
+    expectVecClose(positionOf(placements[2]!), [2, 0, 0]);
   });
 });
 

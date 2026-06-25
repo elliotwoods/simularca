@@ -23,17 +23,27 @@ interface DragDropTarget {
   indicatorDepth: number;
 }
 
-interface SceneTreeDropGapProps {
+type PreviewEdge = "top" | "bottom";
+
+interface RowTargetContext {
+  actor: ActorNode;
+  depth: number;
+  parentId: string | null;
+  siblingIndex: number;
+  expanded: boolean;
+  hasVisibleChildren: boolean;
+}
+
+interface ResolvedRowTarget {
   target: DragDropTarget;
-  previewTarget: (event: React.DragEvent<HTMLElement>, target: DragDropTarget) => void;
-  commitDropTarget: (event: React.DragEvent<HTMLElement>, target: DragDropTarget) => void;
+  edge: PreviewEdge;
 }
 
 interface ActorItemProps {
   actor: ActorNode;
   depth: number;
   beginDragging: (actorId: string) => void;
-  previewTarget: (event: React.DragEvent<HTMLElement>, target: DragDropTarget) => void;
+  previewTarget: (event: React.DragEvent<HTMLElement>, target: DragDropTarget, edge: PreviewEdge) => void;
   commitDropTarget: (event: React.DragEvent<HTMLElement>, target: DragDropTarget) => void;
   endDragging: () => void;
 }
@@ -81,6 +91,60 @@ function visibilityIcon(mode: ActorVisibilityMode) {
 
 function indentPx(depth: number): number {
   return 8 + depth * 12;
+}
+
+// Each row is split into three vertical drop zones: the top band inserts BEFORE the row,
+// the bottom band inserts AFTER it (both at the row's own depth), and the middle band drops
+// INTO it as a child. Comparing the pointer against the band edges (rather than computing a
+// 0..1 ratio) means a zero-height row — as in jsdom tests, where getBoundingClientRect is all
+// zeros — classifies purely by the sign of (clientY - rowTop): below -> after, above ->
+// before, exactly on it -> into.
+const ZONE_BEFORE_MAX = 0.3;
+const ZONE_AFTER_MIN = 0.7;
+
+function resolveRowTarget(rowEl: HTMLElement, clientY: number, ctx: RowTargetContext): ResolvedRowTarget {
+  const rect = rowEl.getBoundingClientRect();
+  const beforeEdge = rect.top + rect.height * ZONE_BEFORE_MAX;
+  const afterEdge = rect.top + rect.height * ZONE_AFTER_MIN;
+  const safeSiblingIndex = Math.max(ctx.siblingIndex, 0);
+  if (clientY < beforeEdge) {
+    return {
+      edge: "top",
+      target: {
+        kind: "before-row",
+        actorId: ctx.actor.id,
+        newParentId: ctx.parentId,
+        index: safeSiblingIndex,
+        indicatorDepth: ctx.depth
+      }
+    };
+  }
+  if (clientY > afterEdge) {
+    return {
+      edge: "bottom",
+      target: {
+        kind: "after-subtree",
+        actorId: ctx.actor.id,
+        newParentId: ctx.parentId,
+        index: safeSiblingIndex + 1,
+        indicatorDepth: ctx.depth
+      }
+    };
+  }
+  return {
+    edge: "bottom",
+    target: {
+      kind: "into-row",
+      actorId: ctx.actor.id,
+      newParentId: ctx.actor.id,
+      // The into-line is drawn at the row's bottom edge indented to depth+1. On an expanded
+      // group that visually reads as "before the first child", so insert at 0 to match what
+      // the line shows; appending stays reachable via the last child's after-band. Collapsed
+      // or leaf rows hide their children, so append at the end (matching the old intoTarget).
+      index: ctx.expanded && ctx.hasVisibleChildren ? 0 : ctx.actor.childActorIds.length,
+      indicatorDepth: ctx.depth + 1
+    }
+  };
 }
 
 function resolveCommittedIndex(
@@ -132,18 +196,6 @@ function canDropAtTarget(
   return !(currentParentId === target.newParentId && currentIndex === nextIndex);
 }
 
-function SceneTreeDropGap(props: SceneTreeDropGapProps) {
-  return (
-    <div
-      className="scene-tree-drop-gap"
-      data-drop-kind={props.target.kind}
-      data-drop-target-id={props.target.actorId ?? "root"}
-      onDragOver={(event) => props.previewTarget(event, props.target)}
-      onDrop={(event) => props.commitDropTarget(event, props.target)}
-    />
-  );
-}
-
 function ActorItem(props: ActorItemProps) {
   const kernel = useKernel();
   const selection = useAppStore((store) => store.state.selection);
@@ -191,35 +243,14 @@ function ActorItem(props: ActorItemProps) {
   // as individually editable rows.
   const visibleChildren = childActors.filter((actor) => !actor.generatedByActorId);
   const generatedChildren = childActors.filter((actor) => actor.generatedByActorId);
-  const hasExpandedChildren = expanded && visibleChildren.length > 0;
   const rowIndent = indentPx(props.depth);
-  const beforeTarget: DragDropTarget = {
-    kind: "before-row",
-    actorId: props.actor.id,
-    newParentId: props.actor.parentActorId ?? null,
-    index: Math.max(siblingIndex, 0),
-    indicatorDepth: props.depth
-  };
-  const intoTarget: DragDropTarget = {
-    kind: "into-row",
-    actorId: props.actor.id,
-    newParentId: props.actor.id,
-    index: props.actor.childActorIds.length,
-    indicatorDepth: props.depth + 1
-  };
-  const childAppendTarget: DragDropTarget = {
-    kind: "child-append",
-    actorId: props.actor.id,
-    newParentId: props.actor.id,
-    index: props.actor.childActorIds.length,
-    indicatorDepth: props.depth + 1
-  };
-  const afterTarget: DragDropTarget = {
-    kind: "after-subtree",
-    actorId: props.actor.id,
-    newParentId: props.actor.parentActorId ?? null,
-    index: Math.max(siblingIndex + 1, 0),
-    indicatorDepth: props.depth
+  const rowTargetCtx: RowTargetContext = {
+    actor: props.actor,
+    depth: props.depth,
+    parentId: props.actor.parentActorId ?? null,
+    siblingIndex,
+    expanded,
+    hasVisibleChildren: visibleChildren.length > 0
   };
 
   useEffect(() => {
@@ -263,20 +294,17 @@ function ActorItem(props: ActorItemProps) {
   };
 
   const onDragOverRow = (event: React.DragEvent<HTMLDivElement>) => {
-    props.previewTarget(event, hasExpandedChildren ? childAppendTarget : intoTarget);
+    const { target, edge } = resolveRowTarget(event.currentTarget, event.clientY, rowTargetCtx);
+    props.previewTarget(event, target, edge);
   };
 
   const onDropRow = (event: React.DragEvent<HTMLDivElement>) => {
-    props.commitDropTarget(event, intoTarget);
+    const { target } = resolveRowTarget(event.currentTarget, event.clientY, rowTargetCtx);
+    props.commitDropTarget(event, target);
   };
 
   return (
     <div className="scene-tree-item">
-      <SceneTreeDropGap
-        target={beforeTarget}
-        previewTarget={props.previewTarget}
-        commitDropTarget={props.commitDropTarget}
-      />
       <div
         className="scene-tree-item-row"
         data-actor-row-id={props.actor.id}
@@ -394,20 +422,6 @@ function ActorItem(props: ActorItemProps) {
           depth={props.depth + 1}
         />
       ) : null}
-      {hasExpandedChildren ? (
-        <>
-          <SceneTreeDropGap
-            target={childAppendTarget}
-            previewTarget={props.previewTarget}
-            commitDropTarget={props.commitDropTarget}
-          />
-          <SceneTreeDropGap
-            target={afterTarget}
-            previewTarget={props.previewTarget}
-            commitDropTarget={props.commitDropTarget}
-          />
-        </>
-      ) : null}
     </div>
   );
 }
@@ -477,6 +491,7 @@ export function SceneTree(props: SceneTreeProps) {
   const [sceneExpanded, setSceneExpanded] = useState(true);
   const [activePreview, setActivePreview] = useState<DropPreviewState | null>(null);
   const draggedActorIdRef = useRef<string | null>(null);
+  const lastTargetKeyRef = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const rootActors = actorIds.map((id) => actors[id]).filter((actor): actor is ActorNode => Boolean(actor));
   const sceneSelected = selection.length === 0;
@@ -495,6 +510,7 @@ export function SceneTree(props: SceneTreeProps) {
   const endDragging = () => {
     setActivePreview(null);
     draggedActorIdRef.current = null;
+    lastTargetKeyRef.current = null;
   };
 
   const ensureDragSession = (event: React.DragEvent<HTMLElement>): string | null => {
@@ -506,44 +522,42 @@ export function SceneTree(props: SceneTreeProps) {
     return nextDraggedActorId;
   };
 
-  const getPreviewAnchor = (target: DragDropTarget, currentTarget: EventTarget | null): HTMLElement | null => {
-    if (target.kind === "into-row") {
-      return currentTarget instanceof HTMLElement ? currentTarget : null;
-    }
-    if (!rootRef.current) {
-      return null;
-    }
-    return rootRef.current.querySelector(`[data-drop-kind="${target.kind}"][data-drop-target-id="${target.actorId ?? "root"}"]`);
-  };
+  const targetKey = (target: DragDropTarget): string =>
+    `${target.kind}|${target.actorId ?? ""}|${target.newParentId ?? ""}|${target.index}|${target.indicatorDepth}`;
 
-  const setPreviewFromTarget = (target: DragDropTarget, currentTarget: EventTarget | null) => {
+  const setPreviewFromTarget = (anchorEl: HTMLElement, edge: PreviewEdge, target: DragDropTarget) => {
     if (!rootRef.current) {
-      setActivePreview(null);
-      return;
-    }
-    const anchor = getPreviewAnchor(target, currentTarget);
-    if (!(anchor instanceof HTMLElement)) {
       setActivePreview(null);
       return;
     }
     const rootRect = rootRef.current.getBoundingClientRect();
-    const anchorRect = anchor.getBoundingClientRect();
-    const top = target.kind === "into-row" ? anchorRect.bottom - rootRect.top : anchorRect.top + anchorRect.height / 2 - rootRect.top;
-    setActivePreview({
-      indicatorDepth: target.indicatorDepth,
-      top
-    });
+    const rect = anchorEl.getBoundingClientRect();
+    const anchorY = edge === "top" ? rect.top : rect.bottom;
+    // `.scene-tree-drop-preview` is absolutely positioned inside `.scene-tree-root` — its
+    // positioned offset parent, whose content scrolls. Convert the viewport anchor into the
+    // container's content coordinates by adding scrollTop; without this the line drifts
+    // upward by the scroll amount when the tree is scrolled.
+    const top = anchorY - rootRect.top + rootRef.current.scrollTop;
+    setActivePreview({ indicatorDepth: target.indicatorDepth, top });
   };
 
-  const previewTarget = (event: React.DragEvent<HTMLElement>, target: DragDropTarget) => {
+  const previewTarget = (event: React.DragEvent<HTMLElement>, target: DragDropTarget, edge: PreviewEdge) => {
     event.preventDefault();
     event.stopPropagation();
     const draggedActorId = ensureDragSession(event);
     if (!draggedActorId || !canDropAtTarget(draggedActorId, target, actors, actorIds)) {
       setActivePreview(null);
+      lastTargetKeyRef.current = null;
       return;
     }
-    setPreviewFromTarget(target, event.currentTarget);
+    // Skip the re-render when the resolved zone hasn't changed — dragover fires ~60Hz but the
+    // insertion line only moves when the target zone does.
+    const key = targetKey(target);
+    if (key === lastTargetKeyRef.current) {
+      return;
+    }
+    lastTargetKeyRef.current = key;
+    setPreviewFromTarget(event.currentTarget, edge, target);
   };
 
   const commitDropTarget = (event: React.DragEvent<HTMLElement>, target: DragDropTarget) => {
@@ -561,15 +575,53 @@ export function SceneTree(props: SceneTreeProps) {
     kernel.store.getState().actions.reorderActor(actorId, target.newParentId, nextIndex);
   };
 
+  // Dragging over the empty area below the tree (or an empty scene) drops at the end of the
+  // root list. Rows handle their own dragover and stopPropagation, so this only fires when the
+  // pointer is over the container itself or a non-draggable child (e.g. the scene header).
+  const onRootContainerDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (event.target !== event.currentTarget) {
+      if (lastTargetKeyRef.current !== null) {
+        setActivePreview(null);
+        lastTargetKeyRef.current = null;
+      }
+      return;
+    }
+    const draggedActorId = ensureDragSession(event);
+    if (!draggedActorId || !canDropAtTarget(draggedActorId, rootEndTarget, actors, actorIds)) {
+      setActivePreview(null);
+      lastTargetKeyRef.current = null;
+      return;
+    }
+    const key = targetKey(rootEndTarget);
+    if (key === lastTargetKeyRef.current) {
+      return;
+    }
+    lastTargetKeyRef.current = key;
+    const rows = rootRef.current?.querySelectorAll<HTMLElement>("[data-actor-row-id]");
+    const lastRow = rows && rows.length > 0 ? rows[rows.length - 1] : null;
+    if (lastRow) {
+      setPreviewFromTarget(lastRow, "bottom", rootEndTarget);
+    } else {
+      setActivePreview({ indicatorDepth: rootEndTarget.indicatorDepth, top: 0 });
+    }
+  };
+
+  const onRootContainerDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) {
+      commitDropTarget(event, rootEndTarget);
+      return;
+    }
+    event.preventDefault();
+    endDragging();
+  };
+
   return (
     <div
       className="scene-tree-root"
       ref={rootRef}
-      onDrop={(event) => {
-        event.preventDefault();
-        endDragging();
-      }}
-      onDragOver={(event) => event.preventDefault()}
+      onDrop={onRootContainerDrop}
+      onDragOver={onRootContainerDragOver}
       onDragEnd={endDragging}
     >
       {activePreview ? (
@@ -620,13 +672,6 @@ export function SceneTree(props: SceneTreeProps) {
               />
             ))
           : null}
-        {sceneExpanded ? (
-          <SceneTreeDropGap
-            target={rootEndTarget}
-            previewTarget={previewTarget}
-            commitDropTarget={commitDropTarget}
-          />
-        ) : null}
       </div>
     </div>
   );

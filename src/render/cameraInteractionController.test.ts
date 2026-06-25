@@ -18,6 +18,7 @@ interface ControllerInternals {
   onPointerDown(event: PointerEvent): void;
   onPointerMove(event: PointerEvent): void;
   onPointerUp(event: PointerEvent): void;
+  onWheel(event: WheelEvent): void;
   setPointerDownBlocker(blocker: ((event: PointerEvent) => boolean) | null): void;
 }
 
@@ -101,6 +102,43 @@ function createPerspectiveCameraAndControls() {
   camera.updateMatrixWorld();
   camera.updateProjectionMatrix();
   return { camera, controls };
+}
+
+function createOrthographicCameraAndControls() {
+  const aspect = 1200 / 800;
+  const orthoSize = 8;
+  const controls = {
+    enabled: true,
+    target: new THREE.Vector3(0, 0, 0),
+    minZoom: 0.05,
+    maxZoom: 200
+  };
+  const camera = new THREE.OrthographicCamera(
+    -orthoSize * aspect,
+    orthoSize * aspect,
+    orthoSize,
+    -orthoSize,
+    0.01,
+    1000
+  );
+  camera.position.set(0, 10, 0);
+  camera.zoom = 1;
+  camera.lookAt(controls.target);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+  return { camera, controls };
+}
+
+function createWheelEvent(deltaY: number, clientX: number, clientY: number, domElement: HTMLElement): WheelEvent {
+  return {
+    deltaY,
+    clientX,
+    clientY,
+    preventDefault() {},
+    stopPropagation() {},
+    target: domElement,
+    currentTarget: domElement
+  } as unknown as WheelEvent;
 }
 
 describe("CameraInteractionController remapped mouse controls", () => {
@@ -380,6 +418,67 @@ describe("CameraInteractionController remapped mouse controls", () => {
 
       expect(camera.position.distanceTo(initialPosition)).toBeGreaterThan(1e-6);
       expect(controls.target.distanceTo(initialTarget)).toBeLessThan(1e-9);
+    } finally {
+      (controller as unknown as { dispose(): void }).dispose();
+      domElement.remove();
+    }
+  });
+
+  it("preserves world point under cursor after ortho wheel zoom-in", () => {
+    const domElement = createDomElement();
+    const { camera, controls } = createOrthographicCameraAndControls();
+
+    const controller = new CameraInteractionController({
+      kernel: createKernelStub(),
+      domElement,
+      controls,
+      getCamera: () => camera
+    }) as unknown as ControllerInternals;
+
+    try {
+      const cursorClientX = 900;
+      const cursorClientY = 200;
+
+      const rect = domElement.getBoundingClientRect();
+      const cursorNdc = new THREE.Vector2(
+        ((cursorClientX - rect.left) / rect.width) * 2 - 1,
+        -((cursorClientY - rect.top) / rect.height) * 2 + 1
+      );
+
+      const worldBefore = new THREE.Vector3(cursorNdc.x, cursorNdc.y, 0).unproject(camera);
+
+      controller.onWheel(createWheelEvent(-100, cursorClientX, cursorClientY, domElement));
+
+      const worldAfter = new THREE.Vector3(cursorNdc.x, cursorNdc.y, 0).unproject(camera);
+
+      expect(worldBefore.distanceTo(worldAfter)).toBeLessThan(1e-5);
+      expect(camera.zoom).toBeGreaterThan(1);
+    } finally {
+      (controller as unknown as { dispose(): void }).dispose();
+      domElement.remove();
+    }
+  });
+
+  it("does not translate camera when zooming at viewport center", () => {
+    const domElement = createDomElement();
+    const { camera, controls } = createOrthographicCameraAndControls();
+
+    const controller = new CameraInteractionController({
+      kernel: createKernelStub(),
+      domElement,
+      controls,
+      getCamera: () => camera
+    }) as unknown as ControllerInternals;
+
+    try {
+      const initialPosition = camera.position.clone();
+      const initialTarget = controls.target.clone();
+
+      controller.onWheel(createWheelEvent(-100, 600, 400, domElement));
+
+      expect(camera.position.distanceTo(initialPosition)).toBeLessThan(1e-9);
+      expect(controls.target.distanceTo(initialTarget)).toBeLessThan(1e-9);
+      expect(camera.zoom).toBeGreaterThan(1);
     } finally {
       (controller as unknown as { dispose(): void }).dispose();
       domElement.remove();

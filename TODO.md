@@ -1,4 +1,30 @@
-# Interface
+# Mylar
+
+* Fix mylar
+* Ability to pause the mylar properly
+
+# Print
+
+* Can choose save file location
+* Default save file name includes snapshot name and the name of the camera (e.g. top/left/etc)
+* Sometimes gridlines are broken (e.g. side view)
+
+# Dimensions
+
+* Ensure we're not picking points on objects which have visibility turned off
+* Make sure that dimensions update. At the moment we are seeing the shape update but not the number when the reference objects change
+
+# Grid
+
+* When zoomed in, we want to see clearer contrast on the grid. Keep majors the same but make half ticks a little noticeable and rest of ticks very dim but still visible
+
+# Snapshots
+
+* When making a new snapshot, default to YYYY-MM-DD[letter]
+
+# Camera
+
+* When in orthogonal views, zoom in and out relative to the mouse cursor position
 
 
 ## Can be improved
@@ -82,7 +108,7 @@ X,Y,Z widget in the corner of the screen
     * sub-menus
     * blocks in the inspector
     * 
-# Remderer
+# Video Remderer
 
 * Speed up
 * Sometimes we don't even need the video, we just want to cache the frames
@@ -94,6 +120,7 @@ X,Y,Z widget in the corner of the screen
 Better transport controls
 Consider showing time at the bottom of the viewport (e.g. with keyframes, and skipping affects total time)
 Option of 'timeline mode' and 'continous mode'
+Keyframe controls
 
 # Camera Path
 

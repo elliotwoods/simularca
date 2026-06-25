@@ -89,6 +89,7 @@ const api = {
   discoverExternalPlugins: () => ipcRenderer.invoke("plugins:discover-external"),
   getGitDirtyStatus: (args) => ipcRenderer.invoke("git:dirty-status", args),
   writeClipboardImagePng: (args) => ipcRenderer.invoke("clipboard:write-image-png", args),
+  printPagePng: (args) => ipcRenderer.invoke("print:png", args),
   printPagePdf: (args) => ipcRenderer.invoke("print:pdf", args),
   printPageDialog: (args) => ipcRenderer.invoke("print:dialog", args),
   renderPipeOpen: (args) => ipcRenderer.invoke("render:pipe-open", args),

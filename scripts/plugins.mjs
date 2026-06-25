@@ -111,13 +111,15 @@ function createDirectNodeSpec(pluginPackage, scriptCommand, extraArgs = []) {
   if (!match) {
     return null;
   }
-  const scriptPath = match[1]?.trim();
+  const tokens = match[1].trim().split(/\s+/);
+  const scriptPath = tokens.shift();
   if (!scriptPath) {
     return null;
   }
+  const scriptArgs = tokens; // inline flags from the script string, e.g. "--watch"
   return {
     command: process.execPath,
-    args: [path.resolve(pluginPackage.path, scriptPath), ...extraArgs],
+    args: [path.resolve(pluginPackage.path, scriptPath), ...scriptArgs, ...extraArgs],
     restartOnExit: false
   };
 }

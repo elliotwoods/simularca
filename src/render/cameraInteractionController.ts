@@ -515,7 +515,7 @@ export class CameraInteractionController {
     updateCameraLookAt(camera, this.controls.target);
   }
 
-  private applyZoomDelta(camera: THREE.Camera, delta: number): void {
+  private applyZoomDelta(camera: THREE.Camera, delta: number, cursorNdc?: THREE.Vector2 | null): void {
     if (delta === 0) {
       return;
     }
@@ -525,8 +525,21 @@ export class CameraInteractionController {
       const minZoom = Number(this.controls.minZoom ?? 0.05);
       const maxZoom = Number(this.controls.maxZoom ?? 200);
       const nextZoom = delta > 0 ? camera.zoom / scalar : camera.zoom * scalar;
-      camera.zoom = Math.max(minZoom, Math.min(maxZoom, nextZoom));
-      camera.updateProjectionMatrix();
+      const clampedZoom = Math.max(minZoom, Math.min(maxZoom, nextZoom));
+
+      if (cursorNdc && clampedZoom !== camera.zoom) {
+        const worldBefore = new THREE.Vector3(cursorNdc.x, cursorNdc.y, 0).unproject(camera);
+        camera.zoom = clampedZoom;
+        camera.updateProjectionMatrix();
+        const worldAfter = new THREE.Vector3(cursorNdc.x, cursorNdc.y, 0).unproject(camera);
+        const translation = worldBefore.sub(worldAfter);
+        camera.position.add(translation);
+        this.controls.target.add(translation);
+        updateCameraLookAt(camera, this.controls.target);
+      } else {
+        camera.zoom = clampedZoom;
+        camera.updateProjectionMatrix();
+      }
       return;
     }
 
@@ -549,7 +562,11 @@ export class CameraInteractionController {
       return;
     }
     const delta = Number.isFinite(event.deltaY) ? event.deltaY : 0;
-    this.applyZoomDelta(camera, delta);
+    const cursorNdc =
+      camera instanceof THREE.OrthographicCamera
+        ? getClientNdc(this.domElement, event.clientX, event.clientY)
+        : null;
+    this.applyZoomDelta(camera, delta, cursorNdc);
   }
 
   private isEventInsideViewport(event: Event): boolean {

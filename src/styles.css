@@ -1748,11 +1748,6 @@ select {
   gap: 6px;
 }
 
-.scene-tree-drop-gap {
-  position: relative;
-  min-height: 4px;
-}
-
 .scene-tree-drop-preview {
   position: absolute;
   right: 6px;

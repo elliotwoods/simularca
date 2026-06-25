@@ -139,7 +139,7 @@ const AXIS_ALIGNED_DOT = 0.9995;
 function inPlaneAxes(normalAxis: 0 | 1 | 2): [0 | 1 | 2, 0 | 1 | 2] {
   switch (normalAxis) {
     case 0:
-      return [1, 2]; // looking down X: screen H = Y, screen V = Z
+      return [2, 1]; // looking down X (left/right): screen H = Z, screen V = Y
     case 1:
       return [0, 2]; // looking down Y (top): screen H = X, screen V = Z
     case 2:

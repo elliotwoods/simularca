@@ -18,18 +18,24 @@ export const MAX_INSTANCES_PER_ARRAY = 1024;
 
 export type ArrayPatternKind = "linear" | "grid" | "circular" | "along-curve";
 export type ArrayAxis = "x" | "y" | "z";
+/** How a translational pattern (linear/grid) is sized: total span vs. per-step distance. */
+export type ArraySizing = "extent" | "spacing";
 
 export interface ArrayParams {
   pattern: ArrayPatternKind;
   // linear
   linearCount: number;
+  linearSizing: ArraySizing;
   linearExtent: [number, number, number];
+  linearSpacing: [number, number, number];
   linearCentered: boolean;
   // grid
   gridCountX: number;
   gridCountY: number;
   gridCountZ: number;
+  gridSizing: ArraySizing;
   gridSize: [number, number, number];
+  gridExtent: [number, number, number];
   gridCentered: boolean;
   // circular
   circularCount: number;
@@ -88,12 +94,16 @@ export function readArrayParams(params: ParameterValues): ArrayParams {
   return {
     pattern: pattern(params.pattern),
     linearCount: int(params.linearCount, 5, 0),
+    linearSizing: params.linearSizing === "Spacing" ? "spacing" : "extent",
     linearExtent: vec3(params.linearExtent, [2, 0, 0]),
+    linearSpacing: vec3(params.linearSpacing, [0.5, 0, 0]),
     linearCentered: bool(params.linearCentered, true),
     gridCountX: int(params.gridCountX, 3, 1),
     gridCountY: int(params.gridCountY, 1, 1),
     gridCountZ: int(params.gridCountZ, 3, 1),
+    gridSizing: params.gridSizing === "Extents" ? "extent" : "spacing",
     gridSize: vec3(params.gridSize, [1, 1, 1]),
+    gridExtent: vec3(params.gridExtent, [2, 0, 2]),
     gridCentered: bool(params.gridCentered, true),
     circularCount: int(params.circularCount, 8, 0),
     circularRadius: Math.max(0, num(params.circularRadius, 2)),
@@ -189,7 +199,13 @@ export function computePlacements(p: ArrayParams, sampleCurveLocal?: LocalCurveS
 
 function linearPlacements(p: ArrayParams): THREE.Matrix4[] {
   const count = Math.min(MAX_INSTANCES_PER_ARRAY, Math.max(0, p.linearCount));
-  const [ex, ey, ez] = p.linearExtent;
+  // Sizing by spacing is the per-step distance; convert it to a total extent so
+  // the centering math below is identical for both modes.
+  const steps = Math.max(0, count - 1);
+  const [ex, ey, ez] =
+    p.linearSizing === "spacing"
+      ? [p.linearSpacing[0] * steps, p.linearSpacing[1] * steps, p.linearSpacing[2] * steps]
+      : p.linearExtent;
   const shift = p.linearCentered ? 0.5 : 0;
   const out: THREE.Matrix4[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -204,7 +220,16 @@ function gridPlacements(p: ArrayParams): THREE.Matrix4[] {
   const nx = Math.max(1, p.gridCountX);
   const ny = Math.max(1, p.gridCountY);
   const nz = Math.max(1, p.gridCountZ);
-  const [sx, sy, sz] = p.gridSize;
+  // Sizing by extent is the total span on each axis; convert it to a per-step
+  // spacing so the placement loop below is identical for both modes.
+  const [sx, sy, sz] =
+    p.gridSizing === "extent"
+      ? [
+          nx > 1 ? p.gridExtent[0] / (nx - 1) : 0,
+          ny > 1 ? p.gridExtent[1] / (ny - 1) : 0,
+          nz > 1 ? p.gridExtent[2] / (nz - 1) : 0
+        ]
+      : p.gridSize;
   const cx = p.gridCentered ? (nx - 1) / 2 : 0;
   const cy = p.gridCentered ? (ny - 1) / 2 : 0;
   const cz = p.gridCentered ? (nz - 1) / 2 : 0;

@@ -1312,25 +1312,6 @@ function sanitizePrintPdfName(name: string | undefined): string {
   return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
 }
 
-/**
- * Resolve a writable path in `dir` for `fileName`, appending " (1)", " (2)", …
- * before the extension if the file already exists, so repeated silent exports
- * never overwrite an earlier one.
- */
-async function resolveUniquePath(dir: string, fileName: string): Promise<string> {
-  const ext = path.extname(fileName);
-  const stem = path.basename(fileName, ext);
-  let candidate = path.join(dir, fileName);
-  for (let i = 1; ; i += 1) {
-    try {
-      await fs.access(candidate);
-      candidate = path.join(dir, `${stem} (${i})${ext}`);
-    } catch {
-      return candidate;
-    }
-  }
-}
-
 async function loadPrintPage(
   pngBytes: Uint8Array,
   paper: "a4" | "a3",
@@ -1757,16 +1738,44 @@ function registerIpcHandlers(): void {
     }
   );
   ipcMain.handle(
+    "print:png",
+    async (event, args: { pngBytes: Uint8Array; defaultFileName?: string }) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const downloadsDir = app.getPath("downloads");
+      const defaultPath = path.join(downloadsDir, sanitizePrintPdfName(args.defaultFileName).replace(/\.pdf$/i, ".png"));
+      const opts = {
+        title: "Save PNG",
+        defaultPath,
+        filters: [{ name: "PNG Image", extensions: ["png"] }]
+      };
+      const result = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (result.canceled || !result.filePath) {
+        return null;
+      }
+      await fs.writeFile(result.filePath, Buffer.from(args.pngBytes));
+      return { path: result.filePath };
+    }
+  );
+  ipcMain.handle(
     "print:pdf",
     async (
-      _event,
+      event,
       args: { pngBytes: Uint8Array; paper: "a4" | "a3"; landscape: boolean; defaultFileName?: string }
     ) => {
-      // Save straight to the Downloads folder (matching the PNG export) instead of
-      // prompting for a path; de-duplicate so repeated exports don't overwrite.
+      // Prompt for a save location, defaulting to the Downloads folder.
+      const win = BrowserWindow.fromWebContents(event.sender);
       const downloadsDir = app.getPath("downloads");
-      await fs.mkdir(downloadsDir, { recursive: true });
-      const targetPath = await resolveUniquePath(downloadsDir, sanitizePrintPdfName(args.defaultFileName));
+      const defaultPath = path.join(downloadsDir, sanitizePrintPdfName(args.defaultFileName));
+      const opts = {
+        title: "Save PDF",
+        defaultPath,
+        filters: [{ name: "PDF Document", extensions: ["pdf"] }]
+      };
+      const saveResult = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (saveResult.canceled || !saveResult.filePath) {
+        return null;
+      }
+      const targetPath = saveResult.filePath;
       const cleanup = await loadPrintPage(args.pngBytes, args.paper, args.landscape);
       try {
         const pdf = await cleanup.win.webContents.printToPDF({

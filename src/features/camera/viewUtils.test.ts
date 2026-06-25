@@ -83,6 +83,33 @@ describe("computeOrthoEdgeMapping", () => {
     expect(mapping ? (mapping.worldAtTop + mapping.worldAtBottom) / 2 : NaN).toBeCloseTo(2, 4);
   });
 
+  it("maps a left/right side view to world Z (horizontal) and Y (vertical) with non-zero spans", () => {
+    // Looking down the world X axis. The in-plane axes must be Z (horizontal) and
+    // Y (vertical); a swapped mapping collapses both spans to zero and the print
+    // grid/ruler vanish entirely (regression: side-view grid was blank).
+    const side: CameraState = {
+      mode: "orthographic",
+      position: [13, 2, 3],
+      target: [1, 2, 3],
+      fov: 50,
+      zoom: 2,
+      near: 0.01,
+      far: 1000
+    };
+    const mapping = computeOrthoEdgeMapping(side, ASPECT);
+    expect(mapping).not.toBeNull();
+    if (!mapping) {
+      return;
+    }
+    expect(mapping.axisU).toBe(2); // Z → horizontal
+    expect(mapping.axisV).toBe(1); // Y → vertical
+    // Both spans must be non-degenerate so the vector grid/ruler actually draw.
+    expect(Math.abs(mapping.worldAtRight - mapping.worldAtLeft)).toBeGreaterThan(0.1);
+    expect(Math.abs(mapping.worldAtTop - mapping.worldAtBottom)).toBeGreaterThan(0.1);
+    expect((mapping.worldAtLeft + mapping.worldAtRight) / 2).toBeCloseTo(3, 4); // centred on target Z
+    expect((mapping.worldAtTop + mapping.worldAtBottom) / 2).toBeCloseTo(2, 4); // centred on target Y
+  });
+
   it("returns null for perspective and non-axis-aligned orthographic views", () => {
     expect(computeOrthoEdgeMapping(PERSPECTIVE_CAMERA, ASPECT)).toBeNull();
     const iso: CameraState = {

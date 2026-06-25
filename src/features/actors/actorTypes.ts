@@ -1418,8 +1418,15 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 1024,
       step: 1,
       defaultValue: 5,
-      groupKey: "linear",
-      groupLabel: "Linear",
+      visibleWhen: [{ key: "pattern", equals: "linear" }]
+    },
+    {
+      key: "linearSizing",
+      label: "Define By",
+      type: "select",
+      options: ["Extents", "Spacing"],
+      defaultValue: "Extents",
+      description: "Whether the line is sized by its total extent or by the spacing between adjacent instances.",
       visibleWhen: [{ key: "pattern", equals: "linear" }]
     },
     {
@@ -1428,18 +1435,29 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       type: "vector3",
       unit: "m",
       defaultValue: [2, 0, 0],
-      groupKey: "linear",
-      groupLabel: "Linear",
       description: "Total span from the first to the last instance.",
-      visibleWhen: [{ key: "pattern", equals: "linear" }]
+      visibleWhen: [
+        { key: "pattern", equals: "linear" },
+        { key: "linearSizing", equals: "Extents" }
+      ]
+    },
+    {
+      key: "linearSpacing",
+      label: "Spacing (XYZ)",
+      type: "vector3",
+      unit: "m",
+      defaultValue: [0.5, 0, 0],
+      description: "Distance between adjacent instances.",
+      visibleWhen: [
+        { key: "pattern", equals: "linear" },
+        { key: "linearSizing", equals: "Spacing" }
+      ]
     },
     {
       key: "linearCentered",
       label: "Centered",
       type: "boolean",
       defaultValue: true,
-      groupKey: "linear",
-      groupLabel: "Linear",
       visibleWhen: [{ key: "pattern", equals: "linear" }]
     },
     // --- grid ---
@@ -1451,8 +1469,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 256,
       step: 1,
       defaultValue: 3,
-      groupKey: "grid",
-      groupLabel: "Grid",
       visibleWhen: [{ key: "pattern", equals: "grid" }]
     },
     {
@@ -1463,8 +1479,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 256,
       step: 1,
       defaultValue: 1,
-      groupKey: "grid",
-      groupLabel: "Grid",
       visibleWhen: [{ key: "pattern", equals: "grid" }]
     },
     {
@@ -1475,8 +1489,15 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 256,
       step: 1,
       defaultValue: 3,
-      groupKey: "grid",
-      groupLabel: "Grid",
+      visibleWhen: [{ key: "pattern", equals: "grid" }]
+    },
+    {
+      key: "gridSizing",
+      label: "Define By",
+      type: "select",
+      options: ["Extents", "Spacing"],
+      defaultValue: "Spacing",
+      description: "Whether the grid is sized by its total extent on each axis or by the spacing between adjacent instances.",
       visibleWhen: [{ key: "pattern", equals: "grid" }]
     },
     {
@@ -1485,18 +1506,29 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       type: "vector3",
       unit: "m",
       defaultValue: [1, 1, 1],
-      groupKey: "grid",
-      groupLabel: "Grid",
       description: "Spacing between adjacent instances on each axis.",
-      visibleWhen: [{ key: "pattern", equals: "grid" }]
+      visibleWhen: [
+        { key: "pattern", equals: "grid" },
+        { key: "gridSizing", equals: "Spacing" }
+      ]
+    },
+    {
+      key: "gridExtent",
+      label: "Extent (XYZ)",
+      type: "vector3",
+      unit: "m",
+      defaultValue: [2, 0, 2],
+      description: "Total span on each axis from the first to the last instance.",
+      visibleWhen: [
+        { key: "pattern", equals: "grid" },
+        { key: "gridSizing", equals: "Extents" }
+      ]
     },
     {
       key: "gridCentered",
       label: "Centered",
       type: "boolean",
       defaultValue: true,
-      groupKey: "grid",
-      groupLabel: "Grid",
       visibleWhen: [{ key: "pattern", equals: "grid" }]
     },
     // --- circular ---
@@ -1508,8 +1540,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 1024,
       step: 1,
       defaultValue: 8,
-      groupKey: "circular",
-      groupLabel: "Circular",
       visibleWhen: [{ key: "pattern", equals: "circular" }]
     },
     {
@@ -1520,8 +1550,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       step: 0.01,
       unit: "m",
       defaultValue: 2,
-      groupKey: "circular",
-      groupLabel: "Circular",
       visibleWhen: [{ key: "pattern", equals: "circular" }]
     },
     {
@@ -1530,8 +1558,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       type: "select",
       options: ["x", "y", "z"],
       defaultValue: "y",
-      groupKey: "circular",
-      groupLabel: "Circular",
       description: "Normal of the circle plane.",
       visibleWhen: [{ key: "pattern", equals: "circular" }]
     },
@@ -1542,8 +1568,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       step: 1,
       unit: "°",
       defaultValue: 0,
-      groupKey: "circular",
-      groupLabel: "Circular",
       visibleWhen: [{ key: "pattern", equals: "circular" }]
     },
     {
@@ -1553,8 +1577,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       step: 1,
       unit: "°",
       defaultValue: 360,
-      groupKey: "circular",
-      groupLabel: "Circular",
       visibleWhen: [{ key: "pattern", equals: "circular" }]
     },
     {
@@ -1562,8 +1584,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       label: "Face Outward",
       type: "boolean",
       defaultValue: true,
-      groupKey: "circular",
-      groupLabel: "Circular",
       description: "Rotate each instance to face radially away from the center.",
       visibleWhen: [{ key: "pattern", equals: "circular" }]
     },
@@ -1574,8 +1594,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       type: "actor-ref",
       allowedActorTypes: ["curve"],
       allowSelf: false,
-      groupKey: "along-curve",
-      groupLabel: "Along Curve",
       description: "Curve actor whose path the instances are distributed along.",
       visibleWhen: [{ key: "pattern", equals: "along-curve" }]
     },
@@ -1587,8 +1605,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 1024,
       step: 1,
       defaultValue: 10,
-      groupKey: "along-curve",
-      groupLabel: "Along Curve",
       visibleWhen: [{ key: "pattern", equals: "along-curve" }]
     },
     {
@@ -1599,8 +1615,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 1,
       step: 0.01,
       defaultValue: 0,
-      groupKey: "along-curve",
-      groupLabel: "Along Curve",
       visibleWhen: [{ key: "pattern", equals: "along-curve" }]
     },
     {
@@ -1611,8 +1625,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       max: 1,
       step: 0.01,
       defaultValue: 1,
-      groupKey: "along-curve",
-      groupLabel: "Along Curve",
       visibleWhen: [{ key: "pattern", equals: "along-curve" }]
     },
     {
@@ -1620,8 +1632,6 @@ export const ARRAY_ACTOR_SCHEMA: ParameterSchema = {
       label: "Orient To Tangent",
       type: "boolean",
       defaultValue: true,
-      groupKey: "along-curve",
-      groupLabel: "Along Curve",
       description: "Rotate each instance to follow the curve tangent.",
       visibleWhen: [{ key: "pattern", equals: "along-curve" }]
     }

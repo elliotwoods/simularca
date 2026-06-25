@@ -8,12 +8,24 @@ import { applyLineOpacity, normalizeBackgroundColor, type SceneController } from
 // tolerance used by isCameraFacingDirection in viewUtils.
 const AXIS_ALIGNED_DOT = 0.9995;
 // At or below this on-screen spacing (in CSS pixels) the minor lines are fully
-// faded out and dropped, so a zoomed-out ortho view stays legible/cheap.
-const MINOR_FADE_MIN_PIXEL_SPACING = 4;
+// faded out and dropped, so a zoomed-out ortho view stays legible/cheap. Kept
+// low so the minor lines linger a little longer before disappearing as the view
+// zooms out, fading out gently rather than dropping abruptly.
+const MINOR_FADE_MIN_PIXEL_SPACING = 2;
 // At or above this on-screen spacing the minor lines are drawn at full opacity.
 // Between the two bounds they fade linearly with zoom so the subgrid eases in
 // and out instead of popping as the boundary is crossed.
 const MINOR_FADE_FULL_PIXEL_SPACING = 12;
+// Opacity scales for the three-tier grid: major (full), half (midpoints), minor (rest).
+const HALF_OPACITY_SCALE = 0.6;
+const MINOR_OPACITY_SCALE = 0.25;
+// When the major lines crowd together on screen (zoomed out) they dim toward
+// MAJOR_FADE_MIN_OPACITY so a dense major grid stays calm instead of reading as a
+// solid fill. At or below MAJOR_FADE_MIN_PIXEL_SPACING they sit at the floor; at
+// or above MAJOR_FADE_FULL_PIXEL_SPACING they are fully opaque; linear in between.
+const MAJOR_FADE_MIN_PIXEL_SPACING = 50;
+const MAJOR_FADE_FULL_PIXEL_SPACING = 100;
+const MAJOR_FADE_MIN_OPACITY = 0.5;
 // Hard safety cap on the number of grid lines generated per axis.
 const MAX_LINES_PER_AXIS = 4000;
 const TICK_EPSILON = 1e-6;
@@ -41,6 +53,9 @@ interface GridUpdate {
   // Per-frame minor-line opacity multiplier (0..1). Kept out of `request` so a
   // continuous zoom fade does not force a geometry rebuild every frame.
   minorFade: number;
+  // Per-frame major-line opacity multiplier (MAJOR_FADE_MIN_OPACITY..1), dimming
+  // the majors as they crowd together. Kept out of `request` for the same reason.
+  majorFade: number;
 }
 
 // In-plane axes (lowest index first) for a grid whose normal is the given axis.
@@ -68,6 +83,11 @@ function isMajorTick(value: number, majorPitch: number): boolean {
   return Math.abs(ratio - Math.round(ratio)) < 1e-4;
 }
 
+function isHalfTick(value: number, majorPitch: number): boolean {
+  const ratio = value / majorPitch;
+  return Math.abs(Math.abs(ratio - Math.round(ratio)) - 0.5) < 1e-4;
+}
+
 // Opacity multiplier (0..1) for the minor grid lines given their on-screen
 // spacing in CSS pixels. Fully transparent at/below MINOR_FADE_MIN_PIXEL_SPACING,
 // fully opaque at/above MINOR_FADE_FULL_PIXEL_SPACING, linear in between.
@@ -81,6 +101,20 @@ export function minorFadeForSpacing(minorPixelSpacing: number): number {
   return Math.max(0, Math.min(1, t));
 }
 
+// Opacity multiplier for the major grid lines given their on-screen spacing in
+// CSS pixels. Drops to MAJOR_FADE_MIN_OPACITY at/below MAJOR_FADE_MIN_PIXEL_SPACING
+// (majors crowded together when zoomed out), rises to 1 at/above
+// MAJOR_FADE_FULL_PIXEL_SPACING, linear in between.
+export function majorFadeForSpacing(majorPixelSpacing: number): number {
+  if (Number.isNaN(majorPixelSpacing)) {
+    return 1;
+  }
+  const span = MAJOR_FADE_FULL_PIXEL_SPACING - MAJOR_FADE_MIN_PIXEL_SPACING;
+  const t = (majorPixelSpacing - MAJOR_FADE_MIN_PIXEL_SPACING) / span;
+  const clamped = Math.max(0, Math.min(1, t));
+  return MAJOR_FADE_MIN_OPACITY + clamped * (1 - MAJOR_FADE_MIN_OPACITY);
+}
+
 function lineMaterial(color: string): THREE.LineBasicMaterial {
   return new THREE.LineBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false });
 }
@@ -88,8 +122,10 @@ function lineMaterial(color: string): THREE.LineBasicMaterial {
 export class SceneGridController {
   private readonly root = new THREE.Group();
   private readonly minorMaterial = lineMaterial("#1f2430");
+  private readonly halfMaterial = lineMaterial("#1f2430");
   private readonly majorMaterial = lineMaterial("#2f8f9d");
   private minorSegments: THREE.LineSegments | null = null;
+  private halfSegments: THREE.LineSegments | null = null;
   private majorSegments: THREE.LineSegments | null = null;
   private currentCamera: THREE.Camera;
   private viewportHeight = 1;
@@ -118,6 +154,7 @@ export class SceneGridController {
   public dispose(): void {
     this.clearSegments();
     this.minorMaterial.dispose();
+    this.halfMaterial.dispose();
     this.majorMaterial.dispose();
     this.root.parent?.remove(this.root);
   }
@@ -138,16 +175,17 @@ export class SceneGridController {
       this.currentCamera.updateProjectionMatrix();
     }
 
-    const { request, minorFade } = this.computeRequest(grid);
+    const { request, minorFade, majorFade } = this.computeRequest(grid);
     const signature = JSON.stringify(request);
     if (signature !== this.signature) {
       this.rebuild(request);
       this.signature = signature;
     }
     // Opacity is applied every frame (not folded into the signature) so the
-    // minor lines can fade smoothly with zoom without rebuilding geometry.
-    applyLineOpacity(this.minorSegments ?? {}, request.opacity * minorFade);
-    applyLineOpacity(this.majorSegments ?? {}, request.opacity);
+    // lines can fade smoothly with zoom without rebuilding geometry.
+    applyLineOpacity(this.minorSegments ?? {}, request.opacity * minorFade * MINOR_OPACITY_SCALE);
+    applyLineOpacity(this.halfSegments ?? {}, request.opacity * minorFade * HALF_OPACITY_SCALE);
+    applyLineOpacity(this.majorSegments ?? {}, request.opacity * majorFade);
   }
 
   private computeRequest(grid: SceneGridSettings): GridUpdate {
@@ -227,6 +265,8 @@ export class SceneGridController {
     const worldHeight = (camera.top - camera.bottom) / Math.max(1e-6, camera.zoom);
     const minorPixelSpacing = (this.viewportHeight * minorPitch) / Math.max(1e-6, worldHeight);
     const minorFade = minorFadeForSpacing(minorPixelSpacing);
+    const majorPixelSpacing = (this.viewportHeight * majorPitch) / Math.max(1e-6, worldHeight);
+    const majorFade = majorFadeForSpacing(majorPixelSpacing);
     // Generate minor geometry whenever it is at all visible; the continuous
     // fade itself is applied per-frame via opacity, not baked into geometry.
     const drawMinor = minorFade > 0;
@@ -246,7 +286,7 @@ export class SceneGridController {
       minorColor,
       opacity
     };
-    return { request, minorFade };
+    return { request, minorFade, majorFade };
   }
 
   private computeFixedRequest(
@@ -273,28 +313,34 @@ export class SceneGridController {
       minorColor,
       opacity
     };
-    // The fixed ground-plane grid (non-ortho fallback) keeps minor lines at full
+    // The fixed ground-plane grid (non-ortho fallback) keeps all lines at full
     // strength; zoom-based fading only applies to the axis-aligned ortho fill.
-    return { request, minorFade: 1 };
+    return { request, minorFade: 1, majorFade: 1 };
   }
 
   private rebuild(request: GridGeometryRequest): void {
     this.clearSegments();
 
     const minorPositions: number[] = [];
+    const halfPositions: number[] = [];
     const majorPositions: number[] = [];
 
     // Lines parallel to V, placed at each U tick.
-    this.addLines(request, true, request.uMin, request.uMax, request.vMin, request.vMax, minorPositions, majorPositions);
+    this.addLines(request, true, request.uMin, request.uMax, request.vMin, request.vMax, minorPositions, halfPositions, majorPositions);
     // Lines parallel to U, placed at each V tick.
-    this.addLines(request, false, request.vMin, request.vMax, request.uMin, request.uMax, minorPositions, majorPositions);
+    this.addLines(request, false, request.vMin, request.vMax, request.uMin, request.uMax, minorPositions, halfPositions, majorPositions);
 
     this.majorMaterial.color.set(request.majorColor);
     this.minorMaterial.color.set(request.minorColor);
+    this.halfMaterial.color.set(request.minorColor);
 
     if (request.drawMinor && minorPositions.length > 0) {
       this.minorSegments = this.makeSegments(minorPositions, this.minorMaterial);
       this.root.add(this.minorSegments);
+    }
+    if (request.drawMinor && halfPositions.length > 0) {
+      this.halfSegments = this.makeSegments(halfPositions, this.halfMaterial);
+      this.root.add(this.halfSegments);
     }
     if (majorPositions.length > 0) {
       this.majorSegments = this.makeSegments(majorPositions, this.majorMaterial);
@@ -314,6 +360,7 @@ export class SceneGridController {
     spanMin: number,
     spanMax: number,
     minorPositions: number[],
+    halfPositions: number[],
     majorPositions: number[]
   ): void {
     const { axisU, axisV, minorPitch, majorPitch, drawMinor } = request;
@@ -330,7 +377,14 @@ export class SceneGridController {
       if (!major && !drawMinor) {
         continue;
       }
-      const target = major ? majorPositions : minorPositions;
+      let target: number[];
+      if (major) {
+        target = majorPositions;
+      } else if (drawMinor && isHalfTick(coord, majorPitch)) {
+        target = halfPositions;
+      } else {
+        target = minorPositions;
+      }
       const a = this.scratch;
       if (tickAlongU) {
         setComponent(a, axisU, axisV, coord, spanMin);
@@ -356,13 +410,14 @@ export class SceneGridController {
   }
 
   private clearSegments(): void {
-    for (const segments of [this.minorSegments, this.majorSegments]) {
+    for (const segments of [this.minorSegments, this.halfSegments, this.majorSegments]) {
       if (segments) {
         this.root.remove(segments);
         segments.geometry.dispose();
       }
     }
     this.minorSegments = null;
+    this.halfSegments = null;
     this.majorSegments = null;
   }
 }

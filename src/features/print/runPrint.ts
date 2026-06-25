@@ -4,6 +4,8 @@ import type { CameraState, RenderEngine, SceneColorBufferPrecision } from "@/cor
 import {
   computeOrthoEdgeMapping,
   createWorldToPaperProjector,
+  isCameraFacingDirection,
+  type CameraViewDirection,
   type OrthoEdgeMapping
 } from "@/features/camera/viewUtils";
 import { canvasToPngBytes } from "@/features/render/exporters";
@@ -123,6 +125,25 @@ function triggerPngDownload(bytes: Uint8Array, fileName: string): void {
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const NAMED_VIEW_DIRECTIONS: readonly CameraViewDirection[] = [
+  "front",
+  "back",
+  "left",
+  "right",
+  "top",
+  "bottom"
+];
+
+/** The named ortho view the camera is aligned to (e.g. "top"), or null. */
+function detectCameraViewDirection(camera: CameraState): CameraViewDirection | null {
+  for (const direction of NAMED_VIEW_DIRECTIONS) {
+    if (isCameraFacingDirection(camera, direction)) {
+      return direction;
+    }
+  }
+  return null;
 }
 
 /**
@@ -295,11 +316,23 @@ export async function runPrint(settings: PrintSettings, deps: RunPrintDeps): Pro
       overlay: frame.overlay
     });
     const pngBytes = await canvasToPngBytes(composed);
-    const baseName = (deps.projectName ?? "print").replace(/[^\w.-]+/g, "_") || "print";
+    // Default filename: project + snapshot + named view direction (e.g.
+    // "Theatre_main_top"). The camera segment is omitted for non-axis-aligned
+    // (perspective / isometric) views.
+    const appState = deps.kernel.store.getState().state;
+    const cameraDir = detectCameraViewDirection(appState.camera);
+    const nameParts = [deps.projectName ?? "", appState.activeSnapshotName ?? "", cameraDir ?? ""].filter(Boolean);
+    const baseName = nameParts.join("_").replace(/[^\w.-]+/g, "_") || "print";
 
     if (settings.output === "png") {
-      triggerPngDownload(pngBytes, `${baseName}.png`);
-      deps.setStatus(`Print image saved. ${composed.width} x ${composed.height} PNG.`);
+      const api = window.electronAPI;
+      if (api?.printPagePng) {
+        const result = await api.printPagePng({ pngBytes, defaultFileName: `${baseName}.png` });
+        deps.setStatus(result?.path ? `PNG saved to ${result.path}` : "PNG export cancelled.");
+      } else {
+        triggerPngDownload(pngBytes, `${baseName}.png`);
+        deps.setStatus(`Print image saved. ${composed.width} x ${composed.height} PNG.`);
+      }
       return;
     }
     if (settings.output === "pdf") {

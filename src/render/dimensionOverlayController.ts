@@ -407,7 +407,8 @@ export class DimensionOverlayController {
       (actor) =>
         actor.actorType !== "dimension" &&
         actor.actorType !== "annotation" &&
-        computeActorObjectVisibility(actor, selectedIds.has(actor.id), true)
+        computeActorObjectVisibility(actor, selectedIds.has(actor.id), true) &&
+        (this.resolveActorObject(actor.id)?.visible ?? false)
     );
     const signature = visibleActors.map((actor) => actor.id).join(",");
     // Rebuild on actor-set change, or periodically so dots track moving actors.
@@ -879,8 +880,12 @@ export class DimensionOverlayController {
     const textWidth = Math.max(1, metrics.width);
     const cssWidth = textWidth + padX * 2;
     const cssHeight = fontPx + padY * 2;
-    canvas.width = Math.ceil(cssWidth * dpr);
-    canvas.height = Math.ceil(cssHeight * dpr);
+    const prevW = canvas.width;
+    const prevH = canvas.height;
+    const nextW = Math.ceil(cssWidth * dpr);
+    const nextH = Math.ceil(cssHeight * dpr);
+    canvas.width = nextW;
+    canvas.height = nextH;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, cssWidth, cssHeight);
     if (opts.background) {
@@ -900,7 +905,21 @@ export class DimensionOverlayController {
     ctx.fillStyle = opts.textColor;
     ctx.fillText(text, cssWidth / 2, cssHeight / 2);
     visual.labelAspect = cssWidth / cssHeight;
-    visual.labelTexture.needsUpdate = true;
+    if (nextW !== prevW || nextH !== prevH) {
+      // WebGPU does not reallocate a CanvasTexture's GPU storage when the backing
+      // canvas resizes, so needsUpdate alone reuploads into a stale-sized texture
+      // and the label freezes (the number stops tracking the geometry). Recreate
+      // the texture so the backend allocates correctly-sized storage.
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      visual.labelTexture.dispose();
+      visual.labelTexture = tex;
+      const mat = visual.label.material as THREE.SpriteMaterial;
+      mat.map = tex;
+      mat.needsUpdate = true;
+    } else {
+      visual.labelTexture.needsUpdate = true;
+    }
   }
 
   private scaleLabel(visual: DimensionVisual, textSizePx: number): void {
